@@ -1,0 +1,126 @@
+// Smart Excel Data Entry System - Prisma schema
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// One normalized row from an imported Excel sheet.
+model MasterData {
+  id             String   @id @default(cuid())
+  date           String?
+  shippingStatus String?
+  model          String?
+  sku            String?
+  poNo           String?
+  factoryPO      String?
+  item           String?
+  season         String?
+  colorCode      String?
+  colorCode2     String?
+  painting       String?
+  printingColor  String?
+  size           String?
+  qty1           String?
+  qty2           String?
+  deadline       String?
+  sourceFile     String?
+  sheetName      String?
+  rowIndex       Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  @@index([factoryPO])
+  @@index([sku])
+  @@index([poNo])
+  @@index([model])
+  @@index([season])
+  @@index([colorCode])
+  @@index([size])
+  @@index([factoryPO, size])
+}
+
+/// Aggregated shared attributes per Factory PO (Master Data index).
+/// `sizes` is a JSON array string; `sharedFlags` JSON records which fields are single-valued.
+model MasterGroup {
+  id             String   @id @default(cuid())
+  factoryPO      String   @unique
+  date           String?
+  shippingStatus String?
+  model          String?
+  sku            String?
+  poNo           String?
+  item           String?
+  season         String?
+  colorCode      String?
+  colorCode2     String?
+  painting       String?
+  printingColor  String?
+  sizes          String // JSON string array
+  sharedFlags    String // JSON record<string,boolean>
+  rowCount       Int      @default(0)
+  sourceFile     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([factoryPO])
+}
+
+/// A user-entered data row (Factory PO + Size + Qty1 → completed row).
+model EntryData {
+  id             String   @id @default(cuid())
+  factoryPO      String
+  size           String
+  qty1           String
+  qty2           String
+  date           String?
+  shippingStatus String?
+  model          String?
+  sku             String?
+  poNo           String?
+  item           String?
+  season         String?
+  colorCode      String?
+  colorCode2     String?
+  painting       String?
+  printingColor  String?
+  deadline       String?
+  sourceMasterId String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([factoryPO])
+  @@index([factoryPO, size])
+  @@index([sku])
+  @@index([createdAt])
+}
+
+model ImportHistory {
+  id        String   @id @default(cuid())
+  fileName  String
+  sheetName String?
+  totalRows Int      @default(0)
+  validRows Int      @default(0)
+  invalidRows Int    @default(0)
+  errors    String   @default("[]") // JSON array
+  importedAt DateTime @default(now())
+}
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String // JSON encoded
+}
+
+model LookupRule {
+  id            String  @id @default(cuid())
+  name          String  @unique
+  primaryKey    String  // e.g. "factoryPO"
+  secondaryKey  String? // e.g. "size"
+  lookupFields  String  // JSON array of canonical field names
+  autoCalcQty2  Boolean @default(true)
+  active        Boolean @default(true)
+  createdAt     DateTime @default(now())
+}

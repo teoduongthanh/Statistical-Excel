@@ -1,0 +1,2735 @@
+# PROMPT XÂY DỰNG / NÂNG CẤP HỆ THỐNG SMART EXCEL DATA ENTRY & PRODUCTION TRACKING
+
+Bạn là Senior Full-Stack Developer, Software Architect và Business Analyst có kinh nghiệm xây dựng hệ thống quản lý dữ liệu sản xuất, gia công, Excel automation và production tracking.
+
+Tôi đang có một hệ thống web dùng để:
+
+* Import Excel.
+* Đọc Master Data.
+* Nhập dữ liệu sản xuất.
+* Tự động lookup dữ liệu.
+* Tự động điền các trường liên quan.
+* Export dữ liệu ra Excel.
+
+Tuy nhiên hệ thống hiện tại đang có nhiều lỗi và thiếu các nghiệp vụ quan trọng.
+
+Hãy **nâng cấp hệ thống hiện tại**, KHÔNG được đơn giản hóa các chức năng đã có.
+
+---
+
+# 1. MỤC TIÊU HỆ THỐNG
+
+Hệ thống phải trở thành một:
+
+> Smart Excel Data Management + Production Order Tracking + Processing/Outsource Tracking System.
+
+Hệ thống phải cho phép quản lý toàn bộ luồng:
+
+```text
+ORDER
+   ↓
+OUTPUT
+   ↓
+SPENDING / PROCESSING
+   ↓
+INPUT
+   ↓
+COMPLETED
+```
+
+Trong đó:
+
+* `Order`: số lượng đặt hàng / số lượng cần đưa đi gia công.
+* `Output`: số lượng thực tế xuất đi gia công cho công ty khác.
+* `Spending`: số lượng đang trong quá trình gia công.
+* `Input`: số lượng đã nhận về sau khi gia công.
+* `Completed`: số lượng hoàn thiện cuối cùng.
+
+Mục tiêu:
+
+```text
+Order = Output = Input
+```
+
+Nếu các số lượng không cân bằng, hệ thống phải tự động phát hiện và cảnh báo.
+
+---
+
+# 2. CÁC LỖI HIỆN TẠI PHẢI SỬA
+
+## 2.1. Không thể chỉnh sửa Entry Data
+
+Hiện tại dữ liệu đã thêm vào Entry Data không thể chỉnh sửa.
+
+Phải bổ sung:
+
+```text
+Edit
+Save
+Cancel
+Delete
+Duplicate
+```
+
+Ví dụ:
+
+```text
+Entry Data
+
+Factory PO | Size | Qty1 | Qty2 | Status
+------------------------------------------
+MH27010051 | M13  | 20   | -20  | Order
+```
+
+Cho phép click:
+
+```text
+[ Edit ]
+```
+
+và chỉnh sửa:
+
+```text
+Qty1 = 25
+```
+
+Sau đó:
+
+```text
+[ Save ]
+```
+
+Hệ thống phải validate lại dữ liệu trước khi lưu.
+
+---
+
+# 3. CHỈNH SỬA MASTER DATA
+
+Không chỉ Entry Data.
+
+Admin phải có quyền chỉnh sửa Master Data.
+
+Cho phép:
+
+```text
+View
+Edit
+Delete
+Add
+Duplicate
+```
+
+Ví dụ:
+
+```text
+Master Data
+
+Factory PO: MH26110228
+MODEL: MAFATE5 MS
+SKU: 1168722-NMNN
+Season: SP27
+Color Code 1: ...
+Color Code 2: ...
+```
+
+Admin có thể chỉnh sửa từng trường.
+
+Phải có:
+
+```text
+Save
+Cancel
+Reset
+```
+
+Không được làm mất dữ liệu khác khi chỉnh sửa một column.
+
+---
+
+# 4. IMPORT EXCEL ĐANG BỊ LỖI
+
+Hiện tại hệ thống không thể import Excel.
+
+Phải sửa hoàn toàn chức năng này.
+
+Hỗ trợ:
+
+```text
+.xlsx
+.xls
+.csv
+```
+
+Workflow:
+
+```text
+Upload
+   ↓
+Read File
+   ↓
+Detect Sheet
+   ↓
+Read Header
+   ↓
+Preview
+   ↓
+Column Mapping
+   ↓
+Validation
+   ↓
+Import
+   ↓
+Save Master Data
+```
+
+---
+
+# 5. EXCEL COLUMN MAPPING
+
+Đây là yêu cầu cực kỳ quan trọng.
+
+KHÔNG được dựa vào vị trí column.
+
+Ví dụ Excel:
+
+```text
+Factory PO
+Color Code 1
+Color Code 2
+Size
+Qty1
+```
+
+Phải map theo:
+
+```text
+Header Name
+```
+
+Không được map:
+
+```text
+Column index
+```
+
+Ví dụ:
+
+```text
+Excel Column
+Color Code 1
+        ↓
+System Field
+colorCode1
+```
+
+và:
+
+```text
+Excel Column
+Color Code 2
+        ↓
+System Field
+colorCode2
+```
+
+---
+
+# 6. FIX LỖI COLOR CODE 1 / COLOR CODE 2
+
+Hiện tại hệ thống đang xảy ra lỗi:
+
+```text
+Color Code 1
+      ↓
+Color Code 2
+```
+
+và:
+
+```text
+Color Code 2
+```
+
+bị ghi đè hoặc mất dữ liệu.
+
+Phải tách hoàn toàn:
+
+```text
+colorCode1
+colorCode2
+```
+
+Database:
+
+```javascript
+{
+    colorCode1: String,
+    colorCode2: String
+}
+```
+
+KHÔNG được sử dụng:
+
+```javascript
+colorCode
+```
+
+để đại diện cho cả hai.
+
+UI phải hiển thị:
+
+```text
+Color Code 1
+Color Code 2
+```
+
+Export:
+
+```text
+Color Code 1 → Color Code 1
+Color Code 2 → Color Code 2
+```
+
+Không được đảo column.
+
+---
+
+# 7. FIX LỖI ĐẢO THỨ TỰ EXPORT
+
+Hiện tại:
+
+```text
+Input:
+
+Data 3
+Data 2
+Data 1
+```
+
+Export ra:
+
+```text
+Data 3
+Data 2
+Data 1
+```
+
+Trong khi mong muốn:
+
+```text
+Data 1
+Data 2
+Data 3
+```
+
+Phải đảm bảo thứ tự dữ liệu khi export.
+
+Có thể sử dụng:
+
+```text
+createdAt
+sequence
+entryNumber
+```
+
+để xác định thứ tự.
+
+Mặc định:
+
+```text
+Oldest → Newest
+```
+
+Ví dụ:
+
+```text
+Data 1 createdAt 10:00
+Data 2 createdAt 10:05
+Data 3 createdAt 10:10
+```
+
+Export:
+
+```text
+Data 1
+Data 2
+Data 3
+```
+
+Không được phụ thuộc vào:
+
+* MongoDB natural order
+* object order
+* rendering order
+* frontend sorting ngẫu nhiên
+
+---
+
+# 8. EXPORT EXCEL PHẢI GIỮ ĐÚNG SCHEMA
+
+Export phải sử dụng một `Export Schema`.
+
+Ví dụ:
+
+```javascript
+const exportColumns = [
+    "date",
+    "shippingStatus",
+    "model",
+    "sku",
+    "poNo",
+    "factoryPO",
+    "item",
+    "season",
+    "colorCode1",
+    "colorCode2",
+    "painting",
+    "printingColor",
+    "size",
+    "qty1",
+    "qty2",
+    "deadline"
+];
+```
+
+Mapping:
+
+```text
+date            → Date
+shippingStatus  → Shipping status
+model           → MODEL
+sku             → SKU
+poNo            → PO NO#
+factoryPO       → Factory PO
+item            → ITEM
+season          → Season
+colorCode1      → Color Code 1
+colorCode2      → Color Code 2
+painting        → PAINTING
+printingColor   → PRINTING COLOR
+size            → Size
+qty1            → Q'ty 1
+qty2            → Q'ty 2
+deadline        → Dead Line
+```
+
+Export phải dựa vào mapping này.
+
+Không được lấy dữ liệu theo index.
+
+---
+
+# 9. DEADLINE PRIORITY
+
+Một Factory PO có thể xuất hiện nhiều lần.
+
+Ví dụ:
+
+```text
+Factory PO: MH26110228
+
+Deadline:
+2026-08-25
+2026-08-20
+2026-08-18
+```
+
+Khi user nhập:
+
+```text
+MH26110228
+```
+
+hệ thống phải ưu tiên record có:
+
+```text
+Dead Line gần nhất
+```
+
+nhưng phải đảm bảo:
+
+```text
+Dead Line >= Current Date
+```
+
+Ví dụ hôm nay:
+
+```text
+2026-08-20
+```
+
+thì:
+
+```text
+2026-08-20 ← ưu tiên
+2026-08-25
+2026-08-30
+```
+
+Nếu tất cả deadline đã quá hạn:
+
+```text
+2026-08-10
+2026-08-15
+```
+
+thì ưu tiên:
+
+```text
+deadline gần current date nhất
+```
+
+và phải đánh dấu:
+
+```text
+OVERDUE
+```
+
+---
+
+# 10. DEADLINE LOOKUP ALGORITHM
+
+Khi user nhập Factory PO:
+
+```text
+MH26110228
+```
+
+backend phải:
+
+```text
+1. Find all records with Factory PO
+2. Group by Factory PO
+3. Get deadline
+4. Compare with current date
+5. Find nearest valid deadline
+6. Select corresponding record
+7. Auto-fill data
+```
+
+Không được:
+
+```text
+findOne()
+```
+
+một cách ngẫu nhiên.
+
+---
+
+# 11. HỖ TRỢ NHIỀU LOẠI HÀNG HÓA / COMPANY
+
+Hệ thống hiện tại phải được mở rộng để không chỉ phục vụ một loại hàng.
+
+Có ít nhất 3 loại sản phẩm / company:
+
+```text
+MAFATE
+ONYX
+HOONG WON (HW)
+```
+
+Trong tương lai có thể thêm:
+
+```text
+Company A
+Company B
+Company C
+```
+
+Không được hard-code:
+
+```javascript
+if(model === "MAFATE") ...
+```
+
+Phải xây dựng hệ thống configurable.
+
+---
+
+# 12. PRODUCT TYPE
+
+Tạo entity:
+
+```text
+Product Type
+```
+
+Ví dụ:
+
+```text
+MAFATE
+ONYX
+HOONG WON (HW)
+```
+
+Mỗi Product Type có thể có:
+
+* Excel format khác nhau.
+* Column khác nhau.
+* Business rules khác nhau.
+* Status khác nhau.
+* Lookup rules khác nhau.
+
+---
+
+# 13. MULTI-TEMPLATE EXCEL
+
+Hệ thống phải hỗ trợ nhiều format Excel.
+
+Ví dụ:
+
+### MAFATE
+
+```text
+Date
+Status
+MODEL
+SKU
+PO NO#
+Factory PO
+ITEM
+Season
+Color Code 1
+Color Code 2
+PAINTING
+PRINTING COLOR
+Size
+Qty1
+Qty2
+Deadline
+```
+
+### ONYX
+
+Có thể có cấu trúc khác.
+
+### HOONG WON (HW)
+
+Có thể có cấu trúc khác.
+
+Hệ thống phải cho phép Admin cấu hình mapping.
+
+---
+
+# 14. PRODUCT CONFIGURATION
+
+Tạo:
+
+```text
+Settings
+   ↓
+Product Types
+```
+
+Ví dụ:
+
+```text
+MAFATE
+ONYX
+HOONG WON (HW)
+```
+
+Mỗi loại có:
+
+```text
+Product Name
+Company
+Excel Template
+Column Mapping
+Lookup Rules
+Status Mapping
+Quantity Rules
+```
+
+---
+
+# 15. COMPANY CONFIGURATION
+
+Tách:
+
+```text
+Company
+```
+
+và:
+
+```text
+Product
+```
+
+Ví dụ:
+
+```text
+Company
+├── MAFATE
+├── ONYX
+└── HOONG WON
+```
+
+Nếu sau này:
+
+```text
+Company A
+   ├── Product A1
+   └── Product A2
+```
+
+vẫn có thể mở rộng.
+
+---
+
+# 16. PRODUCT IDENTIFICATION
+
+Khi import Excel, hệ thống phải xác định:
+
+```text
+Company
+Product Type
+```
+
+Có thể dựa trên:
+
+* file template
+* sheet name
+* header
+* user chọn thủ công
+
+Nếu không xác định được:
+
+```text
+Please select Product Type
+
+[ MAFATE ]
+[ ONYX ]
+[ HOONG WON ]
+```
+
+---
+
+# 17. PRODUCTION FLOW
+
+Xây dựng business model:
+
+```text
+ORDER
+OUTPUT
+SPENDING
+INPUT
+COMPLETED
+```
+
+---
+
+# 18. ORDER
+
+`ORDER` là số lượng được đặt để đưa đi gia công.
+
+Ví dụ:
+
+```text
+Factory PO: MH27010051
+Size: M(13)
+Order Qty: 100
+```
+
+---
+
+# 19. OUTPUT
+
+`OUTPUT` là số lượng thực tế xuất đi gia công.
+
+Ví dụ:
+
+```text
+Factory PO: MH27010051
+Size: M(13)
+Output Qty: 100
+```
+
+---
+
+# 20. SPENDING
+
+`SPENDING` là số lượng đang trong quá trình gia công.
+
+Ví dụ:
+
+```text
+Factory PO: MH27010051
+Size: M(13)
+Spending Qty: 60
+```
+
+Điều này có nghĩa:
+
+```text
+60 units
+```
+
+đang được xử lý.
+
+---
+
+# 21. INPUT
+
+`INPUT` là số lượng đã nhận về sau khi gia công.
+
+Ví dụ:
+
+```text
+Factory PO: MH27010051
+Size: M(13)
+Input Qty: 40
+```
+
+---
+
+# 22. PRODUCTION BALANCE
+
+Hệ thống phải tự động tính:
+
+```text
+Output Remaining
+Input Remaining
+Processing Quantity
+Missing Quantity
+Variance
+```
+
+Ví dụ:
+
+```text
+Order = 100
+Output = 100
+Input = 40
+```
+
+Kết quả:
+
+```text
+Processing = 60
+Missing = 0
+```
+
+---
+
+# 23. BALANCE LOGIC
+
+Tối thiểu:
+
+```text
+Order = expected quantity
+Output = quantity sent to processing
+Input = quantity received back
+```
+
+Tính:
+
+```text
+Processing = Output - Input
+```
+
+Nếu:
+
+```text
+Output > Input
+```
+
+thì:
+
+```text
+Processing > 0
+```
+
+Ví dụ:
+
+```text
+Output = 100
+Input = 60
+
+Processing = 40
+```
+
+---
+
+# 24. QUANTITY ERROR DETECTION
+
+So sánh:
+
+```text
+ORDER
+OUTPUT
+INPUT
+```
+
+Ví dụ:
+
+```text
+Order  = 100
+Output = 90
+Input  = 80
+```
+
+Hệ thống phải cảnh báo:
+
+```text
+⚠ Quantity mismatch
+```
+
+Và hiển thị:
+
+```text
+Order difference:
+10
+
+Output/Input difference:
+10
+```
+
+---
+
+# 25. STATUS-BASED QUANTITY ANALYSIS
+
+Hệ thống phải sử dụng:
+
+```text
+Date
+Status
+PO NO#
+Factory PO
+Size
+Qty1
+Qty2
+Deadline
+```
+
+để xác định trạng thái sản lượng.
+
+Ví dụ:
+
+```text
+Date
+Status
+PO NO#
+Factory PO
+Size
+Qty1
+Qty2
+Deadline
+```
+
+Tạo một `Production Transaction`.
+
+---
+
+# 26. STATUS MAPPING
+
+Cho phép cấu hình:
+
+```text
+ORDER
+OUTPUT
+SPENDING
+INPUT
+```
+
+Không hard-code status.
+
+Ví dụ Excel có:
+
+```text
+1.Order
+2.Output
+3.Spending
+4.Input
+```
+
+Hệ thống mapping:
+
+```text
+1.Order    → ORDER
+2.Output   → OUTPUT
+3.Spending → SPENDING
+4.Input    → INPUT
+```
+
+Nếu company khác sử dụng:
+
+```text
+Order
+Sent
+Processing
+Received
+```
+
+Admin có thể mapping:
+
+```text
+Sent → OUTPUT
+Processing → SPENDING
+Received → INPUT
+```
+
+---
+
+# 27. PRODUCTION TRANSACTION KEY
+
+Để so sánh chính xác, tạo composite key:
+
+```text
+Date
+PO NO#
+Factory PO
+Size
+```
+
+Có thể mở rộng:
+
+```text
+Company
+Product Type
+PO NO#
+Factory PO
+Size
+```
+
+Không chỉ dựa vào Factory PO.
+
+---
+
+# 28. SIZE LEVEL TRACKING
+
+Việc tính toán phải được thực hiện tới cấp:
+
+```text
+Factory PO + Size
+```
+
+Ví dụ:
+
+```text
+Factory PO = MH26110228
+Size = M(13)
+```
+
+không được cộng chung với:
+
+```text
+Factory PO = MH26110228
+Size = M(14)
+```
+
+---
+
+# 29. ORDER DASHBOARD
+
+Tạo màn hình:
+
+```text
+Order Tracking
+```
+
+Hiển thị:
+
+```text
+Factory PO
+PO NO#
+MODEL
+Size
+Deadline
+Order
+Output
+Spending
+Input
+Missing
+Completion %
+Status
+```
+
+Ví dụ:
+
+```text
+| Factory PO | Size | Order | Output | Spending | Input | Missing | Completion |
+|------------|------|-------|--------|----------|-------|---------|------------|
+| MH27010051 | M13  | 100   | 100    | 40       | 60    | 0       | 60%        |
+```
+
+---
+
+# 30. COMPLETION PERCENTAGE
+
+Tính:
+
+```text
+Completion % = Input / Order × 100
+```
+
+Ví dụ:
+
+```text
+Order = 100
+Input = 60
+
+Completion = 60%
+```
+
+Hiển thị progress bar.
+
+---
+
+# 31. MISSING QUANTITY
+
+Hiển thị số lượng thiếu:
+
+```text
+Missing = Order - Input
+```
+
+Ví dụ:
+
+```text
+Order = 100
+Input = 60
+
+Missing = 40
+```
+
+Hiển thị:
+
+```text
+⚠ Missing: 40
+```
+
+---
+
+# 32. PHÂN BIỆT MISSING VÀ PROCESSING
+
+Rất quan trọng.
+
+Nếu:
+
+```text
+Order = 100
+Output = 100
+Input = 60
+```
+
+thì:
+
+```text
+Processing = 40
+Missing = 0
+```
+
+Không được đánh dấu thiếu 40 nếu 40 đang trong quá trình gia công.
+
+Chỉ đánh dấu:
+
+```text
+Missing
+```
+
+khi số lượng không thể giải thích bởi:
+
+```text
+Output
+Spending
+Input
+```
+
+hoặc theo business rule đã cấu hình.
+
+---
+
+# 33. QUANTITY STATUS
+
+Tạo các trạng thái:
+
+```text
+BALANCED
+PROCESSING
+MISSING
+OVER_OUTPUT
+OVER_INPUT
+QUANTITY_MISMATCH
+```
+
+Ví dụ:
+
+```text
+Order = 100
+Output = 100
+Input = 100
+
+Status:
+BALANCED
+```
+
+---
+
+# 34. QUANTITY MISMATCH
+
+Ví dụ:
+
+```text
+Order = 100
+Output = 90
+Input = 80
+```
+
+Hiển thị:
+
+```text
+QUANTITY_MISMATCH
+```
+
+Và highlight dòng.
+
+---
+
+# 35. ERROR CODE
+
+Mỗi lỗi số lượng phải có mã lỗi.
+
+Ví dụ:
+
+```text
+QTY-001
+Order / Output mismatch
+
+QTY-002
+Output / Input mismatch
+
+QTY-003
+Input exceeds Order
+
+QTY-004
+Output exceeds Order
+
+QTY-005
+Missing quantity
+
+QTY-006
+Quantity mismatch
+```
+
+Cho phép filter theo Error Code.
+
+---
+
+# 36. DAILY ORDER NOTE
+
+Tạo chức năng ghi chú theo từng ngày.
+
+Ví dụ:
+
+```text
+Factory PO:
+MH27010051
+
+Date:
+2026-08-20
+
+Note:
+Đã xuất 100 đôi sang nhà máy gia công.
+```
+
+Ngày hôm sau:
+
+```text
+2026-08-21
+
+Note:
+Nhà máy xác nhận đã nhận hàng.
+```
+
+Ngày tiếp:
+
+```text
+2026-08-22
+
+Note:
+Đã nhận về 60 đôi.
+```
+
+---
+
+# 37. NOTE STRUCTURE
+
+Database:
+
+```javascript
+{
+    company,
+    productType,
+    poNo,
+    factoryPO,
+    size,
+    date,
+    note,
+    createdBy,
+    createdAt,
+    updatedAt
+}
+```
+
+---
+
+# 38. DAILY TIMELINE
+
+Hiển thị timeline:
+
+```text
+2026-08-20
+│
+├── Output: 100
+└── Note: Đã xuất hàng
+
+2026-08-21
+│
+├── Spending: 100
+└── Note: Đang gia công
+
+2026-08-22
+│
+├── Input: 60
+└── Note: Nhận về 60 đôi
+```
+
+---
+
+# 39. ORDER DETAIL PAGE
+
+Click vào một Factory PO:
+
+```text
+MH27010051
+```
+
+mở:
+
+```text
+Order Detail
+```
+
+Hiển thị:
+
+```text
+General Information
+
+PO NO#
+Factory PO
+MODEL
+SKU
+Season
+Color
+Deadline
+```
+
+Sau đó:
+
+```text
+Quantity Summary
+
+Order
+Output
+Spending
+Input
+Missing
+Completion %
+```
+
+Sau đó:
+
+```text
+Production Timeline
+```
+
+và:
+
+```text
+Daily Notes
+```
+
+---
+
+# 40. PRODUCTION SUMMARY
+
+Tạo dashboard thống kê:
+
+```text
+Total Orders
+Total Ordered Quantity
+Total Output Quantity
+Total Spending Quantity
+Total Input Quantity
+Total Missing Quantity
+Completion Rate
+```
+
+---
+
+# 41. PRODUCTION REPORT
+
+Cho phép xem:
+
+```text
+Daily Production
+Weekly Production
+Monthly Production
+```
+
+Filter:
+
+```text
+Company
+Product
+Factory PO
+MODEL
+SKU
+PO NO#
+Size
+Date
+Deadline
+Status
+```
+
+---
+
+# 42. BIỂU ĐỒ
+
+Dashboard có:
+
+### Order vs Output vs Input
+
+```text
+Order
+Output
+Input
+```
+
+### Completion Rate
+
+```text
+Completed %
+```
+
+### Missing Quantity
+
+```text
+Missing
+```
+
+### Production by Company
+
+```text
+MAFATE
+ONYX
+HOONG WON
+```
+
+### Production by Date
+
+```text
+Date → Quantity
+```
+
+---
+
+# 43. DEADLINE DASHBOARD
+
+Hiển thị:
+
+```text
+Overdue
+Due Today
+Due Tomorrow
+Due This Week
+Upcoming
+```
+
+Ví dụ:
+
+```text
+🔴 Overdue: 10
+🟠 Due Today: 5
+🟡 Due This Week: 20
+🟢 Upcoming: 100
+```
+
+---
+
+# 44. MASTER DATA VERSIONING
+
+Khi Admin chỉnh sửa Master Data, không được mất dữ liệu cũ.
+
+Tạo:
+
+```text
+Version History
+```
+
+Ví dụ:
+
+```text
+Version 1
+Version 2
+Version 3
+```
+
+Cho phép xem:
+
+```text
+Changed field
+Old value
+New value
+Changed by
+Changed at
+```
+
+---
+
+# 45. AUDIT LOG
+
+Mọi hành động quan trọng phải được log:
+
+```text
+Import Excel
+Edit Master Data
+Edit Entry Data
+Delete Entry
+Export Excel
+Change Lookup Rule
+Change Product Configuration
+```
+
+Ví dụ:
+
+```text
+User: Admin
+Action: Edit Master Data
+Factory PO: MH26110228
+Field: Color Code 2
+Old: CLEAR
+New: CLEAR + RUBBER
+Time: 2026-08-20 10:20
+```
+
+---
+
+# 46. EDIT DATA KHÔNG ĐƯỢC PHÁ VỠ RELATIONSHIP
+
+Nếu sửa:
+
+```text
+Factory PO
+```
+
+phải cảnh báo:
+
+```text
+This Factory PO is being used by 25 entries.
+
+Changing it may affect lookup relationships.
+
+Continue?
+```
+
+Không được âm thầm phá dữ liệu.
+
+---
+
+# 47. SOFT DELETE
+
+Không xóa Master Data trực tiếp khỏi database.
+
+Sử dụng:
+
+```text
+isDeleted
+deletedAt
+deletedBy
+```
+
+Cho phép restore.
+
+---
+
+# 48. EXCEL IMPORT PREVIEW
+
+Trước khi import phải hiển thị:
+
+```text
+Total Rows: 1,250
+
+Valid Rows: 1,200
+
+Warning Rows: 30
+
+Error Rows: 20
+```
+
+Không cho import nếu có lỗi nghiêm trọng, trừ khi Admin chọn:
+
+```text
+Import Valid Rows Only
+```
+
+---
+
+# 49. DUPLICATE DETECTION
+
+Khi import:
+
+```text
+Factory PO
+PO NO#
+Size
+Date
+Status
+```
+
+phải kiểm tra duplicate.
+
+Nếu duplicate:
+
+```text
+⚠ Duplicate record detected
+```
+
+Cho phép:
+
+```text
+Skip
+Replace
+Create New Version
+```
+
+---
+
+# 50. IMPORT MULTIPLE FILES
+
+Cho phép:
+
+```text
+Upload MAFATE.xlsx
+Upload ONYX.xlsx
+Upload HW.xlsx
+```
+
+Trong cùng một hệ thống.
+
+Mỗi file được gắn:
+
+```text
+Company
+Product Type
+Import Batch
+```
+
+---
+
+# 51. IMPORT BATCH
+
+Mỗi lần import tạo:
+
+```text
+Import Batch ID
+```
+
+Ví dụ:
+
+```text
+IMP-20260820-001
+```
+
+Lưu:
+
+```text
+File Name
+Product
+Company
+User
+Date
+Rows
+Status
+```
+
+---
+
+# 52. ROLLBACK IMPORT
+
+Nếu import sai:
+
+```text
+Import History
+→ Select Batch
+→ Rollback
+```
+
+Hệ thống phải có khả năng rollback dữ liệu của batch đó.
+
+---
+
+# 53. AUTOCOMPLETE
+
+Tiếp tục giữ chức năng:
+
+```text
+Nhập 3 số cuối
+```
+
+Ví dụ:
+
+```text
+051
+```
+
+→
+
+```text
+MH27010051
+```
+
+Áp dụng cho:
+
+```text
+Factory PO
+PO NO#
+SKU
+MODEL
+Color Code
+```
+
+---
+
+# 54. SMART FACTORY PO LOOKUP
+
+Khi có nhiều record:
+
+```text
+MH27010051
+```
+
+hệ thống phải:
+
+```text
+Factory PO match
++
+Nearest Deadline
++
+Correct Product Type
++
+Correct Company
+```
+
+để xác định record chính xác nhất.
+
+---
+
+# 55. LOOKUP PRIORITY
+
+Thứ tự ưu tiên:
+
+```text
+1. Exact Factory PO
+2. Company
+3. Product Type
+4. Nearest Deadline
+5. Size
+6. Active record
+```
+
+---
+
+# 56. DATA NORMALIZATION
+
+Trước khi lookup:
+
+```text
+trim()
+uppercase()
+remove duplicated spaces
+normalize Unicode
+```
+
+Ví dụ:
+
+```text
+" mh27010051 "
+```
+
+→
+
+```text
+MH27010051
+```
+
+Nhưng khi hiển thị/export phải giữ nguyên giá trị gốc nếu cần.
+
+Do đó lưu:
+
+```text
+rawValue
+normalizedValue
+```
+
+khi cần thiết.
+
+---
+
+# 57. KHÔNG ĐƯỢC LÀM MẤT DỮ LIỆU GỐC
+
+Hệ thống phải phân biệt:
+
+```text
+Original Excel Value
+Normalized Search Value
+```
+
+Ví dụ:
+
+```text
+Original:
+"NEON FLAME / NEON TANGERINE"
+
+Normalized:
+"NEON FLAME / NEON TANGERINE"
+```
+
+Lookup sử dụng normalized.
+
+Export sử dụng original.
+
+---
+
+# 58. DATABASE DESIGN
+
+Thiết kế các collection:
+
+```text
+users
+companies
+products
+masterData
+entryData
+productionTransactions
+orders
+dailyNotes
+importBatches
+importErrors
+auditLogs
+lookupRules
+columnMappings
+```
+
+---
+
+# 59. PRODUCTION TRANSACTION
+
+Schema đề xuất:
+
+```javascript
+{
+    companyId,
+    productId,
+
+    date,
+
+    status,
+
+    poNo,
+    factoryPO,
+    size,
+
+    qty1,
+    qty2,
+
+    deadline,
+
+    sourceBatchId,
+
+    createdAt,
+    updatedAt
+}
+```
+
+---
+
+# 60. ORDER SUMMARY MODEL
+
+Có thể tạo aggregation thay vì duplicate dữ liệu.
+
+Ví dụ:
+
+```javascript
+{
+    factoryPO,
+    poNo,
+    size,
+
+    orderQty,
+    outputQty,
+    spendingQty,
+    inputQty,
+
+    processingQty,
+    missingQty,
+
+    completionRate,
+
+    quantityStatus,
+
+    deadline
+}
+```
+
+Ưu tiên tính toán từ transaction để tránh dữ liệu summary bị sai.
+
+---
+
+# 61. BUSINESS RULE ENGINE
+
+Không hard-code toàn bộ logic.
+
+Tạo:
+
+```text
+Business Rules
+```
+
+Admin có thể cấu hình:
+
+```text
+Qty2 calculation
+Status mapping
+Deadline priority
+Missing quantity rule
+Completion calculation
+```
+
+---
+
+# 62. QTY2 RULE
+
+Default:
+
+```text
+Qty2 = Qty1 * -1
+```
+
+Ví dụ:
+
+```text
+Qty1 = 50
+Qty2 = -50
+```
+
+Nhưng phải cho phép company khác có rule khác.
+
+---
+
+# 63. API
+
+Tạo API:
+
+```text
+POST   /api/import
+GET    /api/import/batches
+POST   /api/import/:id/rollback
+
+GET    /api/master-data
+GET    /api/master-data/:id
+POST   /api/master-data
+PUT    /api/master-data/:id
+DELETE /api/master-data/:id
+
+GET    /api/master-data/search
+
+GET    /api/entries
+POST   /api/entries
+PUT    /api/entries/:id
+DELETE /api/entries/:id
+
+GET    /api/orders
+GET    /api/orders/:id
+
+GET    /api/production/summary
+GET    /api/production/daily
+GET    /api/production/monthly
+
+GET    /api/notes
+POST   /api/notes
+PUT    /api/notes/:id
+DELETE /api/notes/:id
+
+POST   /api/export
+```
+
+---
+
+# 64. FRONTEND PAGES
+
+Tạo:
+
+```text
+Dashboard
+
+Master Data
+├── Master Data List
+├── Master Data Detail
+├── Edit Master Data
+
+Data Entry
+├── New Entry
+├── Entry List
+├── Edit Entry
+
+Orders
+├── Order Dashboard
+├── Order Detail
+├── Production Tracking
+
+Production
+├── Daily Production
+├── Monthly Production
+├── Production Report
+
+Excel
+├── Import
+├── Export
+├── Import History
+
+Notes
+├── Daily Notes
+
+Settings
+├── Companies
+├── Products
+├── Column Mapping
+├── Lookup Rules
+├── Status Mapping
+├── Business Rules
+
+System
+├── Users
+├── Roles
+├── Audit Logs
+```
+
+---
+
+# 65. EDITABLE DATA TABLE
+
+Các bảng phải hỗ trợ:
+
+```text
+inline edit
+```
+
+Ví dụ:
+
+```text
+| Factory PO | Size | Qty1 | Qty2 | Action |
+|------------|------|------|------|--------|
+| MH27010051 | M13  | 20   | -20  | Edit   |
+```
+
+Click Edit:
+
+```text
+Qty1 [20]
+```
+
+→
+
+```text
+Qty1 [25]
+```
+
+→ Save.
+
+---
+
+# 66. EXCEL EXPORT VALIDATION
+
+Trước khi export:
+
+```text
+Validate schema
+Validate column mapping
+Validate field values
+Validate row order
+Validate Color Code 1
+Validate Color Code 2
+```
+
+Sau khi generate file, kiểm tra:
+
+```text
+Number of exported rows
+Number of source rows
+```
+
+Phải bằng nhau nếu không có filter.
+
+---
+
+# 67. EXPORT FILTER
+
+Cho phép:
+
+```text
+Export All
+Export Current Page
+Export Filtered
+Export Selected
+```
+
+---
+
+# 68. EXPORT ORDER
+
+Mặc định:
+
+```text
+createdAt ASC
+```
+
+Có thể cho phép:
+
+```text
+Oldest First
+Newest First
+Deadline ASC
+Deadline DESC
+Factory PO ASC
+Factory PO DESC
+```
+
+Nhưng mặc định phải là:
+
+```text
+Oldest → Newest
+```
+
+---
+
+# 69. DATA INTEGRITY
+
+Đây là yêu cầu bắt buộc.
+
+Không được:
+
+```text
+Color Code 1 → Color Code 2
+```
+
+Không được:
+
+```text
+Qty1 → Qty2
+```
+
+Không được:
+
+```text
+Order → Output
+```
+
+Mọi field phải có mapping rõ ràng:
+
+```text
+Database Field
+       ↓
+UI Field
+       ↓
+Excel Field
+```
+
+---
+
+# 70. AUTOMATED TEST
+
+Phải viết test cho:
+
+```text
+Excel Import
+Excel Export
+Column Mapping
+Color Code 1
+Color Code 2
+Factory PO lookup
+Deadline priority
+Autocomplete
+Master Data Edit
+Entry Data Edit
+Duplicate Detection
+Qty Calculation
+Order/Output/Input calculation
+Missing Quantity
+Completion %
+Production Summary
+Daily Notes
+```
+
+---
+
+# 71. TEST QUAN TRỌNG
+
+Test:
+
+```text
+Input:
+Data 3
+Data 2
+Data 1
+```
+
+Expected export:
+
+```text
+Data 1
+Data 2
+Data 3
+```
+
+---
+
+# 72. COLOR CODE TEST
+
+Input:
+
+```text
+Color Code 1 = RED
+Color Code 2 = BLUE
+```
+
+Export phải:
+
+```text
+Color Code 1 = RED
+Color Code 2 = BLUE
+```
+
+Không được:
+
+```text
+Color Code 1 = BLUE
+Color Code 2 = RED
+```
+
+---
+
+# 73. DEADLINE TEST
+
+Có:
+
+```text
+Factory PO = MH27010051
+
+Deadline 1 = 2026-08-30
+Deadline 2 = 2026-08-22
+Deadline 3 = 2026-09-01
+```
+
+Nếu current date:
+
+```text
+2026-08-20
+```
+
+phải chọn:
+
+```text
+2026-08-22
+```
+
+---
+
+# 74. PRODUCTION TEST
+
+Input:
+
+```text
+ORDER = 100
+OUTPUT = 100
+SPENDING = 40
+INPUT = 60
+```
+
+Expected:
+
+```text
+Processing = 40
+Missing = 0
+Completion = 60%
+Status = PROCESSING
+```
+
+---
+
+# 75. BALANCED TEST
+
+Input:
+
+```text
+ORDER = 100
+OUTPUT = 100
+INPUT = 100
+```
+
+Expected:
+
+```text
+Processing = 0
+Missing = 0
+Completion = 100%
+Status = BALANCED
+```
+
+---
+
+# 76. MISMATCH TEST
+
+Input:
+
+```text
+ORDER = 100
+OUTPUT = 90
+INPUT = 80
+```
+
+Expected:
+
+```text
+Quantity Status = QUANTITY_MISMATCH
+Error Code = QTY-001/QTY-002
+```
+
+Tùy business rule chính xác được cấu hình.
+
+---
+
+# 77. UI ERROR HANDLING
+
+Không được để lỗi JavaScript trắng màn hình.
+
+Mọi lỗi phải hiển thị:
+
+```text
+Toast
+Modal
+Inline Error
+```
+
+Ví dụ:
+
+```text
+❌ Cannot import Excel file.
+Please check the file format.
+```
+
+---
+
+# 78. BACKEND ERROR HANDLING
+
+Tất cả API phải trả:
+
+```json
+{
+    "success": false,
+    "message": "Unable to import Excel",
+    "code": "EXCEL_IMPORT_ERROR",
+    "details": []
+}
+```
+
+---
+
+# 79. LOGGING
+
+Backend sử dụng logger.
+
+Log:
+
+```text
+INFO
+WARNING
+ERROR
+```
+
+Đặc biệt log:
+
+```text
+Excel import error
+Lookup error
+Export error
+Database error
+Validation error
+```
+
+---
+
+# 80. README
+
+README phải hướng dẫn:
+
+```text
+1. Install dependencies
+2. Configure environment
+3. Start MongoDB
+4. Run backend
+5. Run frontend
+6. Import Excel
+7. Configure column mapping
+8. Configure Product
+9. Create Entry
+10. Track Production
+11. Export Excel
+```
+
+---
+
+# 81. DOCKER
+
+Tạo:
+
+```text
+docker-compose.yml
+```
+
+bao gồm:
+
+```text
+MongoDB
+Backend
+Frontend
+```
+
+---
+
+# 82. ENVIRONMENT
+
+Tạo:
+
+```text
+.env.example
+```
+
+Ví dụ:
+
+```text
+MONGODB_URI=
+JWT_SECRET=
+PORT=
+CLIENT_URL=
+```
+
+Không hard-code secret.
+
+---
+
+# 83. NGUYÊN TẮC PHÁT TRIỂN
+
+Không được chỉ tạo giao diện giả.
+
+Tất cả chức năng phải hoạt động thật:
+
+```text
+Import
+Database
+Lookup
+Auto Fill
+CRUD
+Calculation
+Tracking
+Notes
+Export
+```
+
+---
+
+# 84. ƯU TIÊN PHÁT TRIỂN
+
+Ưu tiên theo thứ tự:
+
+### Priority 1 — Data Integrity
+
+```text
+Excel Import
+Excel Export
+Column Mapping
+Color Code 1/2
+Data CRUD
+```
+
+### Priority 2 — Lookup
+
+```text
+Autocomplete
+Factory PO
+Deadline Priority
+Auto Fill
+Size
+```
+
+### Priority 3 — Production Tracking
+
+```text
+Order
+Output
+Spending
+Input
+Balance
+Missing
+Completion
+```
+
+### Priority 4 — Management
+
+```text
+Notes
+Dashboard
+Reports
+Charts
+Audit
+```
+
+### Priority 5 — Multi Company/Product
+
+```text
+MAFATE
+ONYX
+HOONG WON
+```
+
+---
+
+# 85. KIẾN TRÚC LOGIC CUỐI CÙNG
+
+Hệ thống phải hoạt động theo mô hình:
+
+```text
+                    EXCEL FILES
+                         │
+          ┌──────────────┼──────────────┐
+          ↓              ↓              ↓
+       MAFATE           ONYX          HW
+          │              │              │
+          └──────────────┼──────────────┘
+                         ↓
+                 IMPORT ENGINE
+                         ↓
+                COLUMN MAPPING
+                         ↓
+                  NORMALIZATION
+                         ↓
+                   MASTER DATA
+                         ↓
+                  LOOKUP ENGINE
+                         ↓
+             ┌───────────┴───────────┐
+             ↓                       ↓
+        AUTO COMPLETE           AUTO FILL
+             │                       │
+             └───────────┬───────────┘
+                         ↓
+                   DATA ENTRY
+                         ↓
+              Factory PO + Size + Qty
+                         ↓
+                PRODUCTION ENGINE
+                         ↓
+          ┌────────┬────────┬────────┐
+          ↓        ↓        ↓        ↓
+        ORDER    OUTPUT  SPENDING   INPUT
+          │        │        │        │
+          └────────┴────────┴────────┘
+                         ↓
+                 BALANCE ENGINE
+                         ↓
+          ┌──────────────┼──────────────┐
+          ↓              ↓              ↓
+       Missing       Completion     Error Code
+          │              │              │
+          └──────────────┼──────────────┘
+                         ↓
+                 PRODUCTION REPORT
+                         ↓
+                    EXCEL EXPORT
+```
+
+---
+
+# 86. KẾT QUẢ MONG MUỐN
+
+Sau khi hoàn thành, user chỉ cần:
+
+```text
+1. Import Excel
+```
+
+Sau đó:
+
+```text
+2. Chọn Product / Company
+```
+
+Ví dụ:
+
+```text
+MAFATE
+```
+
+Sau đó nhập:
+
+```text
+Factory PO:
+051
+```
+
+System suggest:
+
+```text
+MH27010051
+```
+
+Chọn:
+
+```text
+MH27010051
+```
+
+System tự động chọn record có:
+
+```text
+Nearest Deadline
+```
+
+Sau đó:
+
+```text
+Size:
+M(13)
+```
+
+và:
+
+```text
+Qty1:
+100
+```
+
+System tự động:
+
+```text
+Qty2:
+-100
+```
+
+và auto-fill:
+
+```text
+MODEL
+SKU
+PO NO#
+ITEM
+Season
+Color Code 1
+Color Code 2
+PAINTING
+PRINTING COLOR
+Deadline
+```
+
+Sau đó dữ liệu được đưa vào Production Tracking.
+
+Hệ thống tự động xác định:
+
+```text
+ORDER
+OUTPUT
+SPENDING
+INPUT
+```
+
+và tính:
+
+```text
+Processing
+Missing
+Completion %
+Quantity Status
+Error Code
+```
+
+User có thể:
+
+```text
+View Order
+Edit Order
+Add Daily Note
+Track Output
+Track Input
+View Missing Quantity
+View Production Timeline
+Export Excel
+```
+
+---
+
+# 87. YÊU CẦU CUỐI CÙNG CHO AI CODING AGENT
+
+Trước khi code:
+
+1. Phân tích codebase hiện tại.
+2. Xác định các lỗi hiện tại.
+3. Không xóa các chức năng đang hoạt động.
+4. Xác định database schema hiện tại.
+5. Xác định Excel import/export implementation hiện tại.
+6. Xác định nguyên nhân lỗi Color Code 1/2.
+7. Xác định nguyên nhân lỗi đảo thứ tự export.
+8. Xác định nguyên nhân import Excel thất bại.
+9. Đề xuất migration nếu schema cũ không phù hợp.
+10. Sau đó mới tiến hành sửa code.
+
+Khi sửa:
+
+```text
+DO NOT rewrite the entire application unnecessarily.
+DO NOT hard-code specific Factory PO.
+DO NOT hard-code MAFATE only.
+DO NOT rely on Excel column index.
+DO NOT silently overwrite data.
+DO NOT lose original Excel values.
+DO NOT randomly select a Master Data record.
+```
+
+Mọi logic quan trọng phải có:
+
+```text
+Validation
+Error Handling
+Logging
+Unit Test
+Integration Test
+```
+
+Cuối cùng cung cấp:
+
+```text
+1. Source code
+2. Database schema
+3. API documentation
+4. Migration script
+5. Test cases
+6. README
+7. Docker configuration
+8. Sample Excel files
+9. Sample Master Data
+10. Sample Production Transactions
+```
+
+Hãy triển khai theo từng module và đảm bảo mỗi module hoạt động hoàn chỉnh trước khi chuyển sang module tiếp theo.
