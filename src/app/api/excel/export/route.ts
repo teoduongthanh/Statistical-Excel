@@ -13,23 +13,34 @@ interface ExportBody {
   mode?: "all" | "filtered" | "selected";
   ids?: string[];
   filters?: Record<string, string>;
+  sortOrder?: "asc" | "desc"; // default: asc (chronological)
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as ExportBody;
     const columns = body.columns?.length ? body.columns : ALL_FIELDS;
+    const sortOrder = body.sortOrder === "desc" ? "desc" : "asc";
 
     let rows: any[] = [];
     if (body.source === "master") {
       const where = buildWhere(body.filters);
-      rows = await db.masterData.findMany({ where, take: 50000 });
+      rows = await db.masterData.findMany({
+        where,
+        orderBy: [{ factoryPO: "asc" }, { size: "asc" }],
+        take: 50000,
+      });
     } else {
       const where =
         body.mode === "selected" && body.ids?.length
           ? { id: { in: body.ids } }
           : buildEntryWhere(body.filters);
-      rows = await db.entryData.findMany({ where, take: 50000, orderBy: { createdAt: "desc" } });
+      // Sort by createdAt ascending (chronological: Data1, Data2, Data3)
+      rows = await db.entryData.findMany({
+        where,
+        take: 50000,
+        orderBy: { createdAt: sortOrder },
+      });
     }
 
     const buffer = buildExcelBuffer(rows, columns);
@@ -49,7 +60,7 @@ function buildWhere(filters?: Record<string, string>) {
   if (!filters) return {};
   const where: any = {};
   for (const [k, v] of Object.entries(filters)) {
-    if (v && k !== "mode") {
+    if (v && k !== "mode" && k !== "sortOrder") {
       if (typeof where.AND === "undefined") where.AND = [];
       where.AND.push({ [k]: { contains: v } });
     }
@@ -61,7 +72,7 @@ function buildEntryWhere(filters?: Record<string, string>) {
   if (!filters) return {};
   const where: any = {};
   for (const [k, v] of Object.entries(filters)) {
-    if (v && k !== "mode") {
+    if (v && k !== "mode" && k !== "sortOrder") {
       if (typeof where.AND === "undefined") where.AND = [];
       where.AND.push({ [k]: { contains: v } });
     }

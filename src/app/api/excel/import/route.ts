@@ -13,6 +13,7 @@ interface ImportBody {
   fileBase64: string; // base64-encoded workbook
   mapping: ColumnMapping;
   replaceExisting?: boolean;
+  productType?: string; // "Mafate" | "Onyx" | "Hoong Won" | null
 }
 
 export async function POST(req: NextRequest) {
@@ -21,8 +22,13 @@ export async function POST(req: NextRequest) {
     if (!body.fileBase64 || !body.mapping) {
       return NextResponse.json({ error: "Missing file or mapping" }, { status: 400 });
     }
+    // Convert base64 to ArrayBuffer cleanly.
     const buffer = Buffer.from(body.fileBase64, "base64");
-    const { wb } = readWorkbook(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+    const arrayBuffer = buffer.buffer.slice(
+      buffer.byteOffset,
+      buffer.byteOffset + buffer.byteLength
+    ) as ArrayBuffer;
+    const { wb } = readWorkbook(arrayBuffer);
     const { rows } = parseSheet(wb, body.sheetName);
 
     const mapped = applyMapping(rows, body.mapping);
@@ -48,6 +54,8 @@ export async function POST(req: NextRequest) {
       await db.masterData.deleteMany({ where: { sourceFile: body.fileName } });
     }
 
+    const productType = body.productType || null;
+
     // Insert master rows in batches.
     const BATCH = 200;
     let inserted = 0;
@@ -71,6 +79,7 @@ export async function POST(req: NextRequest) {
           qty1: m.qty1 ?? null,
           qty2: m.qty2 ?? null,
           deadline: m.deadline ?? null,
+          productType,
           sourceFile: body.fileName,
           sheetName: body.sheetName,
           rowIndex: m._rowIndex,
@@ -79,13 +88,14 @@ export async function POST(req: NextRequest) {
       inserted += batch.length;
     }
 
-    // Rebuild the MasterGroup index (full rebuild for simplicity & correctness).
+    // Rebuild the MasterGroup index.
     await rebuildMasterGroups();
 
     const history = await db.importHistory.create({
       data: {
         fileName: body.fileName,
         sheetName: body.sheetName,
+        productType,
         totalRows: mapped.length,
         validRows: valid.length,
         invalidRows: errors.length,

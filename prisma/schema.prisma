@@ -27,10 +27,12 @@ model MasterData {
   qty1           String?
   qty2           String?
   deadline       String?
+  productType    String?  // "Mafate" | "Onyx" | "Hoong Won"
   sourceFile     String?
   sheetName      String?
   rowIndex       Int      @default(0)
   createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   @@index([factoryPO])
   @@index([sku])
@@ -40,10 +42,14 @@ model MasterData {
   @@index([colorCode])
   @@index([size])
   @@index([factoryPO, size])
+  @@index([poNo, factoryPO, size])
+  @@index([productType])
+  @@index([shippingStatus])
 }
 
 /// Aggregated shared attributes per Factory PO (Master Data index).
 /// `sizes` is a JSON array string; `sharedFlags` JSON records which fields are single-valued.
+/// `nearestDeadline` stores the earliest deadline for sorting urgency.
 model MasterGroup {
   id             String   @id @default(cuid())
   factoryPO      String   @unique
@@ -58,6 +64,9 @@ model MasterGroup {
   colorCode2     String?
   painting       String?
   printingColor  String?
+  deadline       String?
+  nearestDeadline String? // earliest deadline across all rows in this group
+  productType    String?
   sizes          String // JSON string array
   sharedFlags    String // JSON record<string,boolean>
   rowCount       Int      @default(0)
@@ -66,6 +75,8 @@ model MasterGroup {
   updatedAt      DateTime @updatedAt
 
   @@index([factoryPO])
+  @@index([nearestDeadline])
+  @@index([productType])
 }
 
 /// A user-entered data row (Factory PO + Size + Qty1 → completed row).
@@ -78,7 +89,7 @@ model EntryData {
   date           String?
   shippingStatus String?
   model          String?
-  sku             String?
+  sku            String?
   poNo           String?
   item           String?
   season         String?
@@ -87,6 +98,8 @@ model EntryData {
   painting       String?
   printingColor  String?
   deadline       String?
+  productType    String?
+  note           String?
   sourceMasterId String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -94,13 +107,34 @@ model EntryData {
   @@index([factoryPO])
   @@index([factoryPO, size])
   @@index([sku])
+  @@index([poNo])
   @@index([createdAt])
+  @@index([shippingStatus])
+  @@index([poNo, factoryPO, size])
+}
+
+/// Daily notes attached to a specific order (Factory PO + Size combination).
+model OrderNote {
+  id          String   @id @default(cuid())
+  factoryPO   String
+  size        String
+  poNo        String?
+  noteDate    String   // yyyy-MM-dd
+  content     String
+  author      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([factoryPO, size])
+  @@index([noteDate])
+  @@index([poNo])
 }
 
 model ImportHistory {
   id        String   @id @default(cuid())
   fileName  String
   sheetName String?
+  productType String?
   totalRows Int      @default(0)
   validRows Int      @default(0)
   invalidRows Int    @default(0)

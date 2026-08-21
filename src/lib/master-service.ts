@@ -3,9 +3,10 @@ import { SHARED_FIELDS, type CanonicalField } from "./fields";
 import { scoreMatch } from "./fuzzy";
 import type {
   AutocompleteSuggestion,
-  ImportError,
   MasterGroup,
   SharedFlags,
+  QtyValidationGroup,
+  ProductionStats,
 } from "@/types";
 
 // MasterData field columns that are "shared" (constant per Factory PO) vs variable.
@@ -41,6 +42,7 @@ export function masterRowToObj(row: {
   qty1: string | null;
   qty2: string | null;
   deadline: string | null;
+  productType: string | null;
   sourceFile: string | null;
   sheetName: string | null;
   rowIndex: number;
@@ -63,14 +65,34 @@ export function masterRowToObj(row: {
     qty1: row.qty1,
     qty2: row.qty2,
     deadline: row.deadline,
+    productType: row.productType,
     sourceFile: row.sourceFile,
     sheetName: row.sheetName,
     rowIndex: row.rowIndex,
   };
 }
 
+// Parse a deadline string into a Date for comparison. Handles Excel serials and yyyy-MM-dd.
+function parseDeadline(dateStr: string | null | undefined): Date | null {
+  if (!dateStr) return null;
+  const s = String(dateStr).trim();
+  if (!s) return null;
+  // Try yyyy-MM-dd or yyyy/MM/dd
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) return d;
+  // Try Excel serial (number of days since 1900-01-01)
+  const n = Number(s);
+  if (!isNaN(n) && n > 1000) {
+    const epoch = new Date(Date.UTC(1899, 11, 30));
+    epoch.setDate(epoch.getDate() + n);
+    return epoch;
+  }
+  return null;
+}
+
 // Rebuild MasterGroup index from MasterData, grouped by Factory PO.
-// Computes shared attributes (single-valued across group) and the sizes list.
+// Computes shared attributes (single-valued across group), the sizes list,
+// and the nearest (earliest) deadline for urgency sorting.
 export async function rebuildMasterGroups(sourceFile?: string): Promise<number> {
   const where = sourceFile ? { sourceFile } : {};
   const rows = await db.masterData.findMany({
@@ -78,7 +100,6 @@ export async function rebuildMasterGroups(sourceFile?: string): Promise<number> 
     orderBy: { factoryPO: "asc" },
   });
 
-  // Group by factoryPO.
   const groups = new Map<string, typeof rows>();
   for (const r of rows) {
     const key = (r.factoryPO || "").trim();
@@ -87,7 +108,6 @@ export async function rebuildMasterGroups(sourceFile?: string): Promise<number> 
     groups.get(key)!.push(r);
   }
 
-  // Replace existing groups (for the same source scope).
   await db.$transaction(async (tx) => {
     if (sourceFile) {
       await tx.masterGroup.deleteMany({ where: { sourceFile } });
@@ -108,7 +128,7 @@ export async function rebuildMasterGroups(sourceFile?: string): Promise<number> 
           picked[f] = [...vals][0];
         } else if (vals.size > 1) {
           sharedFlags[f as keyof SharedFlags] = false;
-          picked[f] = null; // multiple values
+          picked[f] = null;
         } else {
           sharedFlags[f as keyof SharedFlags] = true;
           picked[f] = "";
@@ -127,6 +147,19 @@ export async function rebuildMasterGroups(sourceFile?: string): Promise<number> 
         }
       }
       const sizes = [...new Set(groupRows.map((r) => (r.size ?? "").toString().trim()).filter(Boolean))];
+      // Find nearest (earliest) deadline across all rows.
+      const deadlines = groupRows
+        .map((r) => parseDeadline(r.deadline))
+        .filter((d): d is Date => d !== null)
+        .sort((a, b) => a.getTime() - b.getTime());
+      const nearestDeadline = deadlines.length > 0 ? deadlines[0]!.toISOString().slice(0, 10) : null;
+
+      // Product type: use the most common value, or derive from sourceFile.
+      const productTypes = new Set(
+        groupRows.map((r) => (r.productType ?? "").toString().trim()).filter(Boolean)
+      );
+      const productType = productTypes.size === 1 ? [...productTypes][0] : null;
+
       inserts.push(
         tx.masterGroup.create({
           data: {
@@ -142,6 +175,9 @@ export async function rebuildMasterGroups(sourceFile?: string): Promise<number> 
             colorCode2: picked.colorCode2 ?? null,
             painting: picked.painting ?? null,
             printingColor: picked.printingColor ?? null,
+            deadline: picked.deadline ?? null,
+            nearestDeadline,
+            productType,
             sizes: JSON.stringify(sizes),
             sharedFlags: JSON.stringify(sharedFlags),
             rowCount: groupRows.length,
@@ -150,7 +186,6 @@ export async function rebuildMasterGroups(sourceFile?: string): Promise<number> 
         })
       );
     }
-    // Run inserts in batches to avoid huge transactions.
     for (let i = 0; i < inserts.length; i += 50) {
       await Promise.all(inserts.slice(i, i + 50));
     }
@@ -158,11 +193,28 @@ export async function rebuildMasterGroups(sourceFile?: string): Promise<number> 
   return groups.size;
 }
 
+// Determine urgency based on deadline.
+function deadlineUrgency(deadline: string | null | undefined): "overdue" | "today" | "soon" | "normal" {
+  if (!deadline) return "normal";
+  const d = parseDeadline(deadline);
+  if (!d) return "normal";
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const diff = d.getTime() - now.getTime();
+  const dayMs = 86400000;
+  if (diff < 0) return "overdue";
+  if (diff < dayMs) return "today";
+  if (diff < 7 * dayMs) return "soon";
+  return "normal";
+}
+
 // Autocomplete: pre-filter with SQL LIKE, then fuzzy-score and rank.
+// If prioritizeByDeadline is true, boost scores for Factory POs with nearer deadlines.
 export async function searchMaster(
   field: CanonicalField,
   query: string,
-  limit = 15
+  limit = 15,
+  prioritizeByDeadline = true
 ): Promise<AutocompleteSuggestion[]> {
   const q = query.trim();
   if (!q) return [];
@@ -199,8 +251,6 @@ export async function searchMaster(
   const col = colMap[field];
   const like = `%${q.toLowerCase()}%`;
 
-  // $queryRawUnsafe with a validated column identifier (col is from a fixed allowlist)
-  // and a bound parameter for the LIKE value (injection-safe).
   const rows = await db.$queryRawUnsafe<{ v: string }[]>(
     `SELECT DISTINCT "${col}" AS v FROM MasterData
      WHERE "${col}" IS NOT NULL AND "${col}" != ''
@@ -215,17 +265,28 @@ export async function searchMaster(
     const s = scoreMatch(q, c.value);
     if (s > 0) scored.push({ value: c.value, label: c.value, score: s });
   }
-  // For factoryPO searches, enrich with season/model as sub.
+
+  // For factoryPO searches, enrich with season/model/deadline and apply urgency boost.
   if (field === "factoryPO" && scored.length > 0) {
     const fpos = scored.map((s) => s.value);
     const groups = await db.masterGroup.findMany({
       where: { factoryPO: { in: fpos } },
-      select: { factoryPO: true, model: true, season: true },
+      select: { factoryPO: true, model: true, season: true, nearestDeadline: true, productType: true },
     });
     const gmap = new Map(groups.map((g) => [g.factoryPO, g]));
     for (const s of scored) {
       const g = gmap.get(s.value);
-      if (g) s.sub = [g.model, g.season].filter(Boolean).join(" · ");
+      if (g) {
+        s.sub = [g.model, g.season].filter(Boolean).join(" · ");
+        s.deadline = g.nearestDeadline;
+        s.urgency = deadlineUrgency(g.nearestDeadline);
+        // Boost score for urgency (overdue gets highest boost).
+        if (prioritizeByDeadline) {
+          if (s.urgency === "overdue") s.score += 300;
+          else if (s.urgency === "today") s.score += 200;
+          else if (s.urgency === "soon") s.score += 100;
+        }
+      }
     }
   }
   scored.sort((a, b) => b.score - a.score);
@@ -252,6 +313,9 @@ export async function lookupFactoryPO(
     colorCode2: g.colorCode2,
     painting: g.painting,
     printingColor: g.printingColor,
+    deadline: g.deadline,
+    nearestDeadline: g.nearestDeadline,
+    productType: g.productType,
     sizes: JSON.parse(g.sizes || "[]"),
     sharedFlags: JSON.parse(g.sharedFlags || "{}"),
     rowCount: g.rowCount,
@@ -259,7 +323,6 @@ export async function lookupFactoryPO(
   };
 }
 
-// Validate a single entry input against master data.
 export interface EntryInput {
   factoryPO: string;
   size: string;
@@ -288,7 +351,6 @@ export async function validateEntry(input: EntryInput): Promise<ValidationResult
   if (!group) {
     return { ok: false, errors: ["Factory PO does not exist in Master Data"] };
   }
-  // Normalize size comparison (ignore newlines).
   const norm = (s: string) => s.replace(/\s+/g, " ").trim();
   const sizeExists = group.sizes.some((s) => norm(s) === norm(size));
   if (!sizeExists) {
@@ -301,7 +363,6 @@ export async function validateEntry(input: EntryInput): Promise<ValidationResult
   return { ok: true, errors: [], group };
 }
 
-// Create an entry row from validated input.
 export async function createEntry(
   input: EntryInput,
   opts: { autoCalcQty2: boolean }
@@ -332,12 +393,12 @@ export async function createEntry(
       painting: g.painting,
       printingColor: g.printingColor,
       deadline: g.deadline,
+      productType: g.productType,
     },
   });
   return { ok: true as const, entry: created };
 }
 
-// Check duplicate (factoryPO + size) in entries.
 export async function checkDuplicate(factoryPO: string, size: string) {
   const norm = (s: string) => s.replace(/\s+/g, " ").trim();
   const entries = await db.entryData.findMany({
@@ -346,4 +407,150 @@ export async function checkDuplicate(factoryPO: string, size: string) {
   });
   const dup = entries.find((e) => norm(e.size) === norm(size));
   return dup ?? null;
+}
+
+// ===== Quantity Validation =====
+// Groups master data rows by poNo + factoryPO + size and validates that
+// Order, Output, and Input quantities are consistent.
+//
+// Shipping status values in the data:
+//   1.Order  → order quantity (đặt hàng đi gia công)
+//   2.Output → output quantity (xuất đi gia công)
+//   3.Pending → spending/during processing
+//   4.Input  → input quantity (nhận được)
+//
+// Rule: order = input = output. If any differ, flag as quantity error.
+export async function validateQuantities(
+  filters?: { factoryPO?: string; poNo?: string; productType?: string }
+): Promise<QtyValidationGroup[]> {
+  const where: any = { AND: [] };
+  if (filters?.factoryPO) where.AND.push({ factoryPO: { contains: filters.factoryPO } });
+  if (filters?.poNo) where.AND.push({ poNo: { contains: filters.poNo } });
+  if (filters?.productType) where.AND.push({ productType: filters.productType });
+  if (where.AND.length === 0) delete where.AND;
+
+  const rows = await db.masterData.findMany({
+    where,
+    select: {
+      poNo: true, factoryPO: true, size: true, model: true,
+      shippingStatus: true, qty1: true, deadline: true, productType: true,
+    },
+  });
+
+  // Group by poNo + factoryPO + size
+  const groups = new Map<string, QtyValidationGroup>();
+  for (const r of rows) {
+    const poNo = (r.poNo || "").trim();
+    const fpo = (r.factoryPO || "").trim();
+    const size = (r.size || "").trim();
+    if (!poNo || !fpo || !size) continue;
+    const key = `${poNo}|${fpo}|${size}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key, poNo, factoryPO: fpo, size,
+        model: r.model || "",
+        productType: r.productType,
+        deadline: r.deadline,
+        orderQty: null, outputQty: null, inputQty: null, pendingQty: null,
+        isConsistent: true, missingQty: null, errors: [],
+      });
+    }
+    const g = groups.get(key)!;
+    const qty = Number(r.qty1);
+    const qtyNum = isNaN(qty) ? 0 : qty;
+    const status = (r.shippingStatus || "").trim().toLowerCase();
+    if (status.startsWith("1") || status.includes("order")) {
+      g.orderQty = (g.orderQty ?? 0) + qtyNum;
+    } else if (status.startsWith("2") || status.includes("output")) {
+      g.outputQty = (g.outputQty ?? 0) + qtyNum;
+    } else if (status.startsWith("4") || status.includes("input")) {
+      g.inputQty = (g.inputQty ?? 0) + qtyNum;
+    } else if (status.startsWith("3") || status.includes("pending") || status.includes("spend")) {
+      g.pendingQty = (g.pendingQty ?? 0) + qtyNum;
+    }
+  }
+
+  // Validate consistency.
+  for (const g of groups.values()) {
+    const errs: string[] = [];
+    // Check order = output = input (all three should be equal when present)
+    const vals = [g.orderQty, g.outputQty, g.inputQty].filter((v) => v !== null);
+    if (vals.length >= 2) {
+      const allEqual = vals.every((v) => v === vals[0]);
+      if (!allEqual) {
+        g.isConsistent = false;
+        errs.push(
+          `Quantity mismatch: Order=${g.orderQty ?? "—"}, Output=${g.outputQty ?? "—"}, Input=${g.inputQty ?? "—"}`
+        );
+      }
+    }
+    // Missing quantity: ordered but not received (order - input)
+    if (g.orderQty !== null && g.inputQty !== null) {
+      g.missingQty = g.orderQty - g.inputQty;
+      if (g.missingQty > 0) {
+        errs.push(`Missing ${g.missingQty} units (ordered ${g.orderQty}, received ${g.inputQty})`);
+      } else if (g.missingQty < 0) {
+        errs.push(`Excess ${Math.abs(g.missingQty)} units (received more than ordered)`);
+      }
+    }
+    g.errors = errs;
+  }
+
+  return [...groups.values()].sort((a, b) => {
+    // Inconsistent groups first, then by missing qty descending.
+    if (a.isConsistent !== b.isConsistent) return a.isConsistent ? 1 : -1;
+    return (b.missingQty ?? 0) - (a.missingQty ?? 0);
+  });
+}
+
+// ===== Production Statistics =====
+export async function getProductionStats(
+  filters?: { productType?: string; factoryPO?: string }
+): Promise<ProductionStats> {
+  const where: any = { AND: [] };
+  if (filters?.productType) where.AND.push({ productType: filters.productType });
+  if (filters?.factoryPO) where.AND.push({ factoryPO: { contains: filters.factoryPO } });
+  if (where.AND.length === 0) delete where.AND;
+
+  const rows = await db.masterData.findMany({
+    where,
+    select: { shippingStatus: true, qty1: true, productType: true, factoryPO: true },
+  });
+
+  let totalOrdered = 0, totalSent = 0, totalReceived = 0;
+  const byProduct = new Map<string, { ordered: number; sent: number; received: number }>();
+  const byFPO = new Map<string, { ordered: number; sent: number; received: number }>();
+
+  for (const r of rows) {
+    const qty = Number(r.qty1) || 0;
+    const status = (r.shippingStatus || "").trim().toLowerCase();
+    const pt = r.productType || "Unknown";
+    const fpo = r.factoryPO || "—";
+
+    if (!byProduct.has(pt)) byProduct.set(pt, { ordered: 0, sent: 0, received: 0 });
+    if (!byFPO.has(fpo)) byFPO.set(fpo, { ordered: 0, sent: 0, received: 0 });
+
+    const pp = byProduct.get(pt)!;
+    const pf = byFPO.get(fpo)!;
+
+    if (status.startsWith("1") || status.includes("order")) {
+      totalOrdered += qty; pp.ordered += qty; pf.ordered += qty;
+    } else if (status.startsWith("2") || status.includes("output")) {
+      totalSent += qty; pp.sent += qty; pf.sent += qty;
+    } else if (status.startsWith("4") || status.includes("input")) {
+      totalReceived += qty; pp.received += qty; pf.received += qty;
+    }
+  }
+
+  return {
+    totalSent,
+    totalReceived,
+    totalOrdered,
+    completionRate: totalOrdered > 0 ? (totalReceived / totalOrdered) * 100 : 0,
+    byProductType: [...byProduct.entries()].map(([productType, v]) => ({ productType, ...v })),
+    byFactoryPO: [...byFPO.entries()]
+      .map(([factoryPO, v]) => ({ factoryPO, ...v, missing: v.ordered - v.received }))
+      .sort((a, b) => Math.abs(b.missing) - Math.abs(a.missing))
+      .slice(0, 20),
+  };
 }

@@ -10,17 +10,19 @@ interface CreateBody {
   size: string;
   qty1: string;
   autoCalcQty2?: boolean;
-  skipDuplicate?: boolean;
+  note?: string;
 }
 
 // GET /api/entries?page=&pageSize=&search=&factoryPO=&...&sort=&order=
+// Default sort: createdAt ASC (chronological: Data1, Data2, Data3)
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const page = Math.max(1, Number(searchParams.get("page") || "1"));
   const pageSize = Math.min(200, Math.max(1, Number(searchParams.get("pageSize") || "20")));
   const search = searchParams.get("search") || "";
   const sort = searchParams.get("sort") || "createdAt";
-  const order = searchParams.get("order") === "asc" ? "asc" : "desc";
+  const order = searchParams.get("order") === "desc" ? "desc" : "asc";
+  const productType = searchParams.get("productType") || "";
 
   const where: any = { AND: [] };
   if (search) {
@@ -39,6 +41,7 @@ export async function GET(req: NextRequest) {
     const v = searchParams.get(f);
     if (v) where.AND.push({ [f]: { contains: v } });
   }
+  if (productType) where.AND.push({ productType: { contains: productType } });
   if (where.AND.length === 0) delete where.AND;
 
   const [total, rows] = await Promise.all([
@@ -76,5 +79,15 @@ export async function POST(req: NextRequest) {
   if (!created.ok) {
     return NextResponse.json({ ok: false, errors: created.errors }, { status: 400 });
   }
+
+  // If a note was provided, attach it to the created entry.
+  if (body.note && created.entry) {
+    await db.entryData.update({
+      where: { id: created.entry.id },
+      data: { note: body.note },
+    });
+    created.entry.note = body.note;
+  }
+
   return NextResponse.json({ ok: true, entry: created.entry });
 }

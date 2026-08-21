@@ -13,14 +13,16 @@ export type ViewKey =
   | "import-history"
   | "settings-mapping"
   | "settings-lookup"
-  | "settings-validation";
+  | "settings-validation"
+  | "quantity-validation"
+  | "production-stats"
+  | "order-notes";
 
 interface AppState {
   view: ViewKey;
   setView: (v: ViewKey) => void;
   settings: AppSettings | null;
   setSettings: (s: AppSettings) => void;
-  // Bump to trigger data refresh after import/entry creation.
   refreshKey: number;
   bumpRefresh: () => void;
 }

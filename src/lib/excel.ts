@@ -90,6 +90,7 @@ export function applyMapping(
 }
 
 // Build an Excel workbook from entry/master rows and return a Node Buffer.
+// Rows are exported in the order provided (caller controls sort order).
 export function buildExcelBuffer(
   rows: Partial<Record<CanonicalField, string | number | null>>[],
   columns: CanonicalField[]

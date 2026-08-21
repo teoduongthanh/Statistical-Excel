@@ -13,6 +13,9 @@ import { ImportHistoryView } from "@/components/views/import-history-view";
 import { SettingsMappingView } from "@/components/views/settings-mapping-view";
 import { SettingsLookupView } from "@/components/views/settings-lookup-view";
 import { SettingsValidationView } from "@/components/views/settings-validation-view";
+import { QuantityValidationView } from "@/components/views/quantity-validation-view";
+import { ProductionStatsView } from "@/components/views/production-stats-view";
+import { OrderNotesView } from "@/components/views/order-notes-view";
 
 export default function Home() {
   const { view } = useAppStore();
@@ -33,6 +36,9 @@ export default function Home() {
             {view === "settings-mapping" && <SettingsMappingView />}
             {view === "settings-lookup" && <SettingsLookupView />}
             {view === "settings-validation" && <SettingsValidationView />}
+            {view === "quantity-validation" && <QuantityValidationView />}
+            {view === "production-stats" && <ProductionStatsView />}
+            {view === "order-notes" && <OrderNotesView />}
           </div>
         </main>
       </div>

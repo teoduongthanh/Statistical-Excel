@@ -20,6 +20,7 @@ export interface MasterDataRow {
   qty1?: string | null;
   qty2?: string | null;
   deadline?: string | null;
+  productType?: string | null;
   sourceFile?: string | null;
   sheetName?: string | null;
   rowIndex?: number;
@@ -54,6 +55,9 @@ export interface MasterGroup {
   colorCode2?: string | null;
   painting?: string | null;
   printingColor?: string | null;
+  deadline?: string | null;
+  nearestDeadline?: string | null;
+  productType?: string | null;
   sizes: string[];
   sharedFlags: SharedFlags;
   rowCount: number;
@@ -78,6 +82,8 @@ export interface EntryData {
   painting?: string | null;
   printingColor?: string | null;
   deadline?: string | null;
+  productType?: string | null;
+  note?: string | null;
   sourceMasterId?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -88,6 +94,8 @@ export interface AutocompleteSuggestion {
   label: string;
   sub?: string;
   score: number;
+  deadline?: string | null;
+  urgency?: "overdue" | "today" | "soon" | "normal";
 }
 
 export interface ImportError {
@@ -100,6 +108,7 @@ export interface ImportHistoryItem {
   id: string;
   fileName: string;
   sheetName?: string | null;
+  productType?: string | null;
   totalRows: number;
   validRows: number;
   invalidRows: number;
@@ -141,6 +150,7 @@ export interface AppSettings {
   allowNegativeQty1: boolean;
   duplicateDetection: boolean;
   defaultExportColumns: CanonicalField[];
+  prioritizeByDeadline: boolean;
 }
 
 export interface DashboardStats {
@@ -154,4 +164,45 @@ export interface DashboardStats {
   entriesByFactoryPO: { factoryPO: string; count: number }[];
   entriesByModel: { model: string; count: number }[];
   entriesBySeason: { season: string; count: number }[];
+}
+
+// Quantity validation types.
+// Groups rows by poNo + factoryPO + size and checks that Order, Output, Input
+// quantities are consistent (order = input = output).
+export interface QtyValidationGroup {
+  key: string; // poNo + factoryPO + size
+  poNo: string;
+  factoryPO: string;
+  size: string;
+  model: string;
+  productType: string | null;
+  deadline: string | null;
+  orderQty: number | null;
+  outputQty: number | null;
+  inputQty: number | null;
+  pendingQty: number | null;
+  isConsistent: boolean;
+  missingQty: number | null; // order - input (if negative, missing received)
+  errors: string[];
+}
+
+export interface OrderNote {
+  id: string;
+  factoryPO: string;
+  size: string;
+  poNo?: string | null;
+  noteDate: string;
+  content: string;
+  author?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProductionStats {
+  totalSent: number;       // sum of Output qty
+  totalReceived: number;   // sum of Input qty
+  totalOrdered: number;    // sum of Order qty
+  completionRate: number;  // received / ordered %
+  byProductType: { productType: string; ordered: number; sent: number; received: number }[];
+  byFactoryPO: { factoryPO: string; ordered: number; sent: number; received: number; missing: number }[];
 }

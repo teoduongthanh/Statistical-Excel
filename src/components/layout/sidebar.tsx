@@ -13,6 +13,9 @@ import {
   Search,
   ShieldCheck,
   FileCog,
+  AlertTriangle,
+  BarChart3,
+  StickyNote,
 } from "lucide-react";
 import { useAppStore, type ViewKey } from "@/store/app-store";
 import { cn } from "@/lib/utils";
@@ -23,6 +26,7 @@ interface NavItem {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   desc?: string;
+  badge?: string;
 }
 interface NavGroup {
   title: string;
@@ -32,14 +36,19 @@ interface NavGroup {
 const NAV: NavGroup[] = [
   {
     title: "Overview",
-    items: [{ key: "dashboard", label: "Dashboard", icon: LayoutDashboard }],
+    items: [
+      { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { key: "production-stats", label: "Production Stats", icon: BarChart3, desc: "Sent/Received" },
+    ],
   },
   {
     title: "Data",
     items: [
       { key: "master-data", label: "Master Data", icon: Database },
-      { key: "data-entry", label: "Data Entry", icon: PenLine, desc: "Smart form" },
+      { key: "data-entry", label: "Data Entry", icon: PenLine, badge: "CORE" },
       { key: "data-management", label: "Data Management", icon: Table2 },
+      { key: "quantity-validation", label: "Qty Validation", icon: AlertTriangle, desc: "Order=Input=Output" },
+      { key: "order-notes", label: "Order Notes", icon: StickyNote },
     ],
   },
   {
@@ -99,12 +108,12 @@ export function Sidebar() {
                   >
                     <Icon className="h-4 w-4 shrink-0" />
                     <span className="flex-1 text-left truncate">{item.label}</span>
-                    {item.key === "data-entry" && (
+                    {item.badge && (
                       <Badge
                         variant="secondary"
                         className="h-4 px-1 text-[9px] bg-sidebar-accent text-sidebar-accent-foreground"
                       >
-                        CORE
+                        {item.badge}
                       </Badge>
                     )}
                   </button>
@@ -118,7 +127,7 @@ export function Sidebar() {
       <div className="border-t border-sidebar-border px-4 py-3">
         <div className="flex items-center gap-2 text-[11px] text-sidebar-foreground/60">
           <Settings2 className="h-3.5 w-3.5" />
-          <span>v1.0 · 3-field workflow</span>
+          <span>v2.0 · Multi-product</span>
         </div>
       </div>
     </aside>

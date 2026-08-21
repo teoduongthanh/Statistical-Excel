@@ -52,6 +52,7 @@ export function ImportExcelView() {
   const [replace, setReplace] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   const [result, setResult] = React.useState<any>(null);
+  const [productType, setProductType] = React.useState<string>("Mafate");
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const options = mappingOptions();
 
@@ -100,6 +101,7 @@ export function ImportExcelView() {
         fileBase64: base64,
         mapping,
         replaceExisting: replace,
+        productType,
       });
       setResult(r);
       if (r.ok) {
@@ -248,10 +250,23 @@ export function ImportExcelView() {
 
             {/* Options + import */}
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <label className="flex items-center gap-2 text-sm">
-                <Switch checked={replace} onCheckedChange={setReplace} />
-                <span>Replace existing rows from same file</span>
-              </label>
+              <div className="flex flex-wrap items-center gap-4">
+                <label className="flex items-center gap-2 text-sm">
+                  <Switch checked={replace} onCheckedChange={setReplace} />
+                  <span>Replace existing rows from same file</span>
+                </label>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-muted-foreground">Product Type:</span>
+                  <Select value={productType} onValueChange={setProductType}>
+                    <SelectTrigger className="w-36 h-8 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Mafate">Mafate</SelectItem>
+                      <SelectItem value="Onyx">Onyx</SelectItem>
+                      <SelectItem value="Hoong Won">Hoong Won</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
               <Button onClick={handleImport} disabled={importing || mappedCount === 0}>
                 {importing ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Upload className="mr-1.5 h-4 w-4" />}
                 Import {mappedCount} columns

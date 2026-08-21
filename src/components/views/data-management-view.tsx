@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
+import { Textarea } from "@/components/ui/textarea";
 import { buildExcelBuffer } from "@/lib/excel";
 import { FIELD_LABELS, type CanonicalField } from "@/lib/fields";
 import {
@@ -108,7 +109,18 @@ export function DataManagementView() {
 
   async function openEdit(r: any) {
     setEditId(r.id);
-    setEditData({ factoryPO: r.factoryPO, size: r.size, qty1: r.qty1 });
+    setEditData({
+      factoryPO: r.factoryPO,
+      size: r.size,
+      qty1: r.qty1,
+      note: r.note || "",
+      model: r.model || "",
+      sku: r.sku || "",
+      season: r.season || "",
+      colorCode: r.colorCode || "",
+      colorCode2: r.colorCode2 || "",
+      poNo: r.poNo || "",
+    });
     setEditGroup(null);
     try {
       const g = await api.lookupFactoryPO(r.factoryPO);
@@ -127,6 +139,25 @@ export function DataManagementView() {
     } catch (e) {
       toast.error("Update failed", { description: e instanceof Error ? e.message : "" });
     }
+  }
+
+  // Export with chronological order (asc).
+  async function handleExportChronological(mode: "all" | "selected") {
+    const blob = await api.exportExcel({
+      source: "entries",
+      columns: COLUMNS,
+      mode,
+      ids: mode === "selected" ? [...selected] : undefined,
+      filters: mode === "all" ? { search: debounced, ...filters } : undefined,
+      sortOrder: "asc",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `entries_${mode}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${mode === "selected" ? selected.size : total} rows (chronological order)`);
   }
 
   async function handleDelete(id: string) {
@@ -167,11 +198,11 @@ export function DataManagementView() {
                 className="pl-9 h-10"
               />
             </div>
-            <Button variant="outline" size="sm" onClick={() => handleExport("all")}>
-              <Download className="mr-1.5 h-4 w-4" /> Export all
+            <Button variant="outline" size="sm" onClick={() => handleExportChronological("all")}>
+              <Download className="mr-1.5 h-4 w-4" /> Export all (chronological)
             </Button>
             {selected.size > 0 && (
-              <Button size="sm" onClick={() => handleExport("selected")}>
+              <Button size="sm" onClick={() => handleExportChronological("selected")}>
                 <Download className="mr-1.5 h-4 w-4" /> Export selected ({selected.size})
               </Button>
             )}
@@ -331,6 +362,22 @@ export function DataManagementView() {
                 <label className="text-xs font-medium">Qty 1</label>
                 <Input value={editData.qty1} onChange={(e) => setEditData((d: any) => ({ ...d, qty1: e.target.value.replace(/[^0-9.\-]/g, "") }))} inputMode="numeric" />
                 <p className="text-[11px] text-muted-foreground">Qty 2 will auto-calculate as -|Qty1|</p>
+              </div>
+              {/* Auto-filled fields (editable overrides) */}
+              <details className="rounded-md border p-2">
+                <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Auto-filled fields (click to override)</summary>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <Input value={editData.model || ""} onChange={(e) => setEditData((d: any) => ({ ...d, model: e.target.value }))} placeholder="MODEL" className="h-8 text-xs" />
+                  <Input value={editData.sku || ""} onChange={(e) => setEditData((d: any) => ({ ...d, sku: e.target.value }))} placeholder="SKU" className="h-8 text-xs" />
+                  <Input value={editData.season || ""} onChange={(e) => setEditData((d: any) => ({ ...d, season: e.target.value }))} placeholder="Season" className="h-8 text-xs" />
+                  <Input value={editData.poNo || ""} onChange={(e) => setEditData((d: any) => ({ ...d, poNo: e.target.value }))} placeholder="PO NO#" className="h-8 text-xs" />
+                  <Input value={editData.colorCode || ""} onChange={(e) => setEditData((d: any) => ({ ...d, colorCode: e.target.value }))} placeholder="Color Code" className="h-8 text-xs" />
+                  <Input value={editData.colorCode2 || ""} onChange={(e) => setEditData((d: any) => ({ ...d, colorCode2: e.target.value }))} placeholder="COLOR CODE" className="h-8 text-xs" />
+                </div>
+              </details>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium">Note</label>
+                <Textarea value={editData.note || ""} onChange={(e) => setEditData((d: any) => ({ ...d, note: e.target.value }))} placeholder="Add a note for this entry…" className="text-xs" rows={2} />
               </div>
             </div>
           )}

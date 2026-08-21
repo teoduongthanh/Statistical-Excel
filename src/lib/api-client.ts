@@ -2,13 +2,15 @@
 import type {
   AppSettings,
   AutocompleteSuggestion,
-  CanonicalField as _CF,
   DashboardStats,
   EntryData,
   ImportHistoryItem,
   LookupRuleConfig,
   MasterGroup,
+  OrderNote,
   ParseResult,
+  ProductionStats,
+  QtyValidationGroup,
 } from "@/types";
 import type { CanonicalField } from "@/lib/fields";
 
@@ -28,7 +30,10 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
 
 export const api = {
   // Excel parse
-  parseExcel: async (file: File, sheet?: string): Promise<ParseResult & { autoMapping: Record<string, CanonicalField | ""> }> => {
+  parseExcel: async (
+    file: File,
+    sheet?: string
+  ): Promise<ParseResult & { autoMapping: Record<string, CanonicalField | ""> }> => {
     const fd = new FormData();
     fd.append("file", file);
     if (sheet) fd.append("sheet", sheet);
@@ -42,6 +47,7 @@ export const api = {
     fileBase64: string;
     mapping: Record<string, CanonicalField | "">;
     replaceExisting?: boolean;
+    productType?: string;
   }) => {
     const res = await fetch("/api/excel/import", {
       method: "POST",
@@ -57,6 +63,7 @@ export const api = {
     mode?: "all" | "filtered" | "selected";
     ids?: string[];
     filters?: Record<string, string>;
+    sortOrder?: "asc" | "desc";
   }): Promise<Blob> => {
     const res = await fetch("/api/excel/export", {
       method: "POST",
@@ -82,9 +89,28 @@ export const api = {
     }>(res);
   },
 
-  searchMaster: async (q: string, field: CanonicalField, limit = 15): Promise<AutocompleteSuggestion[]> => {
+  updateMasterRow: async (id: string, body: Record<string, any>) => {
+    const res = await fetch(`/api/master-data/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  deleteMasterRow: async (id: string) => {
+    const res = await fetch(`/api/master-data/${id}`, { method: "DELETE" });
+    return jsonOrThrow(res);
+  },
+
+  searchMaster: async (
+    q: string,
+    field: CanonicalField,
+    limit = 15,
+    prioritizeByDeadline = true
+  ): Promise<AutocompleteSuggestion[]> => {
     const res = await fetch(
-      `/api/master-data/search?q=${encodeURIComponent(q)}&field=${field}&limit=${limit}`
+      `/api/master-data/search?q=${encodeURIComponent(q)}&field=${field}&limit=${limit}&prioritizeByDeadline=${prioritizeByDeadline}`
     );
     return jsonOrThrow(res);
   },
@@ -114,6 +140,7 @@ export const api = {
     size: string;
     qty1: string;
     autoCalcQty2?: boolean;
+    note?: string;
   }) => {
     const res = await fetch("/api/entries", {
       method: "POST",
@@ -123,7 +150,10 @@ export const api = {
     return jsonOrThrow<{ ok: boolean; entry?: EntryData; errors?: string[] }>(res);
   },
 
-  bulkEntries: async (items: { factoryPO: string; size: string; qty1: string }[], autoCalcQty2 = true) => {
+  bulkEntries: async (
+    items: { factoryPO: string; size: string; qty1: string }[],
+    autoCalcQty2 = true
+  ) => {
     const res = await fetch("/api/entries/bulk", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -153,6 +183,76 @@ export const api = {
       body: JSON.stringify({ factoryPO, size }),
     });
     return jsonOrThrow<{ duplicate: boolean; existing: any }>(res);
+  },
+
+  // Order notes
+  listNotes: async (params: { factoryPO?: string; size?: string; noteDate?: string }): Promise<OrderNote[]> => {
+    const q = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v).map(([k, v]) => [k, String(v)])
+    ).toString();
+    const res = await fetch(`/api/order-notes?${q}`);
+    return jsonOrThrow(res);
+  },
+
+  createNote: async (body: {
+    factoryPO: string;
+    size: string;
+    poNo?: string;
+    noteDate: string;
+    content: string;
+    author?: string;
+  }): Promise<OrderNote> => {
+    const res = await fetch("/api/order-notes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  updateNote: async (id: string, body: any) => {
+    const res = await fetch(`/api/order-notes/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  deleteNote: async (id: string) => {
+    const res = await fetch(`/api/order-notes/${id}`, { method: "DELETE" });
+    return jsonOrThrow(res);
+  },
+
+  // Quantity validation
+  validateQuantities: async (filters?: {
+    factoryPO?: string;
+    poNo?: string;
+    productType?: string;
+  }): Promise<{
+    total: number;
+    inconsistent: number;
+    consistent: number;
+    totalMissing: number;
+    groups: QtyValidationGroup[];
+  }> => {
+    const q = new URLSearchParams(
+      Object.entries(filters || {}).filter(([, v]) => v).map(([k, v]) => [k, String(v)])
+    ).toString();
+    const res = await fetch(`/api/quantity-validation?${q}`);
+    return jsonOrThrow(res);
+  },
+
+  // Production stats
+  getProductionStats: async (filters?: {
+    productType?: string;
+    factoryPO?: string;
+  }): Promise<ProductionStats> => {
+    const q = new URLSearchParams(
+      Object.entries(filters || {}).filter(([, v]) => v).map(([k, v]) => [k, String(v)])
+    ).toString();
+    const res = await fetch(`/api/production-stats?${q}`);
+    return jsonOrThrow(res);
   },
 
   // Dashboard & history

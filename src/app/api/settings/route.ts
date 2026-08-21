@@ -12,6 +12,7 @@ const DEFAULTS: AppSettings = {
   allowNegativeQty1: false,
   duplicateDetection: true,
   defaultExportColumns: ALL_FIELDS,
+  prioritizeByDeadline: true,
 };
 
 async function getSettings(): Promise<AppSettings> {

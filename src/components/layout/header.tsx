@@ -15,15 +15,18 @@ import { Badge } from "@/components/ui/badge";
 
 const VIEW_TITLES: Record<ViewKey, { title: string; subtitle: string }> = {
   dashboard: { title: "Dashboard", subtitle: "Overview of your master data & entries" },
-  "master-data": { title: "Master Data", subtitle: "Browse & filter imported Excel rows" },
+  "master-data": { title: "Master Data", subtitle: "Browse, filter & edit imported Excel rows" },
   "data-entry": { title: "Smart Data Entry", subtitle: "Enter Factory PO + Size + Qty — the rest is auto-filled" },
-  "data-management": { title: "Data Management", subtitle: "Manage created entry rows" },
+  "data-management": { title: "Data Management", subtitle: "Manage, edit & export created entry rows" },
   "import-excel": { title: "Import Excel", subtitle: "Upload, map columns & build Master Data" },
   "export-excel": { title: "Export Excel", subtitle: "Export entries or master data with column selection" },
   "import-history": { title: "Import History", subtitle: "Past imports & error reports" },
   "settings-mapping": { title: "Column Mapping", subtitle: "Map Excel headers to system fields" },
   "settings-lookup": { title: "Lookup Rules", subtitle: "Configure auto-fill lookup keys" },
   "settings-validation": { title: "Validation Rules", subtitle: "Validation & auto-calculation settings" },
+  "quantity-validation": { title: "Quantity Validation", subtitle: "Check Order = Output = Input consistency by PO" },
+  "production-stats": { title: "Production Statistics", subtitle: "Track sent-for-processing & received quantities" },
+  "order-notes": { title: "Order Notes", subtitle: "Daily notes for orders by Factory PO + Size" },
 };
 
 export function Header() {
@@ -33,7 +36,6 @@ export function Header() {
 
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur md:px-6">
-      {/* Mobile nav */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="icon" className="md:hidden">
@@ -61,11 +63,7 @@ export function Header() {
 
       <div className="ml-auto flex items-center gap-2">
         {view !== "data-entry" && (
-          <Button
-            size="sm"
-            onClick={() => setView("data-entry")}
-            className="hidden sm:inline-flex"
-          >
+          <Button size="sm" onClick={() => setView("data-entry")} className="hidden sm:inline-flex">
             New Entry
           </Button>
         )}

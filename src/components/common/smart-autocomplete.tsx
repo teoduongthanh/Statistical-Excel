@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Search, Loader2, ChevronDown, X } from "lucide-react";
+import { Search, Loader2, ChevronDown, X, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api-client";
 import type { AutocompleteSuggestion } from "@/types";
@@ -16,6 +16,22 @@ interface SmartAutocompleteProps {
   disabled?: boolean;
   className?: string;
   autoFocus?: boolean;
+}
+
+function UrgencyBadge({ urgency, deadline }: { urgency?: string; deadline?: string | null }) {
+  if (!urgency || urgency === "normal") return null;
+  const styles = {
+    overdue: "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300",
+    today: "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300",
+    soon: "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
+  };
+  const labels = { overdue: "Overdue", today: "Today", soon: "Soon" };
+  return (
+    <span className={cn("rounded px-1 py-0.5 text-[9px] font-medium", styles[urgency as keyof typeof styles])}>
+      {labels[urgency as keyof typeof labels]}
+      {deadline && <span className="ml-1 opacity-70">{deadline}</span>}
+    </span>
+  );
 }
 
 export function SmartAutocomplete({
@@ -35,7 +51,6 @@ export function SmartAutocomplete({
   const wrapRef = React.useRef<HTMLDivElement>(null);
   const reqId = React.useRef(0);
 
-  // Debounced server-side search (300ms) per spec §39.
   React.useEffect(() => {
     const q = value.trim();
     if (!q || q.length < 1) {
@@ -47,7 +62,7 @@ export function SmartAutocomplete({
     const id = ++reqId.current;
     const t = setTimeout(async () => {
       try {
-        const res = await api.searchMaster(q, field, 15);
+        const res = await api.searchMaster(q, field, 15, true);
         if (id !== reqId.current) return;
         setItems(res);
         setOpen(res.length > 0);
@@ -61,7 +76,6 @@ export function SmartAutocomplete({
     return () => clearTimeout(t);
   }, [value, field]);
 
-  // Close on outside click.
   React.useEffect(() => {
     function onDown(e: MouseEvent) {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
@@ -144,22 +158,25 @@ export function SmartAutocomplete({
                   onMouseEnter={() => setHi(i)}
                   onClick={() => pick(s)}
                   className={cn(
-                    "flex w-full items-start gap-2 px-3 py-2 text-left text-sm transition-colors",
+                    "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors",
                     i === hi ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"
                   )}
                 >
                   <span className="font-medium">{s.value}</span>
                   {s.sub && (
-                    <span className="ml-auto text-xs text-muted-foreground truncate max-w-[50%]">
+                    <span className="text-xs text-muted-foreground truncate max-w-[40%]">
                       {s.sub}
                     </span>
                   )}
+                  <span className="ml-auto shrink-0">
+                    <UrgencyBadge urgency={s.urgency} deadline={s.deadline} />
+                  </span>
                 </button>
               </li>
             ))}
           </ul>
           <div className="border-t px-3 py-1.5 text-[10px] text-muted-foreground">
-            {items.length} suggestion{items.length !== 1 ? "s" : ""} · fuzzy match
+            {items.length} suggestion{items.length !== 1 ? "s" : ""} · sorted by deadline urgency + fuzzy match
           </div>
         </div>
       )}
