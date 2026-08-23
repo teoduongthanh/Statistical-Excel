@@ -76,28 +76,48 @@ export function ProductDataEntryView() {
   // Recent entries
   const [recent, setRecent] = React.useState<any[]>([]);
 
-  // Keep Shipping Status checkbox (spec §48)
-  const [keepStatus, setKeepStatus] = React.useState(false);
+  // Keep context checkboxes (spec §48 — extended to PO NO# + Factory PO)
+  const [keepStatus, setKeepStatus] = React.useState(true);
+  const [keepPoNo, setKeepPoNo] = React.useState(true);
+  const [keepFactoryPO, setKeepFactoryPO] = React.useState(true);
 
   // Refs for Enter-key navigation (spec §11, §43)
-  const poNoRef = React.useRef<HTMLInputElement>(null);
+  const poNoRef = React.useRef<HTMLDivElement>(null);
   const factoryPORef = React.useRef<HTMLDivElement>(null);
   const sizeRef = React.useRef<HTMLInputElement>(null);
   const qtyRef = React.useRef<HTMLInputElement>(null);
 
-  // Reset all form fields (spec §44)
-  function resetForm(keepStatusFlag = false) {
+  // Focus the <input> inside a SmartAutocomplete wrapper div.
+  function focusAutocomplete(wrapper: HTMLDivElement | null) {
+    if (!wrapper) return;
+    const input = wrapper.querySelector("input");
+    input?.focus();
+    input?.select();
+  }
+
+  // Reset all form fields (spec §44). Keeps selected context fields if their keep-flag is on.
+  function resetForm(opts?: { keepStatus?: boolean; keepPoNo?: boolean; keepFactoryPO?: boolean }) {
+    const keepStatusFlag = opts?.keepStatus ?? keepStatus;
+    const keepPoNoFlag = opts?.keepPoNo ?? keepPoNo;
+    const keepFactoryPOFlag = opts?.keepFactoryPO ?? keepFactoryPO;
     if (!keepStatusFlag) setShippingStatus("");
-    setPoNo("");
-    setFactoryPO("");
+    if (!keepPoNoFlag) setPoNo("");
+    if (!keepFactoryPOFlag) setFactoryPO("");
     setSize("");
     setQty("");
     setAutoFill(null);
     setPreview(null);
-    // Focus back to first field
+    // Focus: jump to the first cleared field, or Size if context is kept.
     setTimeout(() => {
-      if (keepStatusFlag) {
-        poNoRef.current?.focus();
+      if (keepStatusFlag && keepPoNoFlag && keepFactoryPOFlag) {
+        // All context kept → jump straight to Size for fast re-entry.
+        sizeRef.current?.focus();
+      } else if (keepStatusFlag && !keepPoNoFlag) {
+        focusAutocomplete(poNoRef.current);
+      } else if (keepStatusFlag && keepPoNoFlag && !keepFactoryPOFlag) {
+        focusAutocomplete(factoryPORef.current);
+      } else {
+        focusAutocomplete(poNoRef.current);
       }
     }, 50);
   }
@@ -207,8 +227,8 @@ export function ProductDataEntryView() {
         }
         bumpRefresh();
         setPreview(null);
-        // Reset form (spec §48): keep Shipping Status if checkbox is on.
-        resetForm(keepStatus);
+        // Reset form (spec §48): keep selected context fields per checkboxes.
+        resetForm();
       } else {
         toast.error("Confirm failed", { description: r.errors?.join(", ") });
       }
@@ -220,15 +240,15 @@ export function ProductDataEntryView() {
   }
 
   // Enter-key navigation (spec §11, §43).
-  // When in an autocomplete dropdown, Enter selects the suggestion first.
-  // Second Enter moves to the next field.
+  // When in an autocomplete dropdown that is open, Enter selects the suggestion first.
+  // When the dropdown is closed (or no suggestion), Enter moves to the next field.
   function handleEnter(e: React.KeyboardEvent, currentField: string) {
     if (e.key !== "Enter") return;
     e.preventDefault();
     // Order: shippingStatus → poNo → factoryPO → size → qty → preview → confirm
     switch (currentField) {
       case "poNo":
-        factoryPORef.current?.focus();
+        focusAutocomplete(factoryPORef.current);
         break;
       case "factoryPO":
         sizeRef.current?.focus();
@@ -262,12 +282,23 @@ export function ProductDataEntryView() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <label className="flex items-center gap-2 text-xs font-medium bg-white/15 rounded-md px-2.5 py-1.5 cursor-pointer">
-              <Switch checked={keepStatus} onCheckedChange={setKeepStatus} className="scale-75 origin-left" />
-              Keep Shipping Status
-            </label>
-            <Button variant="secondary" size="sm" onClick={() => resetForm(false)} className="bg-white/20 hover:bg-white/30 text-white border-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5 bg-white/15 rounded-md px-2 py-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80 mr-1">Keep:</span>
+              <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+                <Switch checked={keepStatus} onCheckedChange={setKeepStatus} className="scale-[0.6] origin-left" />
+                Status
+              </label>
+              <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+                <Switch checked={keepPoNo} onCheckedChange={setKeepPoNo} className="scale-[0.6] origin-left" />
+                PO NO#
+              </label>
+              <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+                <Switch checked={keepFactoryPO} onCheckedChange={setKeepFactoryPO} className="scale-[0.6] origin-left" />
+                Factory PO
+              </label>
+            </div>
+            <Button variant="secondary" size="sm" onClick={() => resetForm({ keepStatus: false, keepPoNo: false, keepFactoryPO: false })} className="bg-white/20 hover:bg-white/30 text-white border-0">
               <RotateCcw className="mr-1.5 h-4 w-4" /> Reset
             </Button>
           </div>
@@ -295,7 +326,7 @@ export function ProductDataEntryView() {
                   <span>Shipping Status <span className="text-destructive">*</span></span>
                   <span className="text-[10px] text-muted-foreground">Step 1 — select first</span>
                 </Label>
-                <Select value={shippingStatus} onValueChange={(v) => { setShippingStatus(v); setTimeout(() => poNoRef.current?.focus(), 50); }}>
+                <Select value={shippingStatus} onValueChange={(v) => { setShippingStatus(v); setTimeout(() => focusAutocomplete(poNoRef.current), 50); }}>
                   <SelectTrigger className="h-11">
                     <SelectValue placeholder="Select Shipping Status…" />
                   </SelectTrigger>
@@ -330,18 +361,16 @@ export function ProductDataEntryView() {
               {/* Step 2: PO NO# (autocomplete, spec §3) */}
               <div className="space-y-1.5">
                 <Label className="text-xs">PO NO# <span className="text-destructive">*</span></Label>
-                <div onKeyDown={(e) => handleEnter(e, "poNo")}>
+                <div ref={poNoRef} onKeyDown={(e) => handleEnter(e, "poNo")}>
                   <SmartAutocomplete
                     field="poNo"
                     value={poNo}
                     onChange={setPoNo}
+                    onSelect={() => setTimeout(() => factoryPORef.current?.focus(), 100)}
                     placeholder={shippingDisabled ? "Select Shipping Status first" : "Type PO NO#…"}
                     disabled={shippingDisabled}
                     productType={currentProduct}
-                    className=""
                   />
-                  {/* SmartAutocomplete wraps an input; focus via querySelector */}
-                  <input ref={poNoRef} type="hidden" />
                 </div>
                 <p className="text-[10px] text-muted-foreground">Searches {currentProduct} Master Data. If not found, you can still continue.</p>
               </div>
