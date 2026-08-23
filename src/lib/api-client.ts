@@ -107,16 +107,23 @@ export const api = {
     q: string,
     field: CanonicalField,
     limit = 15,
-    prioritizeByDeadline = true
+    prioritizeByDeadline = true,
+    productType?: string
   ): Promise<AutocompleteSuggestion[]> => {
-    const res = await fetch(
-      `/api/master-data/search?q=${encodeURIComponent(q)}&field=${field}&limit=${limit}&prioritizeByDeadline=${prioritizeByDeadline}`
-    );
+    const params = new URLSearchParams({
+      q, field, limit: String(limit),
+      prioritizeByDeadline: String(prioritizeByDeadline),
+    });
+    if (productType) params.set("productType", productType);
+    const res = await fetch(`/api/master-data/search?${params}`);
     return jsonOrThrow(res);
   },
 
-  lookupFactoryPO: async (factoryPO: string): Promise<MasterGroup> => {
-    const res = await fetch(`/api/master-data/factory-po/${encodeURIComponent(factoryPO)}`);
+  lookupFactoryPO: async (factoryPO: string, productType?: string): Promise<MasterGroup> => {
+    const params = new URLSearchParams();
+    if (productType) params.set("productType", productType);
+    const qs = params.toString();
+    const res = await fetch(`/api/master-data/factory-po/${encodeURIComponent(factoryPO)}${qs ? `?${qs}` : ""}`);
     return jsonOrThrow(res);
   },
 
@@ -136,6 +143,7 @@ export const api = {
   },
 
   createEntry: async (body: {
+    productType: string; // MANDATORY — entry is scoped to one product.
     factoryPO: string;
     size: string;
     qty1: string;
@@ -151,7 +159,7 @@ export const api = {
   },
 
   bulkEntries: async (
-    items: { factoryPO: string; size: string; qty1: string }[],
+    items: { factoryPO: string; size: string; qty1: string; productType?: string }[],
     autoCalcQty2 = true
   ) => {
     const res = await fetch("/api/entries/bulk", {
@@ -253,6 +261,40 @@ export const api = {
     ).toString();
     const res = await fetch(`/api/production-stats?${q}`);
     return jsonOrThrow(res);
+  },
+
+  // Production aggregation (product-scoped)
+  getKPIs: async (productType: string, filters?: Record<string, string>) => {
+    const params = new URLSearchParams({ productType, ...(filters || {}) });
+    const res = await fetch(`/api/production/kpis?${params}`);
+    return jsonOrThrow<any>(res);
+  },
+
+  getProductionGroups: async (productType: string, filters?: Record<string, string>) => {
+    const params = new URLSearchParams({ productType, ...(filters || {}) });
+    const res = await fetch(`/api/production/groups?${params}`);
+    return jsonOrThrow<{ total: number; groups: any[] }>(res);
+  },
+
+  getByDimension: async (productType: string, dimension: string, filters?: Record<string, string>) => {
+    const params = new URLSearchParams({ productType, dimension, ...(filters || {}) });
+    const res = await fetch(`/api/production/by-dimension?${params}`);
+    return jsonOrThrow<{ dimension: string; rows: any[] }>(res);
+  },
+
+  getAlerts: async (productType: string, limit = 20) => {
+    const res = await fetch(`/api/production/alerts?productType=${productType}&limit=${limit}`);
+    return jsonOrThrow<{ total: number; high: number; medium: number; low: number; alerts: any[] }>(res);
+  },
+
+  getTimeline: async (productType: string, statusBucket: "order" | "output" | "input") => {
+    const res = await fetch(`/api/production/timeline?productType=${productType}&statusBucket=${statusBucket}`);
+    return jsonOrThrow<{ statusBucket: string; series: any[] }>(res);
+  },
+
+  getGlobalDashboard: async () => {
+    const res = await fetch("/api/global-dashboard");
+    return jsonOrThrow<{ products: any[] }>(res);
   },
 
   // Dashboard & history

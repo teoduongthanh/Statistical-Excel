@@ -90,34 +90,39 @@ function parseDeadline(dateStr: string | null | undefined): Date | null {
   return null;
 }
 
-// Rebuild MasterGroup index from MasterData, grouped by Factory PO.
-// Computes shared attributes (single-valued across group), the sizes list,
-// and the nearest (earliest) deadline for urgency sorting.
-export async function rebuildMasterGroups(sourceFile?: string): Promise<number> {
-  const where = sourceFile ? { sourceFile } : {};
+// Rebuild MasterGroup index from MasterData, grouped by (productType + Factory PO).
+// Product isolation: groups are scoped by productType to prevent cross-product lookup.
+export async function rebuildMasterGroups(sourceFile?: string, productType?: string): Promise<number> {
+  const where: any = {};
+  if (sourceFile) where.sourceFile = sourceFile;
+  if (productType) where.productType = productType;
   const rows = await db.masterData.findMany({
     where,
-    orderBy: { factoryPO: "asc" },
+    orderBy: [{ productType: "asc" }, { factoryPO: "asc" }],
   });
 
-  const groups = new Map<string, typeof rows>();
+  // Group by productType|factoryPO for isolation.
+  const groups = new Map<string, { productType: string; factoryPO: string; rows: typeof rows }>();
   for (const r of rows) {
-    const key = (r.factoryPO || "").trim();
-    if (!key) continue;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(r);
+    const pt = (r.productType || "").trim();
+    const fpo = (r.factoryPO || "").trim();
+    if (!pt || !fpo) continue;
+    const key = `${pt}|${fpo}`;
+    if (!groups.has(key)) groups.set(key, { productType: pt, factoryPO: fpo, rows: [] });
+    groups.get(key)!.rows.push(r);
   }
 
   await db.$transaction(async (tx) => {
     if (sourceFile) {
       await tx.masterGroup.deleteMany({ where: { sourceFile } });
+    } else if (productType) {
+      await tx.masterGroup.deleteMany({ where: { productType } });
     } else {
       await tx.masterGroup.deleteMany({});
     }
     const inserts = [];
-    for (const [factoryPO, groupRows] of groups) {
+    for (const { productType: pt, factoryPO, rows: groupRows } of groups.values()) {
       const sharedFlags: SharedFlags = {};
-      const first = groupRows[0];
       const picked: Record<string, string | null> = {};
       for (const f of SHARED_COLS) {
         const vals = new Set(
@@ -163,6 +168,7 @@ export async function rebuildMasterGroups(sourceFile?: string): Promise<number> 
       inserts.push(
         tx.masterGroup.create({
           data: {
+            productType: pt,
             factoryPO,
             date: picked.date ?? null,
             shippingStatus: picked.shippingStatus ?? null,
@@ -177,7 +183,6 @@ export async function rebuildMasterGroups(sourceFile?: string): Promise<number> 
             printingColor: picked.printingColor ?? null,
             deadline: picked.deadline ?? null,
             nearestDeadline,
-            productType,
             sizes: JSON.stringify(sizes),
             sharedFlags: JSON.stringify(sharedFlags),
             rowCount: groupRows.length,
@@ -209,12 +214,14 @@ function deadlineUrgency(deadline: string | null | undefined): "overdue" | "toda
 }
 
 // Autocomplete: pre-filter with SQL LIKE, then fuzzy-score and rank.
+// Product isolation: productType is MANDATORY — searches never cross products.
 // If prioritizeByDeadline is true, boost scores for Factory POs with nearer deadlines.
 export async function searchMaster(
   field: CanonicalField,
   query: string,
   limit = 15,
-  prioritizeByDeadline = true
+  prioritizeByDeadline = true,
+  productType?: string
 ): Promise<AutocompleteSuggestion[]> {
   const q = query.trim();
   if (!q) return [];
@@ -251,13 +258,19 @@ export async function searchMaster(
   const col = colMap[field];
   const like = `%${q.toLowerCase()}%`;
 
-  const rows = await db.$queryRawUnsafe<{ v: string }[]>(
-    `SELECT DISTINCT "${col}" AS v FROM MasterData
-     WHERE "${col}" IS NOT NULL AND "${col}" != ''
-       AND LOWER("${col}") LIKE ?
-     LIMIT 200`,
-    like
-  );
+  // Product-scoped query: only returns rows for the active product.
+  const sql = productType
+    ? `SELECT DISTINCT "${col}" AS v FROM MasterData
+       WHERE productType = ? AND "${col}" IS NOT NULL AND "${col}" != ''
+         AND LOWER("${col}") LIKE ?
+       LIMIT 200`
+    : `SELECT DISTINCT "${col}" AS v FROM MasterData
+       WHERE "${col}" IS NOT NULL AND "${col}" != ''
+         AND LOWER("${col}") LIKE ?
+       LIMIT 200`;
+  const rows = productType
+    ? await db.$queryRawUnsafe<{ v: string }[]>(sql, productType, like)
+    : await db.$queryRawUnsafe<{ v: string }[]>(sql, like);
 
   const candidates = rows.map((r) => ({ value: r.v, sub: "" }));
   const scored: AutocompleteSuggestion[] = [];
@@ -270,7 +283,9 @@ export async function searchMaster(
   if (field === "factoryPO" && scored.length > 0) {
     const fpos = scored.map((s) => s.value);
     const groups = await db.masterGroup.findMany({
-      where: { factoryPO: { in: fpos } },
+      where: productType
+        ? { productType, factoryPO: { in: fpos } }
+        : { factoryPO: { in: fpos } },
       select: { factoryPO: true, model: true, season: true, nearestDeadline: true, productType: true },
     });
     const gmap = new Map(groups.map((g) => [g.factoryPO, g]));
@@ -280,7 +295,6 @@ export async function searchMaster(
         s.sub = [g.model, g.season].filter(Boolean).join(" · ");
         s.deadline = g.nearestDeadline;
         s.urgency = deadlineUrgency(g.nearestDeadline);
-        // Boost score for urgency (overdue gets highest boost).
         if (prioritizeByDeadline) {
           if (s.urgency === "overdue") s.score += 300;
           else if (s.urgency === "today") s.score += 200;
@@ -294,10 +308,16 @@ export async function searchMaster(
 }
 
 // Lookup a Factory PO group → shared attributes + sizes.
+// Product isolation: looks up by composite (productType + factoryPO).
 export async function lookupFactoryPO(
-  factoryPO: string
+  factoryPO: string,
+  productType?: string
 ): Promise<MasterGroup | null> {
-  const g = await db.masterGroup.findUnique({ where: { factoryPO } });
+  // Use composite unique key when productType is provided (product isolation).
+  // Fallback to first match for backward compatibility.
+  const g = productType
+    ? await db.masterGroup.findUnique({ where: { productType_factoryPO: { productType, factoryPO } } })
+    : await db.masterGroup.findFirst({ where: { factoryPO } });
   if (!g) return null;
   return {
     id: g.id,
@@ -335,7 +355,7 @@ export interface ValidationResult {
   group?: MasterGroup;
 }
 
-export async function validateEntry(input: EntryInput): Promise<ValidationResult> {
+export async function validateEntry(input: EntryInput, productType?: string): Promise<ValidationResult> {
   const errors: string[] = [];
   const fpo = (input.factoryPO || "").trim();
   const size = (input.size || "").trim();
@@ -347,9 +367,12 @@ export async function validateEntry(input: EntryInput): Promise<ValidationResult
 
   if (errors.length) return { ok: false, errors };
 
-  const group = await lookupFactoryPO(fpo);
+  const group = await lookupFactoryPO(fpo, productType);
   if (!group) {
-    return { ok: false, errors: ["Factory PO does not exist in Master Data"] };
+    return {
+      ok: false,
+      errors: [`Factory PO "${fpo}" does not exist in ${productType || "any"} Master Data`],
+    };
   }
   const norm = (s: string) => s.replace(/\s+/g, " ").trim();
   const sizeExists = group.sizes.some((s) => norm(s) === norm(size));
@@ -365,9 +388,9 @@ export async function validateEntry(input: EntryInput): Promise<ValidationResult
 
 export async function createEntry(
   input: EntryInput,
-  opts: { autoCalcQty2: boolean }
+  opts: { autoCalcQty2: boolean; productType?: string }
 ) {
-  const vr = await validateEntry(input);
+  const vr = await validateEntry(input, opts.productType);
   if (!vr.ok || !vr.group) {
     return { ok: false as const, errors: vr.errors };
   }
@@ -377,6 +400,7 @@ export async function createEntry(
 
   const created = await db.entryData.create({
     data: {
+      productType: opts.productType || g.productType || "MAFATE",
       factoryPO: input.factoryPO.trim(),
       size: input.size.trim(),
       qty1: input.qty1.trim(),

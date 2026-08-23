@@ -2,42 +2,52 @@
 
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
-import { useAppStore } from "@/store/app-store";
-import { DashboardView } from "@/components/views/dashboard-view";
-import { MasterDataView } from "@/components/views/master-data-view";
-import { DataEntryView } from "@/components/views/data-entry-view";
-import { DataManagementView } from "@/components/views/data-management-view";
-import { ImportExcelView } from "@/components/views/import-excel-view";
-import { ExportExcelView } from "@/components/views/export-excel-view";
+import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
+import { ProductDashboardView } from "@/components/views/product-dashboard-view";
+import { ProductDataEntryView } from "@/components/views/product-data-entry-view";
+import { ProductMasterDataView } from "@/components/views/product-master-data-view";
+import { ProductProductionTrackingView } from "@/components/views/product-production-tracking-view";
+import { ProductStatisticsView } from "@/components/views/product-statistics-view";
+import { ProductImportView } from "@/components/views/product-import-view";
+import { ProductExportView } from "@/components/views/product-export-view";
+import { GlobalDashboardView } from "@/components/views/global-dashboard-view";
 import { ImportHistoryView } from "@/components/views/import-history-view";
 import { SettingsMappingView } from "@/components/views/settings-mapping-view";
 import { SettingsLookupView } from "@/components/views/settings-lookup-view";
 import { SettingsValidationView } from "@/components/views/settings-validation-view";
-import { QuantityValidationView } from "@/components/views/quantity-validation-view";
-import { ProductionStatsView } from "@/components/views/production-stats-view";
 import { OrderNotesView } from "@/components/views/order-notes-view";
 
 export default function Home() {
-  const { view } = useAppStore();
+  const { view, currentProduct } = useAppStore();
+  const theme = PRODUCT_THEME[currentProduct];
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <Header />
+        {/* Product context banner for product-scoped views */}
+        {view.startsWith("product-") && (
+          <div className={`flex items-center gap-2 px-4 py-1.5 text-xs font-medium text-white bg-gradient-to-r ${theme.gradient}`}>
+            <span className="opacity-90">PRODUCT CONTEXT:</span>
+            <span className="font-bold tracking-wide">{currentProduct}</span>
+            <span className="opacity-75">— all data & operations are isolated to {currentProduct}</span>
+          </div>
+        )}
         <main className="flex-1 overflow-y-auto scroll-thin">
           <div className="mx-auto w-full max-w-[1500px] px-4 py-6 md:px-6">
-            {view === "dashboard" && <DashboardView />}
-            {view === "master-data" && <MasterDataView />}
-            {view === "data-entry" && <DataEntryView />}
-            {view === "data-management" && <DataManagementView />}
-            {view === "import-excel" && <ImportExcelView />}
-            {view === "export-excel" && <ExportExcelView />}
+            {view === "global-dashboard" && <GlobalDashboardView />}
+            {view === "product-dashboard" && <ProductDashboardView />}
+            {view === "product-data-entry" && <ProductDataEntryView />}
+            {view === "product-master-data" && <ProductMasterDataView />}
+            {view === "product-production-tracking" && <ProductProductionTrackingView />}
+            {view === "product-statistics" && <ProductStatisticsView />}
+            {view === "product-import" && <ProductImportView />}
+            {view === "product-export" && <ProductExportView />}
             {view === "import-history" && <ImportHistoryView />}
             {view === "settings-mapping" && <SettingsMappingView />}
             {view === "settings-lookup" && <SettingsLookupView />}
             {view === "settings-validation" && <SettingsValidationView />}
-            {view === "quantity-validation" && <QuantityValidationView />}
-            {view === "production-stats" && <ProductionStatsView />}
             {view === "order-notes" && <OrderNotesView />}
           </div>
         </main>

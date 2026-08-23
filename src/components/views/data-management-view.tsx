@@ -175,7 +175,13 @@ export function DataManagementView() {
 
   async function handleDuplicate(r: any) {
     try {
-      await api.createEntry({ factoryPO: r.factoryPO, size: r.size, qty1: r.qty1, autoCalcQty2: true });
+      await api.createEntry({
+        productType: r?.productType || "MAFATE",
+        factoryPO: r.factoryPO,
+        size: r.size,
+        qty1: r.qty1,
+        autoCalcQty2: true,
+      });
       toast.success("Duplicated");
       qc.invalidateQueries({ queryKey: ["entries"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });

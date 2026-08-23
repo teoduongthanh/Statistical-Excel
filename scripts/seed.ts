@@ -1,4 +1,4 @@
-// Seed script: imports all 3 product Excel files into MasterData + rebuilds MasterGroup index.
+// Seed script: imports MAFATE, ONYX, MIZUNO data into MasterData + rebuilds MasterGroup index.
 import { db } from "../src/lib/db";
 import { readWorkbook, parseSheet, applyMapping } from "../src/lib/excel";
 import { buildAutoMapping } from "../src/lib/header-normalize";
@@ -7,19 +7,19 @@ import * as fs from "fs";
 
 const FILES: { path: string; sheet: string; productType: string }[] = [
   {
-    path: "/home/z/my-project/upload/Copy of FMT shipped out S-TECH mafate -2026 (1).xlsx",
-    sheet: "DATA",
-    productType: "Mafate",
+    path: "/home/z/my-project/upload/data-mafate.xlsx",
+    sheet: "data-mafate",
+    productType: "MAFATE",
   },
   {
     path: "/home/z/my-project/upload/Data onyx.xlsx",
     sheet: "Sheet1",
-    productType: "Onyx",
+    productType: "ONYX",
   },
   {
     path: "/home/z/my-project/upload/Data Hoongwon(HW).xlsx",
     sheet: "Sheet1",
-    productType: "Hoong Won",
+    productType: "MIZUNO",
   },
 ];
 
@@ -30,7 +30,7 @@ async function importFile(fileInfo: { path: string; sheet: string; productType: 
   const { wb, sheets } = readWorkbook(ab);
   console.log("Sheets:", sheets.map((s) => s.name).join(", "));
   const { headers, rows } = parseSheet(wb, fileInfo.sheet);
-  console.log("Headers:", headers.join(" | "));
+  console.log("Headers:", headers.slice(0, 20).join(" | "));
   console.log("Parsed rows:", rows.length);
 
   const mapping = buildAutoMapping(headers);
@@ -72,7 +72,7 @@ async function importFile(fileInfo: { path: string; sheet: string; productType: 
       })),
     });
     inserted += batch.length;
-    if (inserted % 2000 === 0 || inserted === valid.length) {
+    if (inserted % 5000 === 0 || inserted === valid.length) {
       console.log(`  inserted ${inserted}/${valid.length}`);
     }
   }
@@ -99,32 +99,24 @@ async function main() {
     totalInserted += await importFile(f);
   }
 
-  console.log("\n=== Rebuilding MasterGroup index (all products) ===");
+  console.log("\n=== Rebuilding MasterGroup index (product-scoped) ===");
   const groups = await rebuildMasterGroups();
   console.log("Built", groups, "Factory PO groups");
 
-  // Verify color code mapping.
-  console.log("\n=== Verification: color code mapping ===");
-  const sample = await db.masterGroup.findMany({
-    where: { productType: "Mafate" },
-    take: 3,
-    orderBy: { factoryPO: "asc" },
-  });
-  for (const g of sample) {
-    console.log(`  ${g.factoryPO} [${g.productType}]:`);
-    console.log(`    colorCode (Color Code): ${g.colorCode?.slice(0, 60) ?? "—"}"`);
-    console.log(`    colorCode2 (COLOR CODE): ${g.colorCode2?.slice(0, 60) ?? "—"}"`);
-  }
-
-  const onyxSample = await db.masterGroup.findMany({
-    where: { productType: "Onyx" },
-    take: 2,
-    orderBy: { factoryPO: "asc" },
-  });
-  for (const g of onyxSample) {
-    console.log(`  ${g.factoryPO} [${g.productType}]:`);
-    console.log(`    colorCode (COLOR NAME): ${g.colorCode?.slice(0, 60) ?? "—"}"`);
-    console.log(`    colorCode2 (COLOR CODE): ${g.colorCode2?.slice(0, 60) ?? "—"}"`);
+  // Verify color code mapping per product.
+  console.log("\n=== Verification: color code mapping per product ===");
+  for (const pt of ["MAFATE", "ONYX", "MIZUNO"]) {
+    const sample = await db.masterGroup.findMany({
+      where: { productType: pt },
+      take: 2,
+      orderBy: { factoryPO: "asc" },
+    });
+    for (const g of sample) {
+      console.log(`  ${pt} | ${g.factoryPO}:`);
+      console.log(`    colorCode: ${g.colorCode?.slice(0, 60) ?? "—"}`);
+      console.log(`    colorCode2: ${g.colorCode2?.slice(0, 60) ?? "—"}`);
+      console.log(`    nearestDeadline: ${g.nearestDeadline ?? "—"}`);
+    }
   }
 
   console.log(`\n✓ Seed complete: ${totalInserted} total rows, ${groups} Factory PO groups`);

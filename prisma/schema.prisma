@@ -27,61 +27,59 @@ model MasterData {
   qty1           String?
   qty2           String?
   deadline       String?
-  productType    String?  // "Mafate" | "Onyx" | "Hoong Won"
+  productType    String?  // "MAFATE" | "ONYX" | "MIZUNO"
   sourceFile     String?
   sheetName      String?
   rowIndex       Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  @@index([factoryPO])
-  @@index([sku])
-  @@index([poNo])
-  @@index([model])
-  @@index([season])
-  @@index([colorCode])
-  @@index([size])
-  @@index([factoryPO, size])
-  @@index([poNo, factoryPO, size])
   @@index([productType])
-  @@index([shippingStatus])
+  @@index([productType, factoryPO])
+  @@index([productType, poNo])
+  @@index([productType, model])
+  @@index([productType, sku])
+  @@index([productType, size])
+  @@index([productType, shippingStatus])
+  @@index([productType, deadline])
+  @@index([productType, poNo, factoryPO, size])
+  @@index([productType, season])
+  @@index([productType, colorCode])
 }
 
-/// Aggregated shared attributes per Factory PO (Master Data index).
-/// `sizes` is a JSON array string; `sharedFlags` JSON records which fields are single-valued.
-/// `nearestDeadline` stores the earliest deadline for sorting urgency.
+/// Aggregated shared attributes per (productType + Factory PO).
 model MasterGroup {
-  id             String   @id @default(cuid())
-  factoryPO      String   @unique
-  date           String?
-  shippingStatus String?
-  model          String?
-  sku            String?
-  poNo           String?
-  item           String?
-  season         String?
-  colorCode      String?
-  colorCode2     String?
-  painting       String?
-  printingColor  String?
-  deadline       String?
-  nearestDeadline String? // earliest deadline across all rows in this group
-  productType    String?
-  sizes          String // JSON string array
-  sharedFlags    String // JSON record<string,boolean>
-  rowCount       Int      @default(0)
-  sourceFile     String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id              String   @id @default(cuid())
+  productType     String
+  factoryPO       String
+  date            String?
+  shippingStatus  String?
+  model           String?
+  sku             String?
+  poNo            String?
+  item            String?
+  season          String?
+  colorCode       String?
+  colorCode2      String?
+  painting        String?
+  printingColor   String?
+  deadline        String?
+  nearestDeadline String?
+  sizes           String
+  sharedFlags     String
+  rowCount        Int      @default(0)
+  sourceFile      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  @@index([factoryPO])
-  @@index([nearestDeadline])
+  @@unique([productType, factoryPO])
   @@index([productType])
+  @@index([productType, nearestDeadline])
 }
 
-/// A user-entered data row (Factory PO + Size + Qty1 → completed row).
 model EntryData {
   id             String   @id @default(cuid())
+  productType    String
   factoryPO      String
   size           String
   qty1           String
@@ -98,62 +96,77 @@ model EntryData {
   painting       String?
   printingColor  String?
   deadline       String?
-  productType    String?
   note           String?
   sourceMasterId String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  @@index([factoryPO])
-  @@index([factoryPO, size])
-  @@index([sku])
-  @@index([poNo])
-  @@index([createdAt])
-  @@index([shippingStatus])
-  @@index([poNo, factoryPO, size])
+  @@index([productType])
+  @@index([productType, factoryPO])
+  @@index([productType, factoryPO, size])
+  @@index([productType, createdAt])
+  @@index([productType, poNo])
 }
 
-/// Daily notes attached to a specific order (Factory PO + Size combination).
 model OrderNote {
   id          String   @id @default(cuid())
+  productType String
   factoryPO   String
   size        String
   poNo        String?
-  noteDate    String   // yyyy-MM-dd
+  noteDate    String
   content     String
   author      String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  @@index([factoryPO, size])
-  @@index([noteDate])
-  @@index([poNo])
+  @@index([productType, factoryPO, size])
+  @@index([productType, noteDate])
 }
 
 model ImportHistory {
+  id           String   @id @default(cuid())
+  fileName     String
+  sheetName    String?
+  productType  String?
+  totalRows    Int      @default(0)
+  validRows    Int      @default(0)
+  invalidRows  Int      @default(0)
+  errors       String   @default("[]")
+  importedAt   DateTime @default(now())
+
+  @@index([productType])
+}
+
+model AuditLog {
   id        String   @id @default(cuid())
-  fileName  String
-  sheetName String?
   productType String?
-  totalRows Int      @default(0)
-  validRows Int      @default(0)
-  invalidRows Int    @default(0)
-  errors    String   @default("[]") // JSON array
-  importedAt DateTime @default(now())
+  user      String?
+  action    String  // "IMPORT" | "EDIT" | "DELETE" | "EXPORT" | "ENTRY_CREATE" | "ENTRY_EDIT" | "ENTRY_DELETE"
+  entityType String  // "MasterData" | "EntryData" | "Import"
+  entityId   String?
+  oldValue   String?
+  newValue   String?
+  detail     String?
+  createdAt DateTime @default(now())
+
+  @@index([productType])
+  @@index([action])
+  @@index([createdAt])
 }
 
 model Setting {
   id    String @id @default(cuid())
   key   String @unique
-  value String // JSON encoded
+  value String
 }
 
 model LookupRule {
   id            String  @id @default(cuid())
   name          String  @unique
-  primaryKey    String  // e.g. "factoryPO"
-  secondaryKey  String? // e.g. "size"
-  lookupFields  String  // JSON array of canonical field names
+  primaryKey    String
+  secondaryKey  String?
+  lookupFields  String
   autoCalcQty2  Boolean @default(true)
   active        Boolean @default(true)
   createdAt     DateTime @default(now())

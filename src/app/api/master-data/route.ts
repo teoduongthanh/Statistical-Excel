@@ -6,24 +6,20 @@ import type { CanonicalField } from "@/lib/fields";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// GET /api/master-data?page=1&pageSize=20&search=&factoryPO=&model=&season=&sort=factoryPO&order=asc
+// GET /api/master-data?productType=MAFATE&page=&pageSize=&search=&factoryPO=&...
+// Product isolation: productType is MANDATORY (spec §51).
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
+  const productType = searchParams.get("productType") || "";
   const page = Math.max(1, Number(searchParams.get("page") || "1"));
   const pageSize = Math.min(200, Math.max(1, Number(searchParams.get("pageSize") || "20")));
   const search = searchParams.get("search") || "";
-  const factoryPO = searchParams.get("factoryPO") || "";
-  const model = searchParams.get("model") || "";
-  const sku = searchParams.get("sku") || "";
-  const poNo = searchParams.get("poNo") || "";
-  const season = searchParams.get("season") || "";
-  const colorCode = searchParams.get("colorCode") || "";
-  const size = searchParams.get("size") || "";
-  const shippingStatus = searchParams.get("shippingStatus") || "";
   const sort = (searchParams.get("sort") || "factoryPO") as CanonicalField;
   const order = searchParams.get("order") === "desc" ? "desc" : "asc";
 
   const where: any = { AND: [] };
+  // productType filter — always applied when provided.
+  if (productType) where.AND.push({ productType });
   if (search) {
     where.AND.push({
       OR: [
@@ -38,15 +34,15 @@ export async function GET(req: NextRequest) {
     });
   }
   for (const [k, v] of [
-    ["factoryPO", factoryPO],
-    ["model", model],
-    ["sku", sku],
-    ["poNo", poNo],
-    ["season", season],
-    ["colorCode", colorCode],
-    ["size", size],
-    ["shippingStatus", shippingStatus],
-  ] as [string, string][]) {
+    ["factoryPO", searchParams.get("factoryPO")],
+    ["model", searchParams.get("model")],
+    ["sku", searchParams.get("sku")],
+    ["poNo", searchParams.get("poNo")],
+    ["season", searchParams.get("season")],
+    ["colorCode", searchParams.get("colorCode")],
+    ["size", searchParams.get("size")],
+    ["shippingStatus", searchParams.get("shippingStatus")],
+  ] as [string, string | null][]) {
     if (v) where.AND.push({ [k]: { contains: v } });
   }
   if (where.AND.length === 0) delete where.AND;

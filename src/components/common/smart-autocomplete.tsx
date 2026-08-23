@@ -16,6 +16,7 @@ interface SmartAutocompleteProps {
   disabled?: boolean;
   className?: string;
   autoFocus?: boolean;
+  productType?: string;
 }
 
 function UrgencyBadge({ urgency, deadline }: { urgency?: string; deadline?: string | null }) {
@@ -43,6 +44,7 @@ export function SmartAutocomplete({
   disabled,
   className,
   autoFocus,
+  productType,
 }: SmartAutocompleteProps) {
   const [open, setOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
@@ -62,7 +64,7 @@ export function SmartAutocomplete({
     const id = ++reqId.current;
     const t = setTimeout(async () => {
       try {
-        const res = await api.searchMaster(q, field, 15, true);
+        const res = await api.searchMaster(q, field, 15, true, productType);
         if (id !== reqId.current) return;
         setItems(res);
         setOpen(res.length > 0);
@@ -74,7 +76,7 @@ export function SmartAutocomplete({
       }
     }, 300);
     return () => clearTimeout(t);
-  }, [value, field]);
+  }, [value, field, productType]);
 
   React.useEffect(() => {
     function onDown(e: MouseEvent) {
