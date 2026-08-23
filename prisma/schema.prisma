@@ -78,34 +78,42 @@ model MasterGroup {
 }
 
 model EntryData {
-  id             String   @id @default(cuid())
-  productType    String
-  factoryPO      String
-  size           String
-  qty1           String
-  qty2           String
-  date           String?
-  shippingStatus String?
-  model          String?
-  sku            String?
-  poNo           String?
-  item           String?
-  season         String?
-  colorCode      String?
-  colorCode2     String?
-  painting       String?
-  printingColor  String?
-  deadline       String?
-  note           String?
-  sourceMasterId String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  productType         String
+  date                String?
+  shippingStatus      String?
+  model               String?
+  sku                 String?
+  poNo                String?
+  factoryPO           String
+  item                String?
+  season              String?
+  colorCode           String?
+  colorCode2          String?
+  painting            String?
+  printingColor       String?
+  size                String
+  qty1                String
+  qty2                String
+  deadline            String?
+  // Transaction grouping: an Output entry creates a paired Pending entry,
+  // both share the same transactionGroupId for atomic delete/audit.
+  transactionGroupId  String?
+  // Reference to the Master Data source (JSON: { factoryPO, poNo, size }).
+  // Lookup ≠ Insert: entries reference master data but never mutate it.
+  masterDataReference String?
+  note                String?
+  sourceMasterId      String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@index([productType])
   @@index([productType, factoryPO])
   @@index([productType, factoryPO, size])
   @@index([productType, createdAt])
   @@index([productType, poNo])
+  @@index([productType, shippingStatus])
+  @@index([transactionGroupId])
 }
 
 model OrderNote {

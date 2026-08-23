@@ -158,6 +158,40 @@ export const api = {
     return jsonOrThrow<{ ok: boolean; entry?: EntryData; errors?: string[] }>(res);
   },
 
+  // Preview an entry (no DB write) — validates, looks up Master Data, computes qty2.
+  previewEntry: async (body: {
+    productType: string;
+    shippingStatus: string;
+    poNo: string;
+    factoryPO: string;
+    size: string;
+    qty: string;
+  }) => {
+    const res = await fetch("/api/entries/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<any>(res);
+  },
+
+  // Confirm an entry (atomic DB transaction). For Output, creates paired Pending.
+  confirmEntry: async (body: {
+    productType: string;
+    shippingStatus: string;
+    poNo: string;
+    factoryPO: string;
+    size: string;
+    qty: string;
+  }) => {
+    const res = await fetch("/api/entries/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; created?: any[]; merged?: any[]; preview?: any; errors?: string[] }>(res);
+  },
+
   bulkEntries: async (
     items: { factoryPO: string; size: string; qty1: string; productType?: string }[],
     autoCalcQty2 = true
@@ -179,9 +213,9 @@ export const api = {
     return jsonOrThrow(res);
   },
 
-  deleteEntry: async (id: string) => {
-    const res = await fetch(`/api/entries/${id}`, { method: "DELETE" });
-    return jsonOrThrow(res);
+  deleteEntry: async (id: string, forceGroup = false) => {
+    const res = await fetch(`/api/entries/${id}${forceGroup ? "?forceGroup=true" : ""}`, { method: "DELETE" });
+    return jsonOrThrow<{ ok: boolean; needsConfirm?: { pairedId: string; message: string }; deleted?: string[] }>(res);
   },
 
   checkDuplicate: async (factoryPO: string, size: string) => {
