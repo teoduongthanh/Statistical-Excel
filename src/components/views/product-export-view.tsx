@@ -339,6 +339,46 @@ export function ProductExportView() {
     }
   }
 
+  // ===== Bulk delete (entries only) — deletes all checked rows at once =====
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+  const [bulkDeleting, setBulkDeleting] = React.useState(false);
+
+  function openBulkDelete() {
+    if (selectedIds.size === 0) {
+      toast.error("Select at least one row first (use the checkboxes)");
+      return;
+    }
+    setBulkDeleteOpen(true);
+  }
+
+  async function confirmBulkDelete() {
+    setBulkDeleting(true);
+    try {
+      const ids = [...selectedIds];
+      const res = await api.bulkDeleteEntries(ids);
+      if (res.ok) {
+        let msg = `${res.deleted} entries deleted`;
+        if (res.deleted > ids.length) {
+          msg += ` (includes ${res.deleted - ids.length} paired transaction records)`;
+        }
+        if (res.skipped > 0) {
+          msg += ` · ${res.skipped} skipped`;
+        }
+        toast.success(msg);
+        setSelectedIds(new Set());
+        setBulkDeleteOpen(false);
+        qc.invalidateQueries({ queryKey: ["export-preview-entries"] });
+        bumpRefresh();
+      } else {
+        toast.error("Bulk delete failed");
+      }
+    } catch (e) {
+      toast.error("Bulk delete failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   const summary = React.useMemo(() => {
     const parts: string[] = [currentProduct, source];
     parts.push(mode === "all" ? "all rows" : mode === "filtered" ? "filtered" : `${selectedIds.size} selected`);
@@ -516,7 +556,20 @@ export function ProductExportView() {
                   <Table2 className="h-4 w-4 text-primary" /> Row Preview
                   {entriesQ.isFetching && <Badge variant="secondary" className="text-[10px]">loading…</Badge>}
                 </span>
-                <span className="text-xs text-muted-foreground">{total.toLocaleString()} rows total</span>
+                <span className="flex items-center gap-2">
+                  {source === "entries" && selectedIds.size > 0 && (
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      className="h-7 text-xs"
+                      onClick={openBulkDelete}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 mr-1" />
+                      Delete Selected ({selectedIds.size})
+                    </Button>
+                  )}
+                  <span className="text-xs text-muted-foreground">{total.toLocaleString()} rows total</span>
+                </span>
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
@@ -777,6 +830,37 @@ export function ProductExportView() {
             >
               {deleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />}
               Delete Both
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk delete confirmation — deletes all checked rows */}
+      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" /> Delete {selectedIds.size} Selected Entries?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              You are about to delete <strong>{selectedIds.size}</strong> entry row(s).
+              {selectedIds.size > 0 && (
+                <span className="mt-2 block text-xs text-amber-600">
+                  ⚠ Any selected entry that belongs to an Output+Pending transaction group
+                  will have its paired record deleted too. This action cannot be undone.
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); confirmBulkDelete(); }}
+              disabled={bulkDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {bulkDeleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />}
+              Delete {selectedIds.size} Entries
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

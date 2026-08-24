@@ -204,6 +204,24 @@ export const api = {
     return jsonOrThrow(res);
   },
 
+  // Bulk delete entries by IDs. Entries that belong to an Output+Pending
+  // transaction group will have their paired sibling deleted too.
+  bulkDeleteEntries: async (ids: string[]) => {
+    const res = await fetch("/api/entries/bulk", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    return jsonOrThrow<{
+      ok: boolean;
+      requested: number;
+      deleted: number;
+      skipped: number;
+      deletedIds: string[];
+      skippedIds: { id: string; reason: string }[];
+    }>(res);
+  },
+
   updateEntry: async (id: string, body: any) => {
     const res = await fetch(`/api/entries/${id}`, {
       method: "PUT",
