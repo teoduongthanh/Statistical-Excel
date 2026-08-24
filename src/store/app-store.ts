@@ -14,6 +14,7 @@ export type ViewKey =
   | "product-statistics"
   | "product-import"
   | "product-export"
+  | "product-review"
   | "import-history"
   | "settings-mapping"
   | "settings-lookup"

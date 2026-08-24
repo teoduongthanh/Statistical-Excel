@@ -8,16 +8,10 @@ import {
   CheckCircle2,
   AlertTriangle,
   Plus,
-  Layers,
   Wand2,
   RotateCcw,
-  Eye,
   AlertCircle,
   Info,
-  ChevronDown,
-  Truck,
-  Factory,
-  Package,
 } from "lucide-react";
 import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
 import { api } from "@/lib/api-client";
@@ -36,14 +30,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
 import { toast } from "sonner";
 
 const SHIPPING_OPTIONS = [
@@ -68,10 +54,9 @@ export function ProductDataEntryView() {
   const [autoFill, setAutoFill] = React.useState<any>(null);
   const [lookupLoading, setLookupLoading] = React.useState(false);
 
-  // Preview / Confirm state (spec §12)
-  const [preview, setPreview] = React.useState<any>(null);
-  const [previewing, setPreviewing] = React.useState(false);
-  const [confirming, setConfirming] = React.useState(false);
+  // Preview / Confirm state — removed. Add Data saves directly (user request).
+  // Review now happens later in the "Review & Merge with Master Data" view.
+  const [saving, setSaving] = React.useState(false);
 
   // Recent entries
   const [recent, setRecent] = React.useState<any[]>([]);
@@ -106,7 +91,6 @@ export function ProductDataEntryView() {
     setSize("");
     setQty("");
     setAutoFill(null);
-    setPreview(null);
     // Focus: jump to the first cleared field, or Size if context is kept.
     setTimeout(() => {
       if (keepStatusFlag && keepPoNoFlag && keepFactoryPOFlag) {
@@ -164,40 +148,17 @@ export function ProductDataEntryView() {
     return errs;
   }, [shippingStatus, poNo, factoryPO, size, qty]);
 
-  const canPreview = validationErrors.length === 0;
+  const canAdd = validationErrors.length === 0;
 
-  // PREVIEW (spec §38) — calls preview API, no DB write.
-  async function handlePreview() {
-    if (!canPreview) {
+  // ADD DATA — saves immediately via the confirm API (atomic transaction).
+  // No preview step: the user wants fast entry. Review/merge with Master Data
+  // is a separate function done later in the Review view.
+  async function handleAddData() {
+    if (!canAdd) {
       toast.error("Please fix validation errors", { description: validationErrors[0] });
       return;
     }
-    setPreviewing(true);
-    try {
-      const p = await api.previewEntry({
-        productType: currentProduct,
-        shippingStatus,
-        poNo,
-        factoryPO,
-        size,
-        qty,
-      });
-      if (p.ok) {
-        setPreview(p);
-      } else {
-        toast.error("Preview failed", { description: p.errors?.join(", ") });
-      }
-    } catch (e) {
-      toast.error("Preview failed", { description: e instanceof Error ? e.message : "" });
-    } finally {
-      setPreviewing(false);
-    }
-  }
-
-  // CONFIRM (spec §39, §40) — atomic DB transaction.
-  async function handleConfirm() {
-    if (!preview?.ok) return;
-    setConfirming(true);
+    setSaving(true);
     try {
       const r = await api.confirmEntry({
         productType: currentProduct,
@@ -213,7 +174,7 @@ export function ProductDataEntryView() {
         const totalRecords = createdCount + mergedCount;
         let msg = `${shippingStatus} saved`;
         if (shippingStatus === "2.Output") {
-          msg = `Output + Pending transaction saved (${totalRecords} records)`;
+          msg = `Output + Pending saved (${totalRecords} records)`;
         }
         if (mergedCount > 0) {
           msg += ` · ${mergedCount} merged into existing`;
@@ -226,16 +187,15 @@ export function ProductDataEntryView() {
           setRecent((prev) => [...r.created!, ...prev].slice(0, 10));
         }
         bumpRefresh();
-        setPreview(null);
-        // Reset form (spec §48): keep selected context fields per checkboxes.
+        // Reset form: keep selected context fields per checkboxes.
         resetForm();
       } else {
-        toast.error("Confirm failed", { description: r.errors?.join(", ") });
+        toast.error("Save failed", { description: r.errors?.join(", ") });
       }
     } catch (e) {
-      toast.error("Confirm failed", { description: e instanceof Error ? e.message : "" });
+      toast.error("Save failed", { description: e instanceof Error ? e.message : "" });
     } finally {
-      setConfirming(false);
+      setSaving(false);
     }
   }
 
@@ -245,7 +205,7 @@ export function ProductDataEntryView() {
   function handleEnter(e: React.KeyboardEvent, currentField: string) {
     if (e.key !== "Enter") return;
     e.preventDefault();
-    // Order: shippingStatus → poNo → factoryPO → size → qty → preview → confirm
+    // Order: shippingStatus → poNo → factoryPO → size → qty → save
     switch (currentField) {
       case "poNo":
         focusAutocomplete(factoryPORef.current);
@@ -257,8 +217,8 @@ export function ProductDataEntryView() {
         qtyRef.current?.focus();
         break;
       case "qty":
-        // From Qty, go to Preview (spec §11: "ENTER → kiểm tra dữ liệu").
-        if (canPreview) handlePreview();
+        // From Qty, Enter saves immediately (fast entry — no preview step).
+        if (canAdd) handleAddData();
         break;
     }
   }
@@ -278,7 +238,7 @@ export function ProductDataEntryView() {
             <div>
               <h2 className="text-base font-semibold">Product Data Entry · {currentProduct}</h2>
               <p className="text-sm text-white/90">
-                Select Shipping Status → PO NO# → Factory PO → Size → Qty. Confirm before saving.
+                Select Shipping Status → PO NO# → Factory PO → Size → Qty → Enter to save instantly.
               </p>
             </div>
           </div>
@@ -479,9 +439,9 @@ export function ProductDataEntryView() {
               )}
 
               <div className="flex gap-2 pt-1">
-                <Button className="flex-1" disabled={!canPreview || previewing} onClick={handlePreview}>
-                  {previewing ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Eye className="mr-1.5 h-4 w-4" />}
-                  Preview
+                <Button className="flex-1" disabled={!canAdd || saving} onClick={handleAddData}>
+                  {saving ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Plus className="mr-1.5 h-4 w-4" />}
+                  Add Data
                 </Button>
               </div>
             </CardContent>
@@ -517,7 +477,7 @@ export function ProductDataEntryView() {
           )}
         </div>
 
-        {/* Auto-generated preview panel */}
+        {/* Auto-generated data panel */}
         <div className="lg:col-span-3">
           <Card className="h-full">
             <CardHeader className="pb-3">
@@ -529,7 +489,7 @@ export function ProductDataEntryView() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {!autoFill && !preview ? (
+              {!autoFill ? (
                 <div className="flex flex-col items-center justify-center py-16 text-center">
                   <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
                     <Sparkles className="h-6 w-6" />
@@ -539,8 +499,6 @@ export function ProductDataEntryView() {
                     Shared attributes (MODEL, SKU, Season, colors, painting, printing, deadline) will appear here from Master Data lookup.
                   </p>
                 </div>
-              ) : preview ? (
-                <PreviewConfirmView preview={preview} factoryPO={factoryPO} size={size} poNo={poNo} qty={qty} shippingStatus={shippingStatus} />
               ) : (
                 <AutoFillGrid group={autoFill} factoryPO={factoryPO} size={size} qty={qty} shippingStatus={shippingStatus} />
               )}
@@ -548,30 +506,6 @@ export function ProductDataEntryView() {
           </Card>
         </div>
       </div>
-
-      {/* Preview → Confirm dialog (spec §12) */}
-      <Dialog open={!!preview} onOpenChange={(o) => !o && setPreview(null)}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Eye className="h-5 w-5 text-primary" /> Preview Data
-            </DialogTitle>
-            <DialogDescription>
-              Review the data below. Nothing is saved until you press CONFIRM.
-            </DialogDescription>
-          </DialogHeader>
-          {preview && <PreviewDetail preview={preview} shippingStatus={shippingStatus} factoryPO={factoryPO} size={size} poNo={poNo} qty={qty} />}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPreview(null)}>
-              EDIT
-            </Button>
-            <Button onClick={handleConfirm} disabled={confirming} className={cn(theme.bg, "text-white hover:opacity-90")}>
-              {confirming ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-1.5 h-4 w-4" />}
-              CONFIRM
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
@@ -683,84 +617,6 @@ function AutoFillGrid({ group, factoryPO, size, qty, shippingStatus }: { group: 
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function PreviewConfirmView({ preview, factoryPO, size, poNo, qty, shippingStatus }: any) {
-  return <AutoFillGrid group={preview} factoryPO={factoryPO} size={size} qty={qty} shippingStatus={shippingStatus} />;
-}
-
-function PreviewDetail({ preview, shippingStatus, factoryPO, size, poNo, qty }: any) {
-  const rows: { label: string; value: string | null; badge?: string }[] = [
-    { label: "Shipping Status", value: shippingStatus, badge: shippingStatus },
-    { label: "PO NO#", value: poNo },
-    { label: "Factory PO", value: factoryPO },
-    { label: "Size", value: size },
-    { label: "Date", value: preview.date },
-    { label: "MODEL", value: preview.model },
-    { label: "SKU", value: preview.sku },
-    { label: "ITEM", value: preview.item },
-    { label: "Season", value: preview.season },
-    { label: "Color Code", value: preview.colorCode },
-    { label: "COLOR CODE", value: preview.colorCode2 },
-    { label: "PAINTING", value: preview.painting },
-    { label: "PRINTING COLOR", value: preview.printingColor },
-    { label: "Dead Line", value: preview.deadline },
-    { label: "Q'ty 1", value: preview.qty1 },
-    { label: "Q'ty 2", value: preview.qty2 },
-  ];
-  return (
-    <div className="space-y-3">
-      {preview.warnings?.length > 0 && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-50 dark:bg-amber-950/20 p-2.5">
-          {preview.warnings.map((w: string, i: number) => (
-            <div key={i} className="text-xs text-amber-700 dark:text-amber-300 flex items-start gap-1.5">
-              <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" /> {w}
-            </div>
-          ))}
-        </div>
-      )}
-      {!preview.masterDataFound && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-50 dark:bg-amber-950/20 p-2.5 text-xs text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
-          <AlertTriangle className="h-3.5 w-3.5" /> Reference data not found for this Factory PO. Fields left blank — no Master Data was created.
-        </div>
-      )}
-      <div className="grid grid-cols-2 gap-2">
-        {rows.map((r) => (
-          <div key={r.label} className="rounded-md border bg-muted/30 p-2">
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{r.label}</div>
-            <div className={cn("mt-0.5 text-sm font-medium break-words", !r.value && "text-muted-foreground/50")}>
-              {r.value || "—"}
-            </div>
-          </div>
-        ))}
-      </div>
-      {/* Output + Pending pair warning */}
-      {preview.pairedPending && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-50 dark:bg-amber-950/20 p-3">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 mb-2">
-            <Truck className="h-4 w-4" /> Output Transaction — will create 2 records:
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="rounded bg-background p-2 text-xs">
-              <Badge className="bg-amber-100 text-amber-700 mb-1">{shippingStatus}</Badge>
-              <div className="font-mono">Q'ty 1 = {preview.pairedPending.qty1}</div>
-              <div className="font-mono">Q'ty 2 = {preview.pairedPending.qty2}</div>
-            </div>
-            <div className="rounded bg-background p-2 text-xs">
-              <Badge className="bg-violet-100 text-violet-700 mb-1">3.Pending</Badge>
-              <div className="font-mono">Q'ty 1 = {preview.pairedPending.qty1}</div>
-              <div className="font-mono">Q'ty 2 = -{preview.pairedPending.qty1}</div>
-            </div>
-          </div>
-        </div>
-      )}
-      {preview.mergeInfo && (
-        <div className="rounded-md border border-emerald-500/30 bg-emerald-50 dark:bg-emerald-950/20 p-2.5 text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
-          <CheckCircle2 className="h-3.5 w-3.5" /> Identical record found — Qty will be merged: {preview.mergeInfo.existingQty} + {qty} = {preview.mergeInfo.newQty}
-        </div>
-      )}
     </div>
   );
 }

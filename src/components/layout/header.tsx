@@ -22,6 +22,7 @@ const VIEW_TITLES: Record<ViewKey, { title: string; subtitle: string; productSco
   "product-statistics": { title: "Statistics", subtitle: "By Size / Color / Model / PO / Date", productScoped: true },
   "product-import": { title: "Import Excel", subtitle: "Upload, map columns & build Master Data", productScoped: true },
   "product-export": { title: "Export Excel", subtitle: "Export entries or master data", productScoped: true },
+  "product-review": { title: "Review & Merge", subtitle: "Compare entry data with Master Data side-by-side", productScoped: true },
   "import-history": { title: "Import History", subtitle: "Past imports & error reports", productScoped: false },
   "settings-mapping": { title: "Column Mapping", subtitle: "Map Excel headers to system fields", productScoped: false },
   "settings-lookup": { title: "Lookup Rules", subtitle: "Configure auto-fill lookup keys", productScoped: false },

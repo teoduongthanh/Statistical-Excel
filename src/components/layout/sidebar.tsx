@@ -17,6 +17,7 @@ import {
   StickyNote,
   ChevronDown,
   Factory,
+  GitCompareArrows,
 } from "lucide-react";
 import { useAppStore, PRODUCT_THEME, type ProductType, type ViewKey } from "@/store/app-store";
 import { cn } from "@/lib/utils";
@@ -58,6 +59,7 @@ const PRODUCT_NAV: NavGroup[] = [
       { key: "product-dashboard", label: "Dashboard", icon: LayoutDashboard },
       { key: "product-data-entry", label: "Data Entry", icon: PenLine },
       { key: "product-master-data", label: "Master Data", icon: Database },
+      { key: "product-review", label: "Review & Merge", icon: GitCompareArrows },
       { key: "product-production-tracking", label: "Production Tracking", icon: Activity },
       { key: "product-statistics", label: "Statistics", icon: BarChart3 },
       { key: "product-import", label: "Import Excel", icon: Upload },

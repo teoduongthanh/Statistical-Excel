@@ -10,6 +10,7 @@ import { ProductProductionTrackingView } from "@/components/views/product-produc
 import { ProductStatisticsView } from "@/components/views/product-statistics-view";
 import { ProductImportView } from "@/components/views/product-import-view";
 import { ProductExportView } from "@/components/views/product-export-view";
+import { ProductReviewView } from "@/components/views/product-review-view";
 import { GlobalDashboardView } from "@/components/views/global-dashboard-view";
 import { ImportHistoryView } from "@/components/views/import-history-view";
 import { SettingsMappingView } from "@/components/views/settings-mapping-view";
@@ -44,6 +45,7 @@ export default function Home() {
             {view === "product-statistics" && <ProductStatisticsView />}
             {view === "product-import" && <ProductImportView />}
             {view === "product-export" && <ProductExportView />}
+            {view === "product-review" && <ProductReviewView />}
             {view === "import-history" && <ImportHistoryView />}
             {view === "settings-mapping" && <SettingsMappingView />}
             {view === "settings-lookup" && <SettingsLookupView />}
