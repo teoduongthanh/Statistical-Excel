@@ -170,19 +170,14 @@ export function ProductDataEntryView() {
       });
       if (r.ok) {
         const createdCount = r.created?.length || 0;
-        const mergedCount = r.merged?.length || 0;
-        const totalRecords = createdCount + mergedCount;
         let msg = `${shippingStatus} saved`;
         if (shippingStatus === "2.Output") {
-          msg = `Output + Pending saved (${totalRecords} records)`;
-        }
-        if (mergedCount > 0) {
-          msg += ` · ${mergedCount} merged into existing`;
+          msg = `Output + Pending saved (${createdCount} records)`;
         }
         toast.success(msg, {
           description: `${factoryPO} · ${size} · Qty=${qty}`,
         });
-        // Add to recent list (show the created/merged entries).
+        // Add to recent list (show the created entries).
         if (r.created && r.created.length > 0) {
           setRecent((prev) => [...r.created!, ...prev].slice(0, 10));
         }

@@ -203,48 +203,14 @@ export async function previewEntry(input: EntryInput): Promise<EntryPreview> {
     };
   }
 
-  // Check for merge candidate (existing identical entry, spec §20).
-  const mergeCandidate = await findMergeCandidate(input, preview);
-  if (mergeCandidate) {
-    preview.mergeInfo = {
-      existingId: mergeCandidate.id,
-      existingQty: Number(mergeCandidate.qty1) || 0,
-      newQty: (Number(mergeCandidate.qty1) || 0) + qtyNum,
-    };
-  }
+  // Auto-merge is DISABLED per user request: each entry creates a separate row
+  // so the user can inspect each one individually. No mergeInfo is computed.
 
   return preview;
 }
 
-// Find an existing entry with ALL business fields identical (spec §20, §21).
-// Returns null if any field differs (no merge).
-async function findMergeCandidate(input: EntryInput, preview: EntryPreview) {
-  const norm = (s: string | null | undefined) => (s ?? "").toString().trim();
-  const existing = await db.entryData.findMany({
-    where: {
-      productType: input.productType,
-      shippingStatus: input.shippingStatus,
-      factoryPO: input.factoryPO,
-      size: input.size,
-      poNo: input.poNo,
-    },
-    take: 50,
-  });
-  // Check every business field for exact equality.
-  return existing.find((e) => {
-    return (
-      norm(e.model) === norm(preview.model) &&
-      norm(e.sku) === norm(preview.sku) &&
-      norm(e.item) === norm(preview.item) &&
-      norm(e.season) === norm(preview.season) &&
-      norm(e.colorCode) === norm(preview.colorCode) &&
-      norm(e.colorCode2) === norm(preview.colorCode2) &&
-      norm(e.painting) === norm(preview.painting) &&
-      norm(e.printingColor) === norm(preview.printingColor) &&
-      norm(e.deadline) === norm(preview.deadline)
-    );
-  });
-}
+// Auto-merge is DISABLED per user request (findMergeCandidate kept for reference but unused).
+// Each entry creates a separate row so the user can inspect each one individually.
 
 // Generate a transaction group ID: OUT-<factoryPO>-<yyyyMMdd>-<seq>
 function makeTransactionGroupId(factoryPO: string): string {
@@ -301,112 +267,48 @@ export async function confirmEntry(input: EntryInput, preview: EntryPreview): Pr
 
   try {
     // Run everything in a single transaction for atomicity (spec §40).
+    // Auto-merge is DISABLED per user request: each entry creates a separate row.
     const result = await db.$transaction(async (tx) => {
       const created: any[] = [];
-      const merged: { id: string; newQty: string }[] = [];
 
-      // Helper: find merge candidate within this transaction.
-      const findMerge = async (shippingStatus: string, qty1Val: string, qty2Val: string) => {
-        const norm = (s: string | null | undefined) => (s ?? "").toString().trim();
-        const candidates = await tx.entryData.findMany({
-          where: {
-            productType: input.productType,
-            shippingStatus,
-            factoryPO: input.factoryPO,
-            size: input.size,
-            poNo: input.poNo,
-          },
-          take: 50,
-        });
-        return candidates.find((e) =>
-          norm(e.model) === norm(sharedData.model) &&
-          norm(e.sku) === norm(sharedData.sku) &&
-          norm(e.item) === norm(sharedData.item) &&
-          norm(e.season) === norm(sharedData.season) &&
-          norm(e.colorCode) === norm(sharedData.colorCode) &&
-          norm(e.colorCode2) === norm(sharedData.colorCode2) &&
-          norm(e.painting) === norm(sharedData.painting) &&
-          norm(e.printingColor) === norm(sharedData.printingColor) &&
-          norm(e.deadline) === norm(sharedData.deadline)
-        );
-      };
-
-      // Main record (user's chosen status).
-      const mainMerge = await findMerge(input.shippingStatus, qty1, qty2);
-      if (mainMerge) {
-        const existingQty = Number(mainMerge.qty1) || 0;
-        const mergedQty = existingQty + qtyNum;
-        const mergedQty2 = computeQty2(input.shippingStatus, String(mergedQty));
-        await tx.entryData.update({
-          where: { id: mainMerge.id },
-          data: { qty1: String(mergedQty), qty2: mergedQty2, updatedAt: new Date() },
-        });
-        merged.push({ id: mainMerge.id, newQty: String(mergedQty) });
-      } else {
-        const rec = await tx.entryData.create({
-          data: {
-            ...sharedData,
-            shippingStatus: input.shippingStatus,
-            qty1,
-            qty2,
-          },
-        });
-        created.push(rec);
-      }
+      // Main record (user's chosen status) — always CREATE, never merge.
+      const mainRec = await tx.entryData.create({
+        data: {
+          ...sharedData,
+          shippingStatus: input.shippingStatus,
+          qty1,
+          qty2,
+        },
+      });
+      created.push(mainRec);
 
       // For Output: create the paired Pending record (spec §17, §18, §40).
+      // Both records share the same transactionGroupId for atomic delete/audit.
       if (isOutputStatus(input.shippingStatus)) {
         const txGroupId = makeTransactionGroupId(input.factoryPO);
         const pendingStatus = "3.Pending";
         const pendingQty2 = String(-Math.abs(qtyNum));
 
-        const pendingMerge = await findMerge(pendingStatus, qty1, pendingQty2);
-        if (pendingMerge) {
-          const existingQty = Number(pendingMerge.qty1) || 0;
-          const mergedQty = existingQty + qtyNum;
-          await tx.entryData.update({
-            where: { id: pendingMerge.id },
-            data: {
-              qty1: String(mergedQty),
-              qty2: String(-Math.abs(mergedQty)),
-              transactionGroupId: txGroupId,
-              updatedAt: new Date(),
-            },
-          });
-          merged.push({ id: pendingMerge.id, newQty: String(mergedQty) });
-        } else {
-          const pendingRec = await tx.entryData.create({
-            data: {
-              ...sharedData,
-              shippingStatus: pendingStatus,
-              qty1,
-              qty2: pendingQty2,
-              transactionGroupId: txGroupId,
-            },
-          });
-          created.push(pendingRec);
-        }
+        const pendingRec = await tx.entryData.create({
+          data: {
+            ...sharedData,
+            shippingStatus: pendingStatus,
+            qty1,
+            qty2: pendingQty2,
+            transactionGroupId: txGroupId,
+          },
+        });
+        created.push(pendingRec);
+
         // Tag the main Output record with the same transactionGroupId.
-        if (mainMerge) {
-          // Already merged — update the merged main record's transactionGroupId.
-          await tx.entryData.update({
-            where: { id: mainMerge.id },
-            data: { transactionGroupId: txGroupId },
-          });
-        } else {
-          // Tag the just-created main record.
-          const mainId = created[0]?.id;
-          if (mainId) {
-            await tx.entryData.update({
-              where: { id: mainId },
-              data: { transactionGroupId: txGroupId },
-            });
-            created[0].transactionGroupId = txGroupId;
-          }
-        }
+        await tx.entryData.update({
+          where: { id: mainRec.id },
+          data: { transactionGroupId: txGroupId },
+        });
+        mainRec.transactionGroupId = txGroupId;
       }
 
-      return { created, merged };
+      return { created, merged: [] as { id: string; newQty: string }[] };
     });
     return { ok: true, errors: [], created: result.created, merged: result.merged };
   } catch (e) {

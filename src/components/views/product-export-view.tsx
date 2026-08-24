@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Download,
   FileSpreadsheet,
@@ -15,6 +15,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Package,
+  Pencil,
+  Trash2,
+  Save,
+  X,
+  AlertTriangle,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,6 +27,32 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { FIELD_LABELS, type CanonicalField } from "@/lib/fields";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -74,9 +105,28 @@ const FILTER_FIELDS: CanonicalField[] = [
   "poNo",
 ];
 
+// Fields editable in the Edit dialog (entries only).
+const EDITABLE_FIELDS: CanonicalField[] = [
+  "shippingStatus",
+  "poNo",
+  "factoryPO",
+  "size",
+  "qty1",
+  "qty2",
+  "model",
+  "sku",
+  "season",
+  "colorCode",
+  "colorCode2",
+  "painting",
+  "printingColor",
+  "deadline",
+];
+
 export function ProductExportView() {
-  const { currentProduct, refreshKey } = useAppStore();
+  const { currentProduct, refreshKey, bumpRefresh } = useAppStore();
   const theme = PRODUCT_THEME[currentProduct];
+  const qc = useQueryClient();
 
   const [source, setSource] = React.useState<Source>("entries");
   const [mode, setMode] = React.useState<Mode>("all");
@@ -88,6 +138,14 @@ export function ProductExportView() {
   const [pageSize] = React.useState(50);
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
   const [exporting, setExporting] = React.useState(false);
+
+  // Edit / Delete state for entry rows.
+  const [editRow, setEditRow] = React.useState<any>(null);
+  const [editData, setEditData] = React.useState<Record<string, string>>({});
+  const [savingEdit, setSavingEdit] = React.useState(false);
+  const [deleteRow, setDeleteRow] = React.useState<any>(null);
+  const [deleting, setDeleting] = React.useState(false);
+  const [deleteWarn, setDeleteWarn] = React.useState<{ id: string; message: string } | null>(null);
 
   React.useEffect(() => {
     const t = setTimeout(() => { setDebouncedSearch(search); setPage(1); }, 400);
@@ -204,6 +262,80 @@ export function ProductExportView() {
       toast.error("Export failed", { description: e instanceof Error ? e.message : "" });
     } finally {
       setExporting(false);
+    }
+  }
+
+  // ===== Edit / Delete handlers (entries only) =====
+  function openEdit(row: any) {
+    setEditRow(row);
+    const data: Record<string, string> = {};
+    EDITABLE_FIELDS.forEach((f) => { data[f] = row[f] ?? ""; });
+    setEditData(data);
+  }
+
+  async function saveEdit() {
+    if (!editRow) return;
+    setSavingEdit(true);
+    try {
+      await api.updateEntry(editRow.id, editData);
+      toast.success("Entry updated");
+      setEditRow(null);
+      qc.invalidateQueries({ queryKey: ["export-preview-entries"] });
+      bumpRefresh();
+    } catch (e) {
+      toast.error("Update failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  function openDelete(row: any) {
+    setDeleteRow(row);
+    setDeleteWarn(null);
+  }
+
+  async function confirmDelete() {
+    if (!deleteRow) return;
+    setDeleting(true);
+    try {
+      // First attempt — may return needsConfirm if the row is part of a transaction group.
+      const res = await api.deleteEntry(deleteRow.id, false);
+      if (res.needsConfirm) {
+        setDeleteWarn({ id: deleteRow.id, message: res.needsConfirm.message });
+        setDeleting(false);
+        return;
+      }
+      toast.success("Entry deleted");
+      setSelectedIds((s) => { const n = new Set(s); n.delete(deleteRow.id); return n; });
+      setDeleteRow(null);
+      qc.invalidateQueries({ queryKey: ["export-preview-entries"] });
+      bumpRefresh();
+    } catch (e) {
+      toast.error("Delete failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function confirmDeleteGroup() {
+    if (!deleteWarn) return;
+    setDeleting(true);
+    try {
+      const res = await api.deleteEntry(deleteWarn.id, true);
+      if (res.ok) {
+        toast.success("Entry and paired transaction deleted");
+        setSelectedIds((s) => { const n = new Set(s); n.delete(deleteWarn.id); return n; });
+        setDeleteWarn(null);
+        setDeleteRow(null);
+        qc.invalidateQueries({ queryKey: ["export-preview-entries"] });
+        bumpRefresh();
+      } else {
+        toast.error("Delete failed");
+      }
+    } catch (e) {
+      toast.error("Delete failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -430,20 +562,23 @@ export function ProductExportView() {
                           {FIELD_LABELS[c]}
                         </th>
                       ))}
+                      {source === "entries" && (
+                        <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Actions</th>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
                     {entriesQ.isLoading ? (
                       Array.from({ length: 8 }).map((_, i) => (
                         <tr key={i} className="border-t">
-                          <td colSpan={PREVIEW_COLUMNS.length + 2} className="px-3 py-3">
+                          <td colSpan={PREVIEW_COLUMNS.length + 2 + (source === "entries" ? 1 : 0)} className="px-3 py-3">
                             <div className="h-3 w-full animate-pulse rounded bg-muted" />
                           </td>
                         </tr>
                       ))
                     ) : rows.length === 0 ? (
                       <tr>
-                        <td colSpan={PREVIEW_COLUMNS.length + 2} className="px-3 py-10 text-center text-muted-foreground">
+                        <td colSpan={PREVIEW_COLUMNS.length + 2 + (source === "entries" ? 1 : 0)} className="px-3 py-10 text-center text-muted-foreground">
                           No {source} found for {currentProduct}.
                         </td>
                       </tr>
@@ -490,6 +625,30 @@ export function ProductExportView() {
                                 )}
                               </td>
                             ))}
+                            {source === "entries" && (
+                              <td className="px-2 py-1.5 text-right">
+                                <div className="flex justify-end gap-0.5">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7"
+                                    onClick={(e) => { e.stopPropagation(); openEdit(r); }}
+                                    title="Edit"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7 text-destructive hover:text-destructive"
+                                    onClick={(e) => { e.stopPropagation(); openDelete(r); }}
+                                    title="Delete"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              </td>
+                            )}
                           </tr>
                         );
                       })
@@ -519,6 +678,109 @@ export function ProductExportView() {
           </Card>
         </div>
       </div>
+
+      {/* Edit dialog (entries only) */}
+      <Dialog open={!!editRow} onOpenChange={(o) => !o && setEditRow(null)}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto scroll-thin">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Pencil className="h-4 w-4 text-primary" /> Edit Entry
+            </DialogTitle>
+            <DialogDescription>
+              Edit this entry row. Changes only affect Entry Data — Master Data is not modified.
+            </DialogDescription>
+          </DialogHeader>
+          {editRow && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                {EDITABLE_FIELDS.map((f) => (
+                  <div key={f} className="space-y-1">
+                    <label className="text-[10px] font-semibold uppercase text-muted-foreground">{FIELD_LABELS[f]}</label>
+                    <Input
+                      value={editData[f] ?? ""}
+                      onChange={(e) => setEditData((d) => ({ ...d, [f]: e.target.value }))}
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditRow(null)}>
+              <X className="h-4 w-4 mr-1.5" /> Cancel
+            </Button>
+            <Button onClick={saveEdit} disabled={savingEdit}>
+              {savingEdit ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Save className="h-4 w-4 mr-1.5" />}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation (entries only) */}
+      <AlertDialog open={!!deleteRow && !deleteWarn} onOpenChange={(o) => { if (!o) { setDeleteRow(null); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Trash2 className="h-5 w-5 text-destructive" /> Delete Entry
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this entry?
+              {deleteRow && (
+                <span className="mt-2 block text-xs font-mono bg-muted/40 rounded p-2">
+                  {deleteRow.shippingStatus} · {deleteRow.factoryPO} · {deleteRow.size} · Qty1={deleteRow.qty1} Qty2={deleteRow.qty2}
+                </span>
+              )}
+              {deleteRow?.transactionGroupId && (
+                <span className="mt-2 block text-xs text-amber-600">
+                  ⚠ This entry is part of an Output+Pending transaction group. Deleting it may leave the paired record orphaned.
+                  You will be asked to confirm deleting both.
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); confirmDelete(); }}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />}
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete group confirmation (Output+Pending pair) */}
+      <AlertDialog open={!!deleteWarn} onOpenChange={(o) => { if (!o) { setDeleteWarn(null); setDeleteRow(null); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" /> Delete Both Records?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteWarn?.message}
+              <span className="mt-2 block text-xs">
+                This will delete both the Output entry and its paired Pending entry (same transaction group).
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); confirmDeleteGroup(); }}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />}
+              Delete Both
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

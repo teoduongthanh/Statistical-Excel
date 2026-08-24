@@ -215,7 +215,13 @@ export const api = {
 
   deleteEntry: async (id: string, forceGroup = false) => {
     const res = await fetch(`/api/entries/${id}${forceGroup ? "?forceGroup=true" : ""}`, { method: "DELETE" });
-    return jsonOrThrow<{ ok: boolean; needsConfirm?: { pairedId: string; message: string }; deleted?: string[] }>(res);
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) return body as { ok: boolean; deleted?: string[] };
+    // 409 = needsConfirm (transaction group delete) — return as data, not throw.
+    if (res.status === 409 && body.needsConfirm) {
+      return body as { ok: false; needsConfirm: { pairedId: string; message: string } };
+    }
+    throw new Error(body.error || `HTTP ${res.status}`);
   },
 
   checkDuplicate: async (factoryPO: string, size: string) => {
