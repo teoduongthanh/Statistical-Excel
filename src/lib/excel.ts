@@ -89,10 +89,63 @@ export function applyMapping(
   });
 }
 
+// Format a deadline/date string to M/D/YYYY (e.g. "2026-08-15" → "8/15/2026").
+// Handles: yyyy-MM-dd, yyyy/MM/dd, dd/MM/yyyy, Excel serial numbers, and
+// already-formatted M/D/YYYY strings (returned as-is).
+export function formatDeadline(raw: string | number | null | undefined): string {
+  if (raw === null || raw === undefined || raw === "") return "";
+  const s = String(raw).trim();
+  if (!s) return "";
+
+  // Already M/D/YYYY or M/D/YY? Leave as-is.
+  if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(s)) return s;
+
+  // yyyy-MM-dd or yyyy/MM/dd
+  const isoMatch = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (isoMatch) {
+    const y = Number(isoMatch[1]);
+    const m = Number(isoMatch[2]);
+    const d = Number(isoMatch[3]);
+    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) return `${m}/${d}/${y}`;
+  }
+
+  // dd/MM/yyyy
+  const dmyMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (dmyMatch) {
+    const d = Number(dmyMatch[1]);
+    const m = Number(dmyMatch[2]);
+    const y = Number(dmyMatch[3]);
+    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) return `${m}/${d}/${y}`;
+  }
+
+  // Try generic Date parse (ISO, etc.) → reformat.
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = parsed.getMonth() + 1;
+    const d = parsed.getDate();
+    return `${m}/${d}/${y}`;
+  }
+
+  // Excel serial (number of days since 1899-12-30).
+  const n = Number(s);
+  if (!isNaN(n) && n > 1000) {
+    const epoch = new Date(Date.UTC(1899, 11, 30));
+    epoch.setDate(epoch.getDate() + n);
+    const y = epoch.getFullYear();
+    const m = epoch.getMonth() + 1;
+    const d = epoch.getDate();
+    return `${m}/${d}/${y}`;
+  }
+
+  return s;
+}
+
 // Build an Excel workbook from entry/master rows and return a Node Buffer.
 // Rows are exported in the order provided (caller controls sort order).
+// qty1/qty2 are exported as numbers; deadline/date are formatted as M/D/YYYY.
 export function buildExcelBuffer(
-  rows: Partial<Record<CanonicalField, string | number | null>>[],
+  rows: Partial<Record<CanonicalField, string | number | null | undefined>>[],
   columns: CanonicalField[]
 ): Buffer {
   const wb = XLSX.utils.book_new();
@@ -100,7 +153,17 @@ export function buildExcelBuffer(
   const data = rows.map((row) => {
     const o: Record<string, string | number | null> = {};
     columns.forEach((c) => {
-      o[FIELD_LABELS[c]] = row[c] ?? "";
+      const raw = row[c];
+      if (c === "qty1" || c === "qty2") {
+        // Export as number (integer). Parse if string, default 0 if empty/null.
+        const n = typeof raw === "number" ? raw : parseInt(String(raw ?? "0"), 10);
+        o[FIELD_LABELS[c]] = isNaN(n) ? 0 : n;
+      } else if (c === "deadline" || c === "date") {
+        // Format deadline/date as M/D/YYYY (e.g. "2026-08-15" → "8/15/2026").
+        o[FIELD_LABELS[c]] = formatDeadline(raw);
+      } else {
+        o[FIELD_LABELS[c]] = (raw as string | number | null) ?? "";
+      }
     });
     return o;
   });
