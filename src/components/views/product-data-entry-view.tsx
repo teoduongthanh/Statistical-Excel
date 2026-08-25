@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   PenLine,
   Sparkles,
@@ -12,6 +13,12 @@ import {
   RotateCcw,
   AlertCircle,
   Info,
+  Trash2,
+  Pencil,
+  Save,
+  X,
+  Table2,
+  Calculator,
 } from "lucide-react";
 import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
 import { api } from "@/lib/api-client";
@@ -23,6 +30,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -30,6 +38,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 
 const SHIPPING_OPTIONS = [
@@ -60,6 +86,26 @@ export function ProductDataEntryView() {
 
   // Recent entries
   const [recent, setRecent] = React.useState<any[]>([]);
+  const qc = useQueryClient();
+
+  // ===== Entries table state =====
+  const [selectedEntryIds, setSelectedEntryIds] = React.useState<Set<string>>(new Set());
+  const [editEntry, setEditEntry] = React.useState<any>(null);
+  const [editData, setEditData] = React.useState<Record<string, string>>({});
+  const [savingEdit, setSavingEdit] = React.useState(false);
+  const [deleteEntryRow, setDeleteEntryRow] = React.useState<any>(null);
+  const [deleting, setDeleting] = React.useState(false);
+  const [deleteWarn, setDeleteWarn] = React.useState<{ id: string; message: string } | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+  const [bulkDeleting, setBulkDeleting] = React.useState(false);
+
+  // Fetch entries for this product (today's entries + recent).
+  const entriesQ = useQuery({
+    queryKey: ["data-entry-entries", currentProduct, refreshKey],
+    queryFn: () => api.listEntries({ productType: currentProduct, page: 1, pageSize: 50 }),
+  });
+  const entryRows = entriesQ.data?.rows ?? [];
+  const entryTotal = entriesQ.data?.total ?? 0;
 
   // Keep context checkboxes (spec §48 — extended to PO NO# + Factory PO)
   const [keepStatus, setKeepStatus] = React.useState(true);
@@ -215,6 +261,137 @@ export function ProductDataEntryView() {
         // From Qty, Enter saves immediately (fast entry — no preview step).
         if (canAdd) handleAddData();
         break;
+    }
+  }
+
+  // ===== Entries table handlers =====
+  function toggleEntry(id: string) {
+    setSelectedEntryIds((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+  function toggleAllEntries() {
+    if (selectedEntryIds.size === entryRows.length) setSelectedEntryIds(new Set());
+    else setSelectedEntryIds(new Set(entryRows.map((r: any) => r.id)));
+  }
+
+  // Calculate totals for checked rows.
+  const totals = React.useMemo(() => {
+    let qty1Sum = 0, qty2Sum = 0;
+    for (const r of entryRows) {
+      if (selectedEntryIds.has(r.id)) {
+        qty1Sum += Number(r.qty1) || 0;
+        qty2Sum += Number(r.qty2) || 0;
+      }
+    }
+    return { qty1Sum, qty2Sum, count: selectedEntryIds.size };
+  }, [entryRows, selectedEntryIds]);
+
+  function openEditEntry(row: any) {
+    setEditEntry(row);
+    setEditData({
+      shippingStatus: row.shippingStatus || "",
+      poNo: row.poNo || "",
+      factoryPO: row.factoryPO || "",
+      size: row.size || "",
+      qty1: String(row.qty1 ?? ""),
+      qty2: String(row.qty2 ?? ""),
+      model: row.model || "",
+      sku: row.sku || "",
+      season: row.season || "",
+      colorCode: row.colorCode || "",
+      colorCode2: row.colorCode2 || "",
+      deadline: row.deadline || "",
+      note: row.note || "",
+    });
+  }
+
+  async function saveEditEntry() {
+    if (!editEntry) return;
+    setSavingEdit(true);
+    try {
+      await api.updateEntry(editEntry.id, editData);
+      toast.success("Entry updated");
+      setEditEntry(null);
+      qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+      bumpRefresh();
+    } catch (e) {
+      toast.error("Update failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  function openDeleteEntry(row: any) {
+    setDeleteEntryRow(row);
+    setDeleteWarn(null);
+  }
+
+  async function confirmDeleteEntry() {
+    if (!deleteEntryRow) return;
+    setDeleting(true);
+    try {
+      const res = await api.deleteEntry(deleteEntryRow.id, false);
+      if (res.needsConfirm) {
+        setDeleteWarn({ id: deleteEntryRow.id, message: res.needsConfirm.message });
+        setDeleting(false);
+        return;
+      }
+      toast.success("Entry deleted");
+      setSelectedEntryIds((s) => { const n = new Set(s); n.delete(deleteEntryRow.id); return n; });
+      setDeleteEntryRow(null);
+      qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+      bumpRefresh();
+    } catch (e) {
+      toast.error("Delete failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function confirmDeleteEntryGroup() {
+    if (!deleteWarn) return;
+    setDeleting(true);
+    try {
+      const res = await api.deleteEntry(deleteWarn.id, true);
+      if (res.ok) {
+        toast.success("Entry and paired transaction deleted");
+        setSelectedEntryIds((s) => { const n = new Set(s); n.delete(deleteWarn.id); return n; });
+        setDeleteWarn(null);
+        setDeleteEntryRow(null);
+        qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+        bumpRefresh();
+      }
+    } catch (e) {
+      toast.error("Delete failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function confirmBulkDeleteEntries() {
+    setBulkDeleting(true);
+    try {
+      const ids = [...selectedEntryIds];
+      const res = await api.bulkDeleteEntries(ids);
+      if (res.ok) {
+        let msg = `${res.deleted} entries deleted`;
+        if (res.deleted > ids.length) {
+          msg += ` (includes ${res.deleted - ids.length} paired transaction records)`;
+        }
+        toast.success(msg);
+        setSelectedEntryIds(new Set());
+        setBulkDeleteOpen(false);
+        qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+        bumpRefresh();
+      }
+    } catch (e) {
+      toast.error("Bulk delete failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setBulkDeleting(false);
     }
   }
 
@@ -502,6 +679,230 @@ export function ProductDataEntryView() {
           </Card>
         </div>
       </div>
+
+      {/* ===== Entries Table ===== */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center justify-between text-sm">
+            <span className="flex items-center gap-2">
+              <Table2 className="h-4 w-4 text-primary" /> Entries Data ({entryTotal})
+              {entriesQ.isFetching && <Badge variant="secondary" className="text-[10px]">loading…</Badge>}
+            </span>
+            <span className="flex items-center gap-2">
+              {selectedEntryIds.size > 0 && (
+                <Button size="sm" variant="destructive" className="h-7 text-xs" onClick={() => setBulkDeleteOpen(true)}>
+                  <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete Selected ({selectedEntryIds.size})
+                </Button>
+              )}
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {entriesQ.isLoading ? (
+            <div className="p-6 space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="h-8 w-full animate-pulse rounded bg-muted" />
+              ))}
+            </div>
+          ) : entryRows.length === 0 ? (
+            <div className="p-10 text-center text-sm text-muted-foreground">
+              No entries yet for {currentProduct}. Add data using the form above.
+            </div>
+          ) : (
+            <div className="overflow-x-auto scroll-thin">
+              <table className="w-full text-xs">
+                <thead className="bg-muted/40 sticky top-0">
+                  <tr>
+                    <th className="px-2 py-2 w-8">
+                      <Checkbox
+                        checked={entryRows.length > 0 && selectedEntryIds.size === entryRows.length}
+                        onCheckedChange={toggleAllEntries}
+                      />
+                    </th>
+                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Status</th>
+                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">PO NO#</th>
+                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Factory PO</th>
+                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Model</th>
+                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Size</th>
+                    <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Qty1</th>
+                    <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Qty2</th>
+                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Season</th>
+                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Deadline</th>
+                    <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entryRows.map((r: any) => {
+                    const isSelected = selectedEntryIds.has(r.id);
+                    return (
+                      <tr key={r.id} className={cn("border-t hover:bg-muted/30", isSelected && "bg-primary/5")}>
+                        <td className="px-2 py-1.5">
+                          <Checkbox checked={isSelected} onCheckedChange={() => toggleEntry(r.id)} />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <Badge variant="outline" className={cn("text-[9px]", shippingBadgeClass(r.shippingStatus))}>
+                            {r.shippingStatus || "—"}
+                          </Badge>
+                        </td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{r.poNo}</td>
+                        <td className="px-2 py-1.5 font-medium text-primary whitespace-nowrap">{r.factoryPO}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{r.model}</td>
+                        <td className="px-2 py-1.5"><Badge variant="outline" className="text-[9px] font-mono">{r.size}</Badge></td>
+                        <td className="px-2 py-1.5 text-right tabular-nums font-medium">{r.qty1}</td>
+                        <td className={cn("px-2 py-1.5 text-right tabular-nums", Number(r.qty2) < 0 && "text-rose-600")}>{r.qty2}</td>
+                        <td className="px-2 py-1.5"><Badge variant="secondary" className="text-[9px]">{r.season}</Badge></td>
+                        <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground">{r.deadline || "—"}</td>
+                        <td className="px-2 py-1.5">
+                          <div className="flex justify-end gap-0.5">
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEditEntry(r)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => openDeleteEntry(r)}>
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                {/* Totals footer */}
+                {selectedEntryIds.size > 0 && (
+                  <tfoot className="bg-primary/5 border-t-2 border-primary/20">
+                    <tr>
+                      <td colSpan={6} className="px-2 py-2 text-right text-[11px] font-semibold uppercase text-muted-foreground">
+                        <Calculator className="h-3 w-3 inline mr-1" />
+                        Total ({totals.count} selected):
+                      </td>
+                      <td className="px-2 py-2 text-right tabular-nums font-bold text-primary text-sm">{totals.qty1Sum}</td>
+                      <td className={cn("px-2 py-2 text-right tabular-nums font-bold text-sm", totals.qty2Sum < 0 && "text-rose-600")}>{totals.qty2Sum}</td>
+                      <td colSpan={3}></td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Edit entry dialog */}
+      <Dialog open={!!editEntry} onOpenChange={(o) => !o && setEditEntry(null)}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto scroll-thin">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Pencil className="h-4 w-4 text-primary" /> Edit Entry
+            </DialogTitle>
+            <DialogDescription>Edit this entry. Master Data is not affected.</DialogDescription>
+          </DialogHeader>
+          {editEntry && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { f: "shippingStatus", l: "Shipping Status" },
+                  { f: "poNo", l: "PO NO#" },
+                  { f: "factoryPO", l: "Factory PO" },
+                  { f: "size", l: "Size" },
+                  { f: "qty1", l: "Q'ty 1" },
+                  { f: "qty2", l: "Q'ty 2" },
+                  { f: "model", l: "MODEL" },
+                  { f: "sku", l: "SKU" },
+                  { f: "season", l: "Season" },
+                  { f: "colorCode", l: "Color Code" },
+                  { f: "colorCode2", l: "COLOR CODE" },
+                  { f: "deadline", l: "Dead Line" },
+                ].map(({ f, l }) => (
+                  <div key={f} className="space-y-1">
+                    <label className="text-[10px] font-semibold uppercase text-muted-foreground">{l}</label>
+                    <Input value={editData[f] ?? ""} onChange={(e) => setEditData((d) => ({ ...d, [f]: e.target.value }))} className="h-8 text-xs" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditEntry(null)}><X className="h-4 w-4 mr-1.5" /> Cancel</Button>
+            <Button onClick={saveEditEntry} disabled={savingEdit}>
+              {savingEdit ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Save className="h-4 w-4 mr-1.5" />} Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete entry dialog */}
+      <AlertDialog open={!!deleteEntryRow && !deleteWarn} onOpenChange={(o) => { if (!o) setDeleteEntryRow(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Trash2 className="h-5 w-5 text-destructive" /> Delete Entry
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this entry?
+              {deleteEntryRow && (
+                <span className="mt-2 block text-xs font-mono bg-muted/40 rounded p-2">
+                  {deleteEntryRow.shippingStatus} · {deleteEntryRow.factoryPO} · {deleteEntryRow.size} · Qty1={deleteEntryRow.qty1} Qty2={deleteEntryRow.qty2}
+                </span>
+              )}
+              {deleteEntryRow?.transactionGroupId && (
+                <span className="mt-2 block text-xs text-amber-600">
+                  ⚠ Part of an Output+Pending transaction group. You will be asked to delete both.
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(e) => { e.preventDefault(); confirmDeleteEntry(); }} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              {deleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />} Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete group warning */}
+      <AlertDialog open={!!deleteWarn} onOpenChange={(o) => { if (!o) { setDeleteWarn(null); setDeleteEntryRow(null); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" /> Delete Both Records?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteWarn?.message}
+              <span className="mt-2 block text-xs">This will delete both the Output and its paired Pending entry.</span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(e) => { e.preventDefault(); confirmDeleteEntryGroup(); }} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              {deleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />} Delete Both
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk delete dialog */}
+      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" /> Delete {selectedEntryIds.size} Selected Entries?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              You are about to delete <strong>{selectedEntryIds.size}</strong> entry row(s).
+              <span className="mt-2 block text-xs text-amber-600">
+                ⚠ Entries belonging to an Output+Pending transaction group will have their paired record deleted too.
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(e) => { e.preventDefault(); confirmBulkDeleteEntries(); }} disabled={bulkDeleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              {bulkDeleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />}
+              Delete {selectedEntryIds.size} Entries
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -512,6 +913,17 @@ function computeQty2Preview(shippingStatus: string, qty: string): string {
   if (isNaN(n)) return "—";
   if (shippingStatus === "3.Pending") return String(-Math.abs(n));
   return String(n);
+}
+
+// Shipping status badge color helper.
+function shippingBadgeClass(status: string | null | undefined): string {
+  if (!status) return "";
+  const s = status.toLowerCase();
+  if (s.startsWith("1")) return "bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300";
+  if (s.startsWith("2")) return "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300";
+  if (s.startsWith("3")) return "bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300";
+  if (s.startsWith("4")) return "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300";
+  return "";
 }
 
 // Size input with filtered suggestions.
