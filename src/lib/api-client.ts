@@ -355,6 +355,38 @@ export const api = {
     return jsonOrThrow<{ products: any[] }>(res);
   },
 
+  // Shipment planning (Daily Shipment Planning module)
+  getShipmentGroups: async (productType: string, filters?: Record<string, string>) => {
+    const params = new URLSearchParams({ productType, ...(filters || {}) });
+    const res = await fetch(`/api/shipment/groups?${params}`);
+    return jsonOrThrow<{ total: number; shortOutput: number; surplus: number; complete: number; groups: any[] }>(res);
+  },
+
+  getShipmentColors: async (productType: string) => {
+    const res = await fetch(`/api/shipment/colors?productType=${productType}`);
+    return jsonOrThrow<{ colors: string[] }>(res);
+  },
+
+  getSurplusTransfers: async (productType: string) => {
+    const res = await fetch(`/api/shipment/surplus?productType=${productType}`);
+    return jsonOrThrow<{ total: number; totalTransferable: number; proposals: any[] }>(res);
+  },
+
+  exportShipment: async (body: {
+    productType: string;
+    selectedColors: string[];
+    plannedOutputs: any[];
+    templatePath?: string;
+  }): Promise<Blob> => {
+    const res = await fetch("/api/shipment/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error("Shipment export failed");
+    return res.blob();
+  },
+
   // Dashboard & history
   dashboard: async (): Promise<DashboardStats> => {
     const res = await fetch("/api/dashboard");

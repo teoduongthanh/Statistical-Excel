@@ -18,6 +18,7 @@ import {
   ChevronDown,
   Factory,
   GitCompareArrows,
+  Truck,
 } from "lucide-react";
 import { useAppStore, PRODUCT_THEME, type ProductType, type ViewKey } from "@/store/app-store";
 import { cn } from "@/lib/utils";
@@ -62,6 +63,7 @@ const PRODUCT_NAV: NavGroup[] = [
       { key: "product-review", label: "Review & Merge", icon: GitCompareArrows },
       { key: "product-production-tracking", label: "Production Tracking", icon: Activity },
       { key: "product-statistics", label: "Statistics", icon: BarChart3 },
+      { key: "product-shipment", label: "Daily Shipment", icon: Truck },
       { key: "product-import", label: "Import Excel", icon: Upload },
       { key: "product-export", label: "Export Excel", icon: Download },
     ],

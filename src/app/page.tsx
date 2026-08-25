@@ -8,6 +8,7 @@ import { ProductDataEntryView } from "@/components/views/product-data-entry-view
 import { ProductMasterDataView } from "@/components/views/product-master-data-view";
 import { ProductProductionTrackingView } from "@/components/views/product-production-tracking-view";
 import { ProductStatisticsView } from "@/components/views/product-statistics-view";
+import { ProductShipmentView } from "@/components/views/product-shipment-view";
 import { ProductImportView } from "@/components/views/product-import-view";
 import { ProductExportView } from "@/components/views/product-export-view";
 import { ProductReviewView } from "@/components/views/product-review-view";
@@ -43,6 +44,7 @@ export default function Home() {
             {view === "product-master-data" && <ProductMasterDataView />}
             {view === "product-production-tracking" && <ProductProductionTrackingView />}
             {view === "product-statistics" && <ProductStatisticsView />}
+            {view === "product-shipment" && <ProductShipmentView />}
             {view === "product-import" && <ProductImportView />}
             {view === "product-export" && <ProductExportView />}
             {view === "product-review" && <ProductReviewView />}
