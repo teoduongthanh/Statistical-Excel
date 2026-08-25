@@ -17,6 +17,9 @@ interface SmartAutocompleteProps {
   className?: string;
   autoFocus?: boolean;
   productType?: string;
+  // PO NO# linkage: when field="factoryPO" and poNo is set, only Factory POs
+  // that co-occur with this PO NO# in Master Data are suggested.
+  poNo?: string;
 }
 
 function UrgencyBadge({ urgency, deadline }: { urgency?: string; deadline?: string | null }) {
@@ -45,6 +48,7 @@ export function SmartAutocomplete({
   className,
   autoFocus,
   productType,
+  poNo,
 }: SmartAutocompleteProps) {
   const [open, setOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
@@ -52,6 +56,16 @@ export function SmartAutocomplete({
   const [hi, setHi] = React.useState(0);
   const wrapRef = React.useRef<HTMLDivElement>(null);
   const reqId = React.useRef(0);
+  // Track the value that was just selected by the user. When the value changes
+  // because the user picked a suggestion, we must NOT reopen the dropdown —
+  // otherwise the search effect fires, finds the exact value, and shows the
+  // dropdown again. We clear this flag as soon as the user types (changes the
+  // value to something that doesn't equal the selected one).
+  //
+  // This also prevents the dropdown from reopening when the user presses Enter
+  // to select a suggestion and then the focus moves to the next field — the
+  // search effect would otherwise re-fire for the now-set value.
+  const selectedRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     const q = value.trim();
@@ -60,11 +74,18 @@ export function SmartAutocomplete({
       setOpen(false);
       return;
     }
+    // If the value equals what the user just selected, don't re-search / reopen.
+    // This prevents the dropdown from popping up again after a selection.
+    if (selectedRef.current && value === selectedRef.current) {
+      return;
+    }
+    // User typed something different from the selected value → clear the flag.
+    selectedRef.current = null;
     setLoading(true);
     const id = ++reqId.current;
     const t = setTimeout(async () => {
       try {
-        const res = await api.searchMaster(q, field, 15, true, productType);
+        const res = await api.searchMaster(q, field, 15, true, productType, poNo);
         if (id !== reqId.current) return;
         setItems(res);
         setOpen(res.length > 0);
@@ -76,7 +97,7 @@ export function SmartAutocomplete({
       }
     }, 300);
     return () => clearTimeout(t);
-  }, [value, field, productType]);
+  }, [value, field, productType, poNo]);
 
   React.useEffect(() => {
     function onDown(e: MouseEvent) {
@@ -89,7 +110,14 @@ export function SmartAutocomplete({
   }, []);
 
   function pick(s: AutocompleteSuggestion) {
+    // Mark this value as "just selected" so the search effect doesn't reopen
+    // the dropdown. This is the KEY fix: after selection, the value changes
+    // → useEffect fires → but selectedRef matches → we return early → no
+    // dropdown. The user can then press Enter again to move to the next field
+    // without the dropdown reopening.
+    selectedRef.current = s.value;
     onChange(s.value);
+    setItems([]);
     setOpen(false);
     onSelect?.(s);
   }
@@ -124,7 +152,9 @@ export function SmartAutocomplete({
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKey}
           onFocus={() => {
-            if (items.length > 0) setOpen(true);
+            // Only reopen if the user is actively typing (items already loaded
+            // and value is not a freshly-selected exact match).
+            if (items.length > 0 && !selectedRef.current) setOpen(true);
           }}
           placeholder={placeholder}
           className="flex h-11 w-full rounded-md border border-input bg-background pl-9 pr-9 py-2 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
@@ -138,6 +168,7 @@ export function SmartAutocomplete({
             onClick={() => {
               onChange("");
               setItems([]);
+              selectedRef.current = null;
             }}
             className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
             aria-label="Clear"
@@ -178,7 +209,7 @@ export function SmartAutocomplete({
             ))}
           </ul>
           <div className="border-t px-3 py-1.5 text-[10px] text-muted-foreground">
-            {items.length} suggestion{items.length !== 1 ? "s" : ""} · sorted by deadline urgency + fuzzy match
+            {items.length} suggestion{items.length !== 1 ? "s" : ""} · sorted by deadline urgency + suffix match
           </div>
         </div>
       )}

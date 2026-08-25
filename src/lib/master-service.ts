@@ -216,12 +216,16 @@ function deadlineUrgency(deadline: string | null | undefined): "overdue" | "toda
 // Autocomplete: pre-filter with SQL LIKE, then fuzzy-score and rank.
 // Product isolation: productType is MANDATORY — searches never cross products.
 // If prioritizeByDeadline is true, boost scores for Factory POs with nearer deadlines.
+//
+// PO NO# linkage: when searching `factoryPO` and a `poNo` is provided,
+// only return Factory POs that actually co-occur with that PO NO# in Master Data.
 export async function searchMaster(
   field: CanonicalField,
   query: string,
   limit = 15,
   prioritizeByDeadline = true,
-  productType?: string
+  productType?: string,
+  poNo?: string
 ): Promise<AutocompleteSuggestion[]> {
   const q = query.trim();
   if (!q) return [];
@@ -258,19 +262,27 @@ export async function searchMaster(
   const col = colMap[field];
   const like = `%${q.toLowerCase()}%`;
 
-  // Product-scoped query: only returns rows for the active product.
-  const sql = productType
-    ? `SELECT DISTINCT "${col}" AS v FROM MasterData
-       WHERE productType = ? AND "${col}" IS NOT NULL AND "${col}" != ''
-         AND LOWER("${col}") LIKE ?
-       LIMIT 200`
-    : `SELECT DISTINCT "${col}" AS v FROM MasterData
-       WHERE "${col}" IS NOT NULL AND "${col}" != ''
-         AND LOWER("${col}") LIKE ?
-       LIMIT 200`;
-  const rows = productType
-    ? await db.$queryRawUnsafe<{ v: string }[]>(sql, productType, like)
-    : await db.$queryRawUnsafe<{ v: string }[]>(sql, like);
+  // Build WHERE conditions. Always product-scoped when productType is set.
+  // When searching factoryPO and poNo is provided, add extra filter so only
+  // Factory POs co-occurring with that PO NO# are returned.
+  const conditions: string[] = [];
+  const params: any[] = [];
+  if (productType) {
+    conditions.push("productType = ?");
+    params.push(productType);
+  }
+  if (poNo && field === "factoryPO") {
+    conditions.push("poNo = ?");
+    params.push(poNo);
+  }
+  conditions.push(`"${col}" IS NOT NULL`);
+  conditions.push(`"${col}" != ''`);
+  conditions.push(`LOWER("${col}") LIKE ?`);
+  params.push(like);
+
+  const whereClause = conditions.join(" AND ");
+  const sql = `SELECT DISTINCT "${col}" AS v FROM MasterData WHERE ${whereClause} LIMIT 200`;
+  const rows = await db.$queryRawUnsafe<{ v: string }[]>(sql, ...params);
 
   const candidates = rows.map((r) => ({ value: r.v, sub: "" }));
   const scored: AutocompleteSuggestion[] = [];

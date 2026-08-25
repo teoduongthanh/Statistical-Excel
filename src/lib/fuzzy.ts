@@ -1,5 +1,13 @@
 // Fuzzy / smart search utilities.
-// Strategy: exact > startsWith > word-starts-with > contains > endsWith > subsequence.
+// Strategy (priority order):
+//   1. Exact match
+//   2. Last-N-chars match (e.g. "606" matches "MH26110606" by last 3 chars) — HIGH priority
+//   3. startsWith
+//   4. word-boundary startsWith
+//   5. contains
+//   6. endsWith (low priority — already covered by #2 but kept for fallback)
+//   7. subsequence
+//   8. Levenshtein typo tolerance
 // All comparisons are case-insensitive and ignore extra whitespace.
 
 function clean(s: string): string {
@@ -43,25 +51,55 @@ export interface Scored {
 }
 
 // Score a candidate value against the query. Higher = better. 0 = no match.
+//
+// LAST-N-CHARS PRIORITY:
+// When the user types "606", we want "MH26110606" (ends with 606) to rank
+// higher than "MH60612345" (contains 606 in the middle). We extract the
+// trailing portion of the value and boost scores for suffix matches.
 export function scoreMatch(query: string, value: string): number {
   const q = clean(query);
   const v = clean(value);
   if (!q || !v) return 0;
-  if (v === q) return 1000;
+
+  // 1. Exact match — highest priority.
+  if (v === q) return 2000;
+
   let score = 0;
-  if (v.startsWith(q)) score = Math.max(score, 800 - (v.length - q.length));
-  // Word-boundary startsWith (e.g. value contains "/" separators).
+
+  // 2. LAST-N-CHARS match (NEW — highest non-exact priority).
+  // If the value ends with the query, give it a very high score.
+  // Shorter values that end with the query rank higher (more precise match).
+  if (v.endsWith(q)) {
+    // e.g. "MH26110606".endsWith("606") → true → score ~950
+    // The shorter the remaining prefix, the better.
+    const remainingLen = v.length - q.length;
+    score = Math.max(score, 950 - remainingLen);
+  }
+
+  // 3. startsWith (e.g. "MH26110228" startsWith "MH26")
+  if (v.startsWith(q)) {
+    score = Math.max(score, 800 - (v.length - q.length));
+  }
+
+  // 4. Word-boundary startsWith (e.g. value contains "/" separators).
   const parts = v.split(/[^a-z0-9]+/);
   for (const p of parts) {
     if (p && p.startsWith(q)) {
       score = Math.max(score, 700 - (p.length - q.length));
     }
   }
-  if (v.includes(q)) score = Math.max(score, 500 - (v.indexOf(q)));
-  if (v.endsWith(q)) score = Math.max(score, 400);
-  // Subsequence match (e.g. "228" in "MH26110228").
-  if (isSubsequence(q, v)) score = Math.max(score, 300 - (v.length - q.length));
-  // Levenshtein fuzzy for typo tolerance.
+
+  // 5. contains (anywhere in the value)
+  if (v.includes(q)) {
+    score = Math.max(score, 500 - (v.indexOf(q)));
+  }
+
+  // 6. Subsequence match (e.g. "228" as subsequence in "MH26110228")
+  if (isSubsequence(q, v)) {
+    score = Math.max(score, 300 - (v.length - q.length));
+  }
+
+  // 7. Levenshtein fuzzy for typo tolerance.
   const dist = levenshtein(q, v);
   const maxLen = Math.max(q.length, v.length);
   if (maxLen > 0) {
@@ -70,6 +108,7 @@ export function scoreMatch(query: string, value: string): number {
       score = Math.max(score, Math.round(ratio * 250));
     }
   }
+
   return score;
 }
 
@@ -104,7 +143,6 @@ export function rankSuggestions(
 }
 
 // SQLite-friendly filter expression for server-side pre-filtering.
-// Returns SQL fragments suitable for a LIKE filter on a column, combined with OR.
 export function buildLikeClauses(query: string): string[] {
   const q = clean(query);
   if (!q) return [];

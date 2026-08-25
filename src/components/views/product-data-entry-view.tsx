@@ -349,6 +349,7 @@ export function ProductDataEntryView() {
                     placeholder={shippingDisabled ? "Select Shipping Status first" : "Type 051, 228, MH27…"}
                     disabled={shippingDisabled}
                     productType={currentProduct}
+                    poNo={poNo || undefined}
                   />
                 </div>
                 {factoryPO && !lookupLoading && autoFill === null && (

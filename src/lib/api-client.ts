@@ -108,13 +108,15 @@ export const api = {
     field: CanonicalField,
     limit = 15,
     prioritizeByDeadline = true,
-    productType?: string
+    productType?: string,
+    poNo?: string
   ): Promise<AutocompleteSuggestion[]> => {
     const params = new URLSearchParams({
       q, field, limit: String(limit),
       prioritizeByDeadline: String(prioritizeByDeadline),
     });
     if (productType) params.set("productType", productType);
+    if (poNo) params.set("poNo", poNo);
     const res = await fetch(`/api/master-data/search?${params}`);
     return jsonOrThrow(res);
   },
