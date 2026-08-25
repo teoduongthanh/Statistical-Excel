@@ -700,6 +700,10 @@ export function OrderNotesView() {
     size: string;
   }>({ factoryPO: "", noteDate: "", size: "" });
 
+  // ===== Client-side pagination for the notes timeline =====
+  const [notePage, setNotePage] = React.useState(1);
+  const NOTE_PAGE_SIZE = 15;
+
   const params = React.useMemo(
     () => ({
       factoryPO: committed.factoryPO || undefined,
@@ -715,7 +719,12 @@ export function OrderNotesView() {
   });
 
   const notes = notesQuery.data ?? [];
-  const groups = React.useMemo(() => groupByDate(notes), [notes]);
+  const noteTotalPages = Math.max(1, Math.ceil(notes.length / NOTE_PAGE_SIZE));
+  const pagedNotes = notes.slice(
+    (notePage - 1) * NOTE_PAGE_SIZE,
+    notePage * NOTE_PAGE_SIZE
+  );
+  const groups = React.useMemo(() => groupByDate(pagedNotes), [pagedNotes]);
 
   function applyFilters() {
     setCommitted({
@@ -723,6 +732,7 @@ export function OrderNotesView() {
       noteDate: filterDate,
       size: filterSize === "ALL" ? "" : filterSize,
     });
+    setNotePage(1);
   }
 
   function clearFilters() {
@@ -730,6 +740,7 @@ export function OrderNotesView() {
     setFilterDate("");
     setFilterSize("ALL");
     setCommitted({ factoryPO: "", noteDate: "", size: "" });
+    setNotePage(1);
   }
 
   function invalidate() {
@@ -945,6 +956,33 @@ export function OrderNotesView() {
               </section>
             );
           })}
+        </div>
+      )}
+
+      {/* Pagination footer — only when there are notes to page through */}
+      {notes.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card/60 px-3 py-2">
+          <span className="text-xs text-muted-foreground">
+            Page {notePage} of {noteTotalPages} ({notes.length} total notes)
+          </span>
+          <div className="flex gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={notePage <= 1}
+              onClick={() => setNotePage((p) => Math.max(1, p - 1))}
+            >
+              Prev
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={notePage >= noteTotalPages}
+              onClick={() => setNotePage((p) => p + 1)}
+            >
+              Next
+            </Button>
+          </div>
         </div>
       )}
 

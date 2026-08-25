@@ -1,0 +1,1031 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→import * as React from "react";
+     4→     4→import { useQuery, useQueryClient } from "@tanstack/react-query";
+     5→     5→import {
+     6→     6→  PenLine,
+     7→     7→  Sparkles,
+     8→     8→  Loader2,
+     9→     9→  CheckCircle2,
+    10→    10→  AlertTriangle,
+    11→    11→  Plus,
+    12→    12→  Wand2,
+    13→    13→  RotateCcw,
+    14→    14→  AlertCircle,
+    15→    15→  Info,
+    16→    16→  Trash2,
+    17→    17→  Pencil,
+    18→    18→  Save,
+    19→    19→  X,
+    20→    20→  Table2,
+    21→    21→  Calculator,
+    22→    22→} from "lucide-react";
+    23→    23→import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
+    24→    24→import { api } from "@/lib/api-client";
+    25→    25→import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
+    26→    26→import { cn } from "@/lib/utils";
+    27→    27→import { Button } from "@/components/ui/button";
+    28→    28→import { Input } from "@/components/ui/input";
+    29→    29→import { Label } from "@/components/ui/label";
+    30→    30→import { Switch } from "@/components/ui/switch";
+    31→    31→import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+    32→    32→import { Badge } from "@/components/ui/badge";
+    33→    33→import { Checkbox } from "@/components/ui/checkbox";
+    34→    34→import {
+    35→    35→  Select,
+    36→    36→  SelectContent,
+    37→    37→  SelectItem,
+    38→    38→  SelectTrigger,
+    39→    39→  SelectValue,
+    40→    40→} from "@/components/ui/select";
+    41→    41→import {
+    42→    42→  Dialog,
+    43→    43→  DialogContent,
+    44→    44→  DialogHeader,
+    45→    45→  DialogTitle,
+    46→    46→  DialogDescription,
+    47→    47→  DialogFooter,
+    48→    48→} from "@/components/ui/dialog";
+    49→    49→import {
+    50→    50→  AlertDialog,
+    51→    51→  AlertDialogAction,
+    52→    52→  AlertDialogCancel,
+    53→    53→  AlertDialogContent,
+    54→    54→  AlertDialogDescription,
+    55→    55→  AlertDialogFooter,
+    56→    56→  AlertDialogHeader,
+    57→    57→  AlertDialogTitle,
+    58→    58→} from "@/components/ui/alert-dialog";
+    59→    59→import { toast } from "sonner";
+    60→    60→
+    61→    61→const SHIPPING_OPTIONS = [
+    62→    62→  { value: "1.Order", label: "1.Order", color: "bg-slate-100 text-slate-700" },
+    63→    63→  { value: "2.Output", label: "2.Output", color: "bg-amber-100 text-amber-700" },
+    64→    64→  { value: "3.Pending", label: "3.Pending", color: "bg-violet-100 text-violet-700" },
+    65→    65→  { value: "4.Input", label: "4.Input", color: "bg-emerald-100 text-emerald-700" },
+    66→    66→];
+    67→    67→
+    68→    68→export function ProductDataEntryView() {
+    69→    69→  const { currentProduct, bumpRefresh, refreshKey } = useAppStore();
+    70→    70→  const theme = PRODUCT_THEME[currentProduct];
+    71→    71→
+    72→    72→  // Form state — 5 user inputs (spec §1)
+    73→    73→  const [shippingStatus, setShippingStatus] = React.useState("");
+    74→    74→  const [poNo, setPoNo] = React.useState("");
+    75→    75→  const [factoryPO, setFactoryPO] = React.useState("");
+    76→    76→  const [size, setSize] = React.useState("");
+    77→    77→  const [qty, setQty] = React.useState("");
+    78→    78→
+    79→    79→  // Auto-filled from Master Data (spec §6)
+    80→    80→  const [autoFill, setAutoFill] = React.useState<any>(null);
+    81→    81→  const [lookupLoading, setLookupLoading] = React.useState(false);
+    82→    82→
+    83→    83→  // Preview / Confirm state — removed. Add Data saves directly (user request).
+    84→    84→  // Review now happens later in the "Review & Merge with Master Data" view.
+    85→    85→  const [saving, setSaving] = React.useState(false);
+    86→    86→
+    87→    87→  // Recent entries
+    88→    88→  const [recent, setRecent] = React.useState<any[]>([]);
+    89→    89→  const qc = useQueryClient();
+    90→    90→
+    91→    91→  // ===== Entries table state =====
+    92→    92→  const [selectedEntryIds, setSelectedEntryIds] = React.useState<Set<string>>(new Set());
+    93→    93→  const [editEntry, setEditEntry] = React.useState<any>(null);
+    94→    94→  const [editData, setEditData] = React.useState<Record<string, string>>({});
+    95→    95→  const [savingEdit, setSavingEdit] = React.useState(false);
+    96→    96→  const [deleteEntryRow, setDeleteEntryRow] = React.useState<any>(null);
+    97→    97→  const [deleting, setDeleting] = React.useState(false);
+    98→    98→  const [deleteWarn, setDeleteWarn] = React.useState<{ id: string; message: string } | null>(null);
+    99→    99→  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+   100→   100→  const [bulkDeleting, setBulkDeleting] = React.useState(false);
+   101→   101→
+   102→   102→  // Fetch entries for this product (today's entries + recent).
+   103→   103→  const entriesQ = useQuery({
+   104→   104→    queryKey: ["data-entry-entries", currentProduct, refreshKey],
+   105→   105→    queryFn: () => api.listEntries({ productType: currentProduct, page: 1, pageSize: 50 }),
+   106→   106→  });
+   107→   107→  const entryRows = entriesQ.data?.rows ?? [];
+   108→   108→  const entryTotal = entriesQ.data?.total ?? 0;
+   109→   109→
+   110→   110→  // Keep context checkboxes (spec §48 — extended to PO NO# + Factory PO)
+   111→   111→  const [keepStatus, setKeepStatus] = React.useState(true);
+   112→   112→  const [keepPoNo, setKeepPoNo] = React.useState(true);
+   113→   113→  const [keepFactoryPO, setKeepFactoryPO] = React.useState(true);
+   114→   114→
+   115→   115→  // Refs for Enter-key navigation (spec §11, §43)
+   116→   116→  const poNoRef = React.useRef<HTMLDivElement>(null);
+   117→   117→  const factoryPORef = React.useRef<HTMLDivElement>(null);
+   118→   118→  const sizeRef = React.useRef<HTMLInputElement>(null);
+   119→   119→  const qtyRef = React.useRef<HTMLInputElement>(null);
+   120→   120→
+   121→   121→  // Focus the <input> inside a SmartAutocomplete wrapper div.
+   122→   122→  function focusAutocomplete(wrapper: HTMLDivElement | null) {
+   123→   123→    if (!wrapper) return;
+   124→   124→    const input = wrapper.querySelector("input");
+   125→   125→    input?.focus();
+   126→   126→    input?.select();
+   127→   127→  }
+   128→   128→
+   129→   129→  // Reset all form fields (spec §44). Keeps selected context fields if their keep-flag is on.
+   130→   130→  function resetForm(opts?: { keepStatus?: boolean; keepPoNo?: boolean; keepFactoryPO?: boolean }) {
+   131→   131→    const keepStatusFlag = opts?.keepStatus ?? keepStatus;
+   132→   132→    const keepPoNoFlag = opts?.keepPoNo ?? keepPoNo;
+   133→   133→    const keepFactoryPOFlag = opts?.keepFactoryPO ?? keepFactoryPO;
+   134→   134→    if (!keepStatusFlag) setShippingStatus("");
+   135→   135→    if (!keepPoNoFlag) setPoNo("");
+   136→   136→    if (!keepFactoryPOFlag) setFactoryPO("");
+   137→   137→    setSize("");
+   138→   138→    setQty("");
+   139→   139→    setAutoFill(null);
+   140→   140→    // Focus: jump to the first cleared field, or Size if context is kept.
+   141→   141→    setTimeout(() => {
+   142→   142→      if (keepStatusFlag && keepPoNoFlag && keepFactoryPOFlag) {
+   143→   143→        // All context kept → jump straight to Size for fast re-entry.
+   144→   144→        sizeRef.current?.focus();
+   145→   145→      } else if (keepStatusFlag && !keepPoNoFlag) {
+   146→   146→        focusAutocomplete(poNoRef.current);
+   147→   147→      } else if (keepStatusFlag && keepPoNoFlag && !keepFactoryPOFlag) {
+   148→   148→        focusAutocomplete(factoryPORef.current);
+   149→   149→      } else {
+   150→   150→        focusAutocomplete(poNoRef.current);
+   151→   151→      }
+   152→   152→    }, 50);
+   153→   153→  }
+   154→   154→
+   155→   155→  // Auto-lookup Master Data when factoryPO + size are set (spec §5, §6).
+   156→   156→  React.useEffect(() => {
+   157→   157→    if (!factoryPO || !size || !currentProduct) {
+   158→   158→      setAutoFill(null);
+   159→   159→      return;
+   160→   160→    }
+   161→   161→    let cancelled = false;
+   162→   162→    setLookupLoading(true);
+   163→   163→    const t = setTimeout(async () => {
+   164→   164→      try {
+   165→   165→        const group = await api.lookupFactoryPO(factoryPO, currentProduct);
+   166→   166→        if (cancelled) return;
+   167→   167→        if (group) {
+   168→   168→          setAutoFill(group);
+   169→   169→        } else {
+   170→   170→          setAutoFill(null);
+   171→   171→        }
+   172→   172→      } catch {
+   173→   173→        if (!cancelled) setAutoFill(null);
+   174→   174→      } finally {
+   175→   175→        if (!cancelled) setLookupLoading(false);
+   176→   176→      }
+   177→   177→    }, 250);
+   178→   178→    return () => {
+   179→   179→      cancelled = true;
+   180→   180→      clearTimeout(t);
+   181→   181→    };
+   182→   182→  }, [factoryPO, size, currentProduct]);
+   183→   183→
+   184→   184→  // Validation (spec §13)
+   185→   185→  const validationErrors = React.useMemo(() => {
+   186→   186→    const errs: string[] = [];
+   187→   187→    if (!shippingStatus) errs.push("Please select Shipping Status first.");
+   188→   188→    if (!poNo) errs.push("PO NO# is required");
+   189→   189→    if (!factoryPO) errs.push("Factory PO is required");
+   190→   190→    if (!size) errs.push("Size is required");
+   191→   191→    if (!qty) errs.push("Qty is required");
+   192→   192→    else if (isNaN(Number(qty))) errs.push("Qty must be a number");
+   193→   193→    else if (Number(qty) <= 0) errs.push("Qty must be greater than 0");
+   194→   194→    return errs;
+   195→   195→  }, [shippingStatus, poNo, factoryPO, size, qty]);
+   196→   196→
+   197→   197→  const canAdd = validationErrors.length === 0;
+   198→   198→
+   199→   199→  // ADD DATA — saves immediately via the confirm API (atomic transaction).
+   200→   200→  // No preview step: the user wants fast entry. Review/merge with Master Data
+   201→   201→  // is a separate function done later in the Review view.
+   202→   202→  async function handleAddData() {
+   203→   203→    if (!canAdd) {
+   204→   204→      toast.error("Please fix validation errors", { description: validationErrors[0] });
+   205→   205→      return;
+   206→   206→    }
+   207→   207→    setSaving(true);
+   208→   208→    try {
+   209→   209→      const r = await api.confirmEntry({
+   210→   210→        productType: currentProduct,
+   211→   211→        shippingStatus,
+   212→   212→        poNo,
+   213→   213→        factoryPO,
+   214→   214→        size,
+   215→   215→        qty,
+   216→   216→      });
+   217→   217→      if (r.ok) {
+   218→   218→        const createdCount = r.created?.length || 0;
+   219→   219→        let msg = `${shippingStatus} saved`;
+   220→   220→        if (shippingStatus === "2.Output") {
+   221→   221→          msg = `Output + Pending saved (${createdCount} records)`;
+   222→   222→        }
+   223→   223→        toast.success(msg, {
+   224→   224→          description: `${factoryPO} · ${size} · Qty=${qty}`,
+   225→   225→        });
+   226→   226→        // Add to recent list (show the created entries).
+   227→   227→        if (r.created && r.created.length > 0) {
+   228→   228→          setRecent((prev) => [...r.created!, ...prev].slice(0, 10));
+   229→   229→        }
+   230→   230→        bumpRefresh();
+   231→   231→        // Reset form: keep selected context fields per checkboxes.
+   232→   232→        resetForm();
+   233→   233→      } else {
+   234→   234→        toast.error("Save failed", { description: r.errors?.join(", ") });
+   235→   235→      }
+   236→   236→    } catch (e) {
+   237→   237→      toast.error("Save failed", { description: e instanceof Error ? e.message : "" });
+   238→   238→    } finally {
+   239→   239→      setSaving(false);
+   240→   240→    }
+   241→   241→  }
+   242→   242→
+   243→   243→  // Enter-key navigation (spec §11, §43).
+   244→   244→  // When in an autocomplete dropdown that is open, Enter selects the suggestion first.
+   245→   245→  // When the dropdown is closed (or no suggestion), Enter moves to the next field.
+   246→   246→  function handleEnter(e: React.KeyboardEvent, currentField: string) {
+   247→   247→    if (e.key !== "Enter") return;
+   248→   248→    e.preventDefault();
+   249→   249→    // Order: shippingStatus → poNo → factoryPO → size → qty → save
+   250→   250→    switch (currentField) {
+   251→   251→      case "poNo":
+   252→   252→        focusAutocomplete(factoryPORef.current);
+   253→   253→        break;
+   254→   254→      case "factoryPO":
+   255→   255→        sizeRef.current?.focus();
+   256→   256→        break;
+   257→   257→      case "size":
+   258→   258→        qtyRef.current?.focus();
+   259→   259→        break;
+   260→   260→      case "qty":
+   261→   261→        // From Qty, Enter saves immediately (fast entry — no preview step).
+   262→   262→        if (canAdd) handleAddData();
+   263→   263→        break;
+   264→   264→    }
+   265→   265→  }
+   266→   266→
+   267→   267→  // ===== Entries table handlers =====
+   268→   268→  function toggleEntry(id: string) {
+   269→   269→    setSelectedEntryIds((s) => {
+   270→   270→      const n = new Set(s);
+   271→   271→      if (n.has(id)) n.delete(id);
+   272→   272→      else n.add(id);
+   273→   273→      return n;
+   274→   274→    });
+   275→   275→  }
+   276→   276→  function toggleAllEntries() {
+   277→   277→    if (selectedEntryIds.size === entryRows.length) setSelectedEntryIds(new Set());
+   278→   278→    else setSelectedEntryIds(new Set(entryRows.map((r: any) => r.id)));
+   279→   279→  }
+   280→   280→
+   281→   281→  // Calculate totals for checked rows.
+   282→   282→  const totals = React.useMemo(() => {
+   283→   283→    let qty1Sum = 0, qty2Sum = 0;
+   284→   284→    for (const r of entryRows) {
+   285→   285→      if (selectedEntryIds.has(r.id)) {
+   286→   286→        qty1Sum += Number(r.qty1) || 0;
+   287→   287→        qty2Sum += Number(r.qty2) || 0;
+   288→   288→      }
+   289→   289→    }
+   290→   290→    return { qty1Sum, qty2Sum, count: selectedEntryIds.size };
+   291→   291→  }, [entryRows, selectedEntryIds]);
+   292→   292→
+   293→   293→  function openEditEntry(row: any) {
+   294→   294→    setEditEntry(row);
+   295→   295→    setEditData({
+   296→   296→      shippingStatus: row.shippingStatus || "",
+   297→   297→      poNo: row.poNo || "",
+   298→   298→      factoryPO: row.factoryPO || "",
+   299→   299→      size: row.size || "",
+   300→   300→      qty1: String(row.qty1 ?? ""),
+   301→   301→      qty2: String(row.qty2 ?? ""),
+   302→   302→      model: row.model || "",
+   303→   303→      sku: row.sku || "",
+   304→   304→      season: row.season || "",
+   305→   305→      colorCode: row.colorCode || "",
+   306→   306→      colorCode2: row.colorCode2 || "",
+   307→   307→      deadline: row.deadline || "",
+   308→   308→      note: row.note || "",
+   309→   309→    });
+   310→   310→  }
+   311→   311→
+   312→   312→  async function saveEditEntry() {
+   313→   313→    if (!editEntry) return;
+   314→   314→    setSavingEdit(true);
+   315→   315→    try {
+   316→   316→      await api.updateEntry(editEntry.id, editData);
+   317→   317→      toast.success("Entry updated");
+   318→   318→      setEditEntry(null);
+   319→   319→      qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+   320→   320→      bumpRefresh();
+   321→   321→    } catch (e) {
+   322→   322→      toast.error("Update failed", { description: e instanceof Error ? e.message : "" });
+   323→   323→    } finally {
+   324→   324→      setSavingEdit(false);
+   325→   325→    }
+   326→   326→  }
+   327→   327→
+   328→   328→  function openDeleteEntry(row: any) {
+   329→   329→    setDeleteEntryRow(row);
+   330→   330→    setDeleteWarn(null);
+   331→   331→  }
+   332→   332→
+   333→   333→  async function confirmDeleteEntry() {
+   334→   334→    if (!deleteEntryRow) return;
+   335→   335→    setDeleting(true);
+   336→   336→    try {
+   337→   337→      const res = await api.deleteEntry(deleteEntryRow.id, false);
+   338→   338→      if (res.needsConfirm) {
+   339→   339→        setDeleteWarn({ id: deleteEntryRow.id, message: res.needsConfirm.message });
+   340→   340→        setDeleting(false);
+   341→   341→        return;
+   342→   342→      }
+   343→   343→      toast.success("Entry deleted");
+   344→   344→      setSelectedEntryIds((s) => { const n = new Set(s); n.delete(deleteEntryRow.id); return n; });
+   345→   345→      setDeleteEntryRow(null);
+   346→   346→      qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+   347→   347→      bumpRefresh();
+   348→   348→    } catch (e) {
+   349→   349→      toast.error("Delete failed", { description: e instanceof Error ? e.message : "" });
+   350→   350→    } finally {
+   351→   351→      setDeleting(false);
+   352→   352→    }
+   353→   353→  }
+   354→   354→
+   355→   355→  async function confirmDeleteEntryGroup() {
+   356→   356→    if (!deleteWarn) return;
+   357→   357→    setDeleting(true);
+   358→   358→    try {
+   359→   359→      const res = await api.deleteEntry(deleteWarn.id, true);
+   360→   360→      if (res.ok) {
+   361→   361→        toast.success("Entry and paired transaction deleted");
+   362→   362→        setSelectedEntryIds((s) => { const n = new Set(s); n.delete(deleteWarn.id); return n; });
+   363→   363→        setDeleteWarn(null);
+   364→   364→        setDeleteEntryRow(null);
+   365→   365→        qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+   366→   366→        bumpRefresh();
+   367→   367→      }
+   368→   368→    } catch (e) {
+   369→   369→      toast.error("Delete failed", { description: e instanceof Error ? e.message : "" });
+   370→   370→    } finally {
+   371→   371→      setDeleting(false);
+   372→   372→    }
+   373→   373→  }
+   374→   374→
+   375→   375→  async function confirmBulkDeleteEntries() {
+   376→   376→    setBulkDeleting(true);
+   377→   377→    try {
+   378→   378→      const ids = [...selectedEntryIds];
+   379→   379→      const res = await api.bulkDeleteEntries(ids);
+   380→   380→      if (res.ok) {
+   381→   381→        let msg = `${res.deleted} entries deleted`;
+   382→   382→        if (res.deleted > ids.length) {
+   383→   383→          msg += ` (includes ${res.deleted - ids.length} paired transaction records)`;
+   384→   384→        }
+   385→   385→        toast.success(msg);
+   386→   386→        setSelectedEntryIds(new Set());
+   387→   387→        setBulkDeleteOpen(false);
+   388→   388→        qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+   389→   389→        bumpRefresh();
+   390→   390→      }
+   391→   391→    } catch (e) {
+   392→   392→      toast.error("Bulk delete failed", { description: e instanceof Error ? e.message : "" });
+   393→   393→    } finally {
+   394→   394→      setBulkDeleting(false);
+   395→   395→    }
+   396→   396→  }
+   397→   397→
+   398→   398→  const shippingDisabled = !shippingStatus;
+   399→   399→  const shippingColor = SHIPPING_OPTIONS.find((s) => s.value === shippingStatus)?.color;
+   400→   400→
+   401→   401→  return (
+   402→   402→    <div className="space-y-6">
+   403→   403→      {/* Intro banner */}
+   404→   404→      <Card className={cn("border-primary/20 bg-gradient-to-br", theme.gradient, "text-white")}>
+   405→   405→        <CardContent className="flex flex-col gap-3 p-5 md:flex-row md:items-center md:justify-between">
+   406→   406→          <div className="flex items-start gap-3">
+   407→   407→            <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-xl bg-white/20 backdrop-blur">
+   408→   408→              <Wand2 className="h-5 w-5" />
+   409→   409→            </div>
+   410→   410→            <div>
+   411→   411→              <h2 className="text-base font-semibold">Product Data Entry · {currentProduct}</h2>
+   412→   412→              <p className="text-sm text-white/90">
+   413→   413→                Select Shipping Status → PO NO# → Factory PO → Size → Qty → Enter to save instantly.
+   414→   414→              </p>
+   415→   415→            </div>
+   416→   416→          </div>
+   417→   417→          <div className="flex flex-wrap items-center gap-2">
+   418→   418→            <div className="flex flex-wrap items-center gap-1.5 bg-white/15 rounded-md px-2 py-1">
+   419→   419→              <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80 mr-1">Keep:</span>
+   420→   420→              <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+   421→   421→                <Switch checked={keepStatus} onCheckedChange={setKeepStatus} className="scale-[0.6] origin-left" />
+   422→   422→                Status
+   423→   423→              </label>
+   424→   424→              <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+   425→   425→                <Switch checked={keepPoNo} onCheckedChange={setKeepPoNo} className="scale-[0.6] origin-left" />
+   426→   426→                PO NO#
+   427→   427→              </label>
+   428→   428→              <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+   429→   429→                <Switch checked={keepFactoryPO} onCheckedChange={setKeepFactoryPO} className="scale-[0.6] origin-left" />
+   430→   430→                Factory PO
+   431→   431→              </label>
+   432→   432→            </div>
+   433→   433→            <Button variant="secondary" size="sm" onClick={() => resetForm({ keepStatus: false, keepPoNo: false, keepFactoryPO: false })} className="bg-white/20 hover:bg-white/30 text-white border-0">
+   434→   434→              <RotateCcw className="mr-1.5 h-4 w-4" /> Reset
+   435→   435→            </Button>
+   436→   436→          </div>
+   437→   437→        </CardContent>
+   438→   438→      </Card>
+   439→   439→
+   440→   440→      <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
+   441→   441→        {/* Input form */}
+   442→   442→        <div className="lg:col-span-2 space-y-4">
+   443→   443→          <Card>
+   444→   444→            <CardHeader className="pb-3">
+   445→   445→              <CardTitle className="flex items-center gap-2 text-sm">
+   446→   446→                <PenLine className="h-4 w-4 text-primary" /> Input Fields
+   447→   447→                {shippingStatus && (
+   448→   448→                  <Badge className={cn("ml-auto text-[10px]", shippingColor)}>
+   449→   449→                    {shippingStatus}
+   450→   450→                  </Badge>
+   451→   451→                )}
+   452→   452→              </CardTitle>
+   453→   453→            </CardHeader>
+   454→   454→            <CardContent className="space-y-4">
+   455→   455→              {/* Step 1: Shipping Status (MUST be first, spec §2) */}
+   456→   456→              <div className="space-y-1.5">
+   457→   457→                <Label className="flex items-center justify-between text-xs">
+   458→   458→                  <span>Shipping Status <span className="text-destructive">*</span></span>
+   459→   459→                  <span className="text-[10px] text-muted-foreground">Step 1 — select first</span>
+   460→   460→                </Label>
+   461→   461→                <Select value={shippingStatus} onValueChange={(v) => { setShippingStatus(v); setTimeout(() => focusAutocomplete(poNoRef.current), 50); }}>
+   462→   462→                  <SelectTrigger className="h-11">
+   463→   463→                    <SelectValue placeholder="Select Shipping Status…" />
+   464→   464→                  </SelectTrigger>
+   465→   465→                  <SelectContent>
+   466→   466→                    {SHIPPING_OPTIONS.map((s) => (
+   467→   467→                      <SelectItem key={s.value} value={s.value}>
+   468→   468→                        <span className="flex items-center gap-2">
+   469→   469→                          <span className={cn("h-2 w-2 rounded-full", s.color.split(" ")[0])} />
+   470→   470→                          {s.label}
+   471→   471→                        </span>
+   472→   472→                      </SelectItem>
+   473→   473→                    ))}
+   474→   474→                  </SelectContent>
+   475→   475→                </Select>
+   476→   476→                {!shippingStatus && (
+   477→   477→                  <p className="text-xs text-amber-600 flex items-center gap-1">
+   478→   478→                    <AlertCircle className="h-3 w-3" /> Please select Shipping Status first.
+   479→   479→                  </p>
+   480→   480→                )}
+   481→   481→                {shippingStatus === "2.Output" && (
+   482→   482→                  <p className="text-[11px] text-amber-600 flex items-center gap-1">
+   483→   483→                    <Info className="h-3 w-3" /> Output will auto-create a paired Pending record (Q'ty 2 = -Qty).
+   484→   484→                  </p>
+   485→   485→                )}
+   486→   486→                {shippingStatus === "3.Pending" && (
+   487→   487→                  <p className="text-[11px] text-violet-600 flex items-center gap-1">
+   488→   488→                    <Info className="h-3 w-3" /> Pending is normally auto-created from Output. Manual entry only for adjustments.
+   489→   489→                  </p>
+   490→   490→                )}
+   491→   491→              </div>
+   492→   492→
+   493→   493→              {/* Step 2: PO NO# (autocomplete, spec §3) */}
+   494→   494→              <div className="space-y-1.5">
+   495→   495→                <Label className="text-xs">PO NO# <span className="text-destructive">*</span></Label>
+   496→   496→                <div ref={poNoRef} onKeyDown={(e) => handleEnter(e, "poNo")}>
+   497→   497→                  <SmartAutocomplete
+   498→   498→                    field="poNo"
+   499→   499→                    value={poNo}
+   500→   500→                    onChange={setPoNo}
+   501→   501→                    onSelect={() => setTimeout(() => factoryPORef.current?.focus(), 100)}
+   502→   502→                    placeholder={shippingDisabled ? "Select Shipping Status first" : "Type PO NO#…"}
+   503→   503→                    disabled={shippingDisabled}
+   504→   504→                    productType={currentProduct}
+   505→   505→                  />
+   506→   506→                </div>
+   507→   507→                <p className="text-[10px] text-muted-foreground">Searches {currentProduct} Master Data. If not found, you can still continue.</p>
+   508→   508→              </div>
+   509→   509→
+   510→   510→              {/* Step 3: Factory PO (autocomplete, spec §4, §5) */}
+   511→   511→              <div className="space-y-1.5">
+   512→   512→                <Label className="flex items-center justify-between text-xs">
+   513→   513→                  <span>Factory PO <span className="text-destructive">*</span></span>
+   514→   514→                  {lookupLoading && (
+   515→   515→                    <span className="flex items-center gap-1 text-muted-foreground">
+   516→   516→                      <Loader2 className="h-3 w-3 animate-spin" /> Looking up…
+   517→   517→                    </span>
+   518→   518→                  )}
+   519→   519→                </Label>
+   520→   520→                <div ref={factoryPORef} onKeyDown={(e) => handleEnter(e, "factoryPO")}>
+   521→   521→                  <SmartAutocomplete
+   522→   522→                    field="factoryPO"
+   523→   523→                    value={factoryPO}
+   524→   524→                    onChange={setFactoryPO}
+   525→   525→                    onSelect={() => setTimeout(() => sizeRef.current?.focus(), 100)}
+   526→   526→                    placeholder={shippingDisabled ? "Select Shipping Status first" : "Type 051, 228, MH27…"}
+   527→   527→                    disabled={shippingDisabled}
+   528→   528→                    productType={currentProduct}
+   529→   529→                    poNo={poNo || undefined}
+   530→   530→                  />
+   531→   531→                </div>
+   532→   532→                {factoryPO && !lookupLoading && autoFill === null && (
+   533→   533→                  <p className="text-xs text-amber-600">Reference data not found for this Factory PO.</p>
+   534→   534→                )}
+   535→   535→              </div>
+   536→   536→
+   537→   537→              {/* Step 4: Size (filtered by Factory PO, spec §13 of prev prompt) */}
+   538→   538→              <div className="space-y-1.5">
+   539→   539→                <Label className="flex items-center justify-between text-xs">
+   540→   540→                  <span>Size <span className="text-destructive">*</span></span>
+   541→   541→                  {autoFill && (
+   542→   542→                    <Badge variant="secondary" className="text-[10px]">
+   543→   543→                      {autoFill.sizes?.length || 0} available
+   544→   544→                    </Badge>
+   545→   545→                  )}
+   546→   546→                </Label>
+   547→   547→                <SizeInput
+   548→   548→                  ref={sizeRef}
+   549→   549→                  value={size}
+   550→   550→                  onChange={setSize}
+   551→   551→                  sizes={autoFill?.sizes || []}
+   552→   552→                  disabled={shippingDisabled || !factoryPO}
+   553→   553→                  placeholder={shippingDisabled ? "Select Shipping Status first" : !factoryPO ? "Enter Factory PO first" : "Type 13, 08…"}
+   554→   554→                  onEnter={() => qtyRef.current?.focus()}
+   555→   555→                />
+   556→   556→                {autoFill && autoFill.sizes?.length > 0 && (
+   557→   557→                  <div className="flex flex-wrap gap-1 pt-1">
+   558→   558→                    {autoFill.sizes.slice(0, 8).map((s: string) => (
+   559→   559→                      <button
+   560→   560→                        key={s}
+   561→   561→                        type="button"
+   562→   562→                        onClick={() => { setSize(s); setTimeout(() => qtyRef.current?.focus(), 50); }}
+   563→   563→                        className={cn(
+   564→   564→                          "rounded-md border px-1.5 py-0.5 text-[10px] transition-colors hover:bg-accent",
+   565→   565→                          size === s ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground"
+   566→   566→                        )}
+   567→   567→                      >
+   568→   568→                        {s}
+   569→   569→                      </button>
+   570→   570→                    ))}
+   571→   571→                    {autoFill.sizes.length > 8 && (
+   572→   572→                      <span className="text-[10px] text-muted-foreground self-center">+{autoFill.sizes.length - 8} more</span>
+   573→   573→                    )}
+   574→   574→                  </div>
+   575→   575→                )}
+   576→   576→              </div>
+   577→   577→
+   578→   578→              {/* Step 5: Qty (spec §9) */}
+   579→   579→              <div className="space-y-1.5">
+   580→   580→                <Label className="text-xs">Qty <span className="text-destructive">*</span></Label>
+   581→   581→                <Input
+   582→   582→                  ref={qtyRef}
+   583→   583→                  value={qty}
+   584→   584→                  onChange={(e) => setQty(e.target.value.replace(/[^0-9.\-]/g, ""))}
+   585→   585→                  onKeyDown={(e) => handleEnter(e, "qty")}
+   586→   586→                  placeholder="e.g. 100"
+   587→   587→                  className="h-11"
+   588→   588→                  inputMode="numeric"
+   589→   589→                  disabled={shippingDisabled}
+   590→   590→                />
+   591→   591→                {qty && !isNaN(Number(qty)) && (
+   592→   592→                  <p className="text-[11px] text-muted-foreground">
+   593→   593→                    Q'ty 1 = {qty} · Q'ty 2 ={" "}
+   594→   594→                    <span className="font-mono font-medium text-foreground">
+   595→   595→                      {computeQty2Preview(shippingStatus, qty)}
+   596→   596→                    </span>
+   597→   597→                  </p>
+   598→   598→                )}
+   599→   599→              </div>
+   600→   600→
+   601→   601→              {validationErrors.length > 0 && (
+   602→   602→                <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5">
+   603→   603→                  <div className="flex items-center gap-1.5 text-xs font-medium text-destructive">
+   604→   604→                    <AlertTriangle className="h-3.5 w-3.5" /> Validation
+   605→   605→                  </div>
+   606→   606→                  <ul className="mt-1 space-y-0.5 text-[11px] text-destructive/90">
+   607→   607→                    {validationErrors.map((e, i) => (
+   608→   608→                      <li key={i}>• {e}</li>
+   609→   609→                    ))}
+   610→   610→                  </ul>
+   611→   611→                </div>
+   612→   612→              )}
+   613→   613→
+   614→   614→              <div className="flex gap-2 pt-1">
+   615→   615→                <Button className="flex-1" disabled={!canAdd || saving} onClick={handleAddData}>
+   616→   616→                  {saving ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Plus className="mr-1.5 h-4 w-4" />}
+   617→   617→                  Add Data
+   618→   618→                </Button>
+   619→   619→              </div>
+   620→   620→            </CardContent>
+   621→   621→          </Card>
+   622→   622→
+   623→   623→          {/* Recent entries */}
+   624→   624→          {recent.length > 0 && (
+   625→   625→            <Card>
+   626→   626→              <CardHeader className="pb-2">
+   627→   627→                <CardTitle className="text-sm">Just Added</CardTitle>
+   628→   628→              </CardHeader>
+   629→   629→              <CardContent className="space-y-1.5">
+   630→   630→                {recent.map((e) => (
+   631→   631→                  <div
+   632→   632→                    key={e.id}
+   633→   633→                    className="flex items-center justify-between rounded-md border bg-muted/30 px-2.5 py-1.5 text-xs"
+   634→   634→                  >
+   635→   635→                    <div className="min-w-0">
+   636→   636→                      <div className="font-medium truncate">{e.factoryPO} · {e.size}</div>
+   637→   637→                      <div className="text-muted-foreground truncate">
+   638→   638→                        <Badge variant="outline" className="text-[9px] mr-1">{e.shippingStatus}</Badge>
+   639→   639→                        {e.model} · {e.season}
+   640→   640→                      </div>
+   641→   641→                    </div>
+   642→   642→                    <div className="text-right shrink-0">
+   643→   643→                      <div className="font-mono">{e.qty1} / {e.qty2}</div>
+   644→   644→                      <CheckCircle2 className="ml-auto h-3 w-3 text-emerald-500" />
+   645→   645→                    </div>
+   646→   646→                  </div>
+   647→   647→                ))}
+   648→   648→              </CardContent>
+   649→   649→            </Card>
+   650→   650→          )}
+   651→   651→        </div>
+   652→   652→
+   653→   653→        {/* Auto-generated data panel */}
+   654→   654→        <div className="lg:col-span-3">
+   655→   655→          <Card className="h-full">
+   656→   656→            <CardHeader className="pb-3">
+   657→   657→              <CardTitle className="flex items-center gap-2 text-sm">
+   658→   658→                <Sparkles className="h-4 w-4 text-primary" /> Auto-Generated Data
+   659→   659→                {autoFill && (
+   660→   660→                  <Badge variant="outline" className="ml-auto text-[10px]">from Master Data</Badge>
+   661→   661→                )}
+   662→   662→              </CardTitle>
+   663→   663→            </CardHeader>
+   664→   664→            <CardContent>
+   665→   665→              {!autoFill ? (
+   666→   666→                <div className="flex flex-col items-center justify-center py-16 text-center">
+   667→   667→                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+   668→   668→                    <Sparkles className="h-6 w-6" />
+   669→   669→                  </div>
+   670→   670→                  <p className="mt-3 text-sm font-medium">Auto-fill appears after Factory PO + Size</p>
+   671→   671→                  <p className="mt-1 text-xs text-muted-foreground max-w-xs">
+   672→   672→                    Shared attributes (MODEL, SKU, Season, colors, painting, printing, deadline) will appear here from Master Data lookup.
+   673→   673→                  </p>
+   674→   674→                </div>
+   675→   675→              ) : (
+   676→   676→                <AutoFillGrid group={autoFill} factoryPO={factoryPO} size={size} qty={qty} shippingStatus={shippingStatus} />
+   677→   677→              )}
+   678→   678→            </CardContent>
+   679→   679→          </Card>
+   680→   680→        </div>
+   681→   681→      </div>
+   682→   682→
+   683→   683→      {/* ===== Entries Table ===== */}
+   684→   684→      <Card>
+   685→   685→        <CardHeader className="pb-3">
+   686→   686→          <CardTitle className="flex items-center justify-between text-sm">
+   687→   687→            <span className="flex items-center gap-2">
+   688→   688→              <Table2 className="h-4 w-4 text-primary" /> Entries Data ({entryTotal})
+   689→   689→              {entriesQ.isFetching && <Badge variant="secondary" className="text-[10px]">loading…</Badge>}
+   690→   690→            </span>
+   691→   691→            <span className="flex items-center gap-2">
+   692→   692→              {selectedEntryIds.size > 0 && (
+   693→   693→                <Button size="sm" variant="destructive" className="h-7 text-xs" onClick={() => setBulkDeleteOpen(true)}>
+   694→   694→                  <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete Selected ({selectedEntryIds.size})
+   695→   695→                </Button>
+   696→   696→              )}
+   697→   697→            </span>
+   698→   698→          </CardTitle>
+   699→   699→        </CardHeader>
+   700→   700→        <CardContent className="p-0">
+   701→   701→          {entriesQ.isLoading ? (
+   702→   702→            <div className="p-6 space-y-2">
+   703→   703→              {Array.from({ length: 5 }).map((_, i) => (
+   704→   704→                <div key={i} className="h-8 w-full animate-pulse rounded bg-muted" />
+   705→   705→              ))}
+   706→   706→            </div>
+   707→   707→          ) : entryRows.length === 0 ? (
+   708→   708→            <div className="p-10 text-center text-sm text-muted-foreground">
+   709→   709→              No entries yet for {currentProduct}. Add data using the form above.
+   710→   710→            </div>
+   711→   711→          ) : (
+   712→   712→            <div className="overflow-x-auto scroll-thin">
+   713→   713→              <table className="w-full text-xs">
+   714→   714→                <thead className="bg-muted/40 sticky top-0">
+   715→   715→                  <tr>
+   716→   716→                    <th className="px-2 py-2 w-8">
+   717→   717→                      <Checkbox
+   718→   718→                        checked={entryRows.length > 0 && selectedEntryIds.size === entryRows.length}
+   719→   719→                        onCheckedChange={toggleAllEntries}
+   720→   720→                      />
+   721→   721→                    </th>
+   722→   722→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Status</th>
+   723→   723→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">PO NO#</th>
+   724→   724→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Factory PO</th>
+   725→   725→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Model</th>
+   726→   726→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Size</th>
+   727→   727→                    <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Qty1</th>
+   728→   728→                    <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Qty2</th>
+   729→   729→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Season</th>
+   730→   730→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Deadline</th>
+   731→   731→                    <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Actions</th>
+   732→   732→                  </tr>
+   733→   733→                </thead>
+   734→   734→                <tbody>
+   735→   735→                  {entryRows.map((r: any) => {
+   736→   736→                    const isSelected = selectedEntryIds.has(r.id);
+   737→   737→                    return (
+   738→   738→                      <tr key={r.id} className={cn("border-t hover:bg-muted/30", isSelected && "bg-primary/5")}>
+   739→   739→                        <td className="px-2 py-1.5">
+   740→   740→                          <Checkbox checked={isSelected} onCheckedChange={() => toggleEntry(r.id)} />
+   741→   741→                        </td>
+   742→   742→                        <td className="px-2 py-1.5">
+   743→   743→                          <Badge variant="outline" className={cn("text-[9px]", shippingBadgeClass(r.shippingStatus))}>
+   744→   744→                            {r.shippingStatus || "—"}
+   745→   745→                          </Badge>
+   746→   746→                        </td>
+   747→   747→                        <td className="px-2 py-1.5 whitespace-nowrap">{r.poNo}</td>
+   748→   748→                        <td className="px-2 py-1.5 font-medium text-primary whitespace-nowrap">{r.factoryPO}</td>
+   749→   749→                        <td className="px-2 py-1.5 whitespace-nowrap">{r.model}</td>
+   750→   750→                        <td className="px-2 py-1.5"><Badge variant="outline" className="text-[9px] font-mono">{r.size}</Badge></td>
+   751→   751→                        <td className="px-2 py-1.5 text-right tabular-nums font-medium">{r.qty1}</td>
+   752→   752→                        <td className={cn("px-2 py-1.5 text-right tabular-nums", Number(r.qty2) < 0 && "text-rose-600")}>{r.qty2}</td>
+   753→   753→                        <td className="px-2 py-1.5"><Badge variant="secondary" className="text-[9px]">{r.season}</Badge></td>
+   754→   754→                        <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground">{r.deadline || "—"}</td>
+   755→   755→                        <td className="px-2 py-1.5">
+   756→   756→                          <div className="flex justify-end gap-0.5">
+   757→   757→                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEditEntry(r)}>
+   758→   758→                              <Pencil className="h-3.5 w-3.5" />
+   759→   759→                            </Button>
+   760→   760→                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => openDeleteEntry(r)}>
+   761→   761→                              <Trash2 className="h-3.5 w-3.5" />
+   762→   762→                            </Button>
+   763→   763→                          </div>
+   764→   764→                        </td>
+   765→   765→                      </tr>
+   766→   766→                    );
+   767→   767→                  })}
+   768→   768→                </tbody>
+   769→   769→                {/* Totals footer */}
+   770→   770→                {selectedEntryIds.size > 0 && (
+   771→   771→                  <tfoot className="bg-primary/5 border-t-2 border-primary/20">
+   772→   772→                    <tr>
+   773→   773→                      <td colSpan={6} className="px-2 py-2 text-right text-[11px] font-semibold uppercase text-muted-foreground">
+   774→   774→                        <Calculator className="h-3 w-3 inline mr-1" />
+   775→   775→                        Total ({totals.count} selected):
+   776→   776→                      </td>
+   777→   777→                      <td className="px-2 py-2 text-right tabular-nums font-bold text-primary text-sm">{totals.qty1Sum}</td>
+   778→   778→                      <td className={cn("px-2 py-2 text-right tabular-nums font-bold text-sm", totals.qty2Sum < 0 && "text-rose-600")}>{totals.qty2Sum}</td>
+   779→   779→                      <td colSpan={3}></td>
+   780→   780→                    </tr>
+   781→   781→                  </tfoot>
+   782→   782→                )}
+   783→   783→              </table>
+   784→   784→            </div>
+   785→   785→          )}
+   786→   786→        </CardContent>
+   787→   787→      </Card>
+   788→   788→
+   789→   789→      {/* Edit entry dialog */}
+   790→   790→      <Dialog open={!!editEntry} onOpenChange={(o) => !o && setEditEntry(null)}>
+   791→   791→        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto scroll-thin">
+   792→   792→          <DialogHeader>
+   793→   793→            <DialogTitle className="flex items-center gap-2">
+   794→   794→              <Pencil className="h-4 w-4 text-primary" /> Edit Entry
+   795→   795→            </DialogTitle>
+   796→   796→            <DialogDescription>Edit this entry. Master Data is not affected.</DialogDescription>
+   797→   797→          </DialogHeader>
+   798→   798→          {editEntry && (
+   799→   799→            <div className="space-y-3">
+   800→   800→              <div className="grid grid-cols-2 gap-2">
+   801→   801→                {[
+   802→   802→                  { f: "shippingStatus", l: "Shipping Status" },
+   803→   803→                  { f: "poNo", l: "PO NO#" },
+   804→   804→                  { f: "factoryPO", l: "Factory PO" },
+   805→   805→                  { f: "size", l: "Size" },
+   806→   806→                  { f: "qty1", l: "Q'ty 1" },
+   807→   807→                  { f: "qty2", l: "Q'ty 2" },
+   808→   808→                  { f: "model", l: "MODEL" },
+   809→   809→                  { f: "sku", l: "SKU" },
+   810→   810→                  { f: "season", l: "Season" },
+   811→   811→                  { f: "colorCode", l: "Color Code" },
+   812→   812→                  { f: "colorCode2", l: "COLOR CODE" },
+   813→   813→                  { f: "deadline", l: "Dead Line" },
+   814→   814→                ].map(({ f, l }) => (
+   815→   815→                  <div key={f} className="space-y-1">
+   816→   816→                    <label className="text-[10px] font-semibold uppercase text-muted-foreground">{l}</label>
+   817→   817→                    <Input value={editData[f] ?? ""} onChange={(e) => setEditData((d) => ({ ...d, [f]: e.target.value }))} className="h-8 text-xs" />
+   818→   818→                  </div>
+   819→   819→                ))}
+   820→   820→              </div>
+   821→   821→            </div>
+   822→   822→          )}
+   823→   823→          <DialogFooter>
+   824→   824→            <Button variant="outline" onClick={() => setEditEntry(null)}><X className="h-4 w-4 mr-1.5" /> Cancel</Button>
+   825→   825→            <Button onClick={saveEditEntry} disabled={savingEdit}>
+   826→   826→              {savingEdit ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Save className="h-4 w-4 mr-1.5" />} Save
+   827→   827→            </Button>
+   828→   828→          </DialogFooter>
+   829→   829→        </DialogContent>
+   830→   830→      </Dialog>
+   831→   831→
+   832→   832→      {/* Delete entry dialog */}
+   833→   833→      <AlertDialog open={!!deleteEntryRow && !deleteWarn} onOpenChange={(o) => { if (!o) setDeleteEntryRow(null); }}>
+   834→   834→        <AlertDialogContent>
+   835→   835→          <AlertDialogHeader>
+   836→   836→            <AlertDialogTitle className="flex items-center gap-2">
+   837→   837→              <Trash2 className="h-5 w-5 text-destructive" /> Delete Entry
+   838→   838→            </AlertDialogTitle>
+   839→   839→            <AlertDialogDescription>
+   840→   840→              Are you sure you want to delete this entry?
+   841→   841→              {deleteEntryRow && (
+   842→   842→                <span className="mt-2 block text-xs font-mono bg-muted/40 rounded p-2">
+   843→   843→                  {deleteEntryRow.shippingStatus} · {deleteEntryRow.factoryPO} · {deleteEntryRow.size} · Qty1={deleteEntryRow.qty1} Qty2={deleteEntryRow.qty2}
+   844→   844→                </span>
+   845→   845→              )}
+   846→   846→              {deleteEntryRow?.transactionGroupId && (
+   847→   847→                <span className="mt-2 block text-xs text-amber-600">
+   848→   848→                  ⚠ Part of an Output+Pending transaction group. You will be asked to delete both.
+   849→   849→                </span>
+   850→   850→              )}
+   851→   851→            </AlertDialogDescription>
+   852→   852→          </AlertDialogHeader>
+   853→   853→          <AlertDialogFooter>
+   854→   854→            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+   855→   855→            <AlertDialogAction onClick={(e) => { e.preventDefault(); confirmDeleteEntry(); }} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+   856→   856→              {deleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />} Delete
+   857→   857→            </AlertDialogAction>
+   858→   858→          </AlertDialogFooter>
+   859→   859→        </AlertDialogContent>
+   860→   860→      </AlertDialog>
+   861→   861→
+   862→   862→      {/* Delete group warning */}
+   863→   863→      <AlertDialog open={!!deleteWarn} onOpenChange={(o) => { if (!o) { setDeleteWarn(null); setDeleteEntryRow(null); } }}>
+   864→   864→        <AlertDialogContent>
+   865→   865→          <AlertDialogHeader>
+   866→   866→            <AlertDialogTitle className="flex items-center gap-2">
+   867→   867→              <AlertTriangle className="h-5 w-5 text-amber-500" /> Delete Both Records?
+   868→   868→            </AlertDialogTitle>
+   869→   869→            <AlertDialogDescription>
+   870→   870→              {deleteWarn?.message}
+   871→   871→              <span className="mt-2 block text-xs">This will delete both the Output and its paired Pending entry.</span>
+   872→   872→            </AlertDialogDescription>
+   873→   873→          </AlertDialogHeader>
+   874→   874→          <AlertDialogFooter>
+   875→   875→            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+   876→   876→            <AlertDialogAction onClick={(e) => { e.preventDefault(); confirmDeleteEntryGroup(); }} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+   877→   877→              {deleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />} Delete Both
+   878→   878→            </AlertDialogAction>
+   879→   879→          </AlertDialogFooter>
+   880→   880→        </AlertDialogContent>
+   881→   881→      </AlertDialog>
+   882→   882→
+   883→   883→      {/* Bulk delete dialog */}
+   884→   884→      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+   885→   885→        <AlertDialogContent>
+   886→   886→          <AlertDialogHeader>
+   887→   887→            <AlertDialogTitle className="flex items-center gap-2">
+   888→   888→              <AlertTriangle className="h-5 w-5 text-amber-500" /> Delete {selectedEntryIds.size} Selected Entries?
+   889→   889→            </AlertDialogTitle>
+   890→   890→            <AlertDialogDescription>
+   891→   891→              You are about to delete <strong>{selectedEntryIds.size}</strong> entry row(s).
+   892→   892→              <span className="mt-2 block text-xs text-amber-600">
+   893→   893→                ⚠ Entries belonging to an Output+Pending transaction group will have their paired record deleted too.
+   894→   894→              </span>
+   895→   895→            </AlertDialogDescription>
+   896→   896→          </AlertDialogHeader>
+   897→   897→          <AlertDialogFooter>
+   898→   898→            <AlertDialogCancel disabled={bulkDeleting}>Cancel</AlertDialogCancel>
+   899→   899→            <AlertDialogAction onClick={(e) => { e.preventDefault(); confirmBulkDeleteEntries(); }} disabled={bulkDeleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+   900→   900→              {bulkDeleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />}
+   901→   901→              Delete {selectedEntryIds.size} Entries
+   902→   902→            </AlertDialogAction>
+   903→   903→          </AlertDialogFooter>
+   904→   904→        </AlertDialogContent>
+   905→   905→      </AlertDialog>
+   906→   906→    </div>
+   907→   907→  );
+   908→   908→}
+   909→   909→
+   910→   910→// Compute Q'ty 2 preview client-side (mirrors server logic).
+   911→   911→function computeQty2Preview(shippingStatus: string, qty: string): string {
+   912→   912→  const n = Number(qty);
+   913→   913→  if (isNaN(n)) return "—";
+   914→   914→  if (shippingStatus === "3.Pending") return String(-Math.abs(n));
+   915→   915→  return String(n);
+   916→   916→}
+   917→   917→
+   918→   918→// Shipping status badge color helper.
+   919→   919→function shippingBadgeClass(status: string | null | undefined): string {
+   920→   920→  if (!status) return "";
+   921→   921→  const s = status.toLowerCase();
+   922→   922→  if (s.startsWith("1")) return "bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300";
+   923→   923→  if (s.startsWith("2")) return "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300";
+   924→   924→  if (s.startsWith("3")) return "bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300";
+   925→   925→  if (s.startsWith("4")) return "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300";
+   926→   926→  return "";
+   927→   927→}
+   928→   928→
+   929→   929→// Size input with filtered suggestions.
+   930→   930→const SizeInput = React.forwardRef<HTMLInputElement, {
+   931→   931→  value: string;
+   932→   932→  onChange: (v: string) => void;
+   933→   933→  sizes: string[];
+   934→   934→  disabled?: boolean;
+   935→   935→  placeholder?: string;
+   936→   936→  onEnter?: () => void;
+   937→   937→}>(function SizeInput({ value, onChange, sizes, disabled, placeholder, onEnter }, ref) {
+   938→   938→  const [open, setOpen] = React.useState(false);
+   939→   939→  const wrapRef = React.useRef<HTMLDivElement>(null);
+   940→   940→  React.useEffect(() => {
+   941→   941→    function onDown(e: MouseEvent) {
+   942→   942→      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+   943→   943→    }
+   944→   944→    document.addEventListener("mousedown", onDown);
+   945→   945→    return () => document.removeEventListener("mousedown", onDown);
+   946→   946→  }, []);
+   947→   947→
+   948→   948→  const filtered = React.useMemo(() => {
+   949→   949→    const q = value.trim().toLowerCase();
+   950→   950→    if (!q) return sizes;
+   951→   951→    return sizes.filter((s) => s.toLowerCase().includes(q));
+   952→   952→  }, [value, sizes]);
+   953→   953→
+   954→   954→  return (
+   955→   955→    <div ref={wrapRef} className="relative">
+   956→   956→      <Input
+   957→   957→        ref={ref}
+   958→   958→        value={value}
+   959→   959→        disabled={disabled}
+   960→   960→        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+   961→   961→        onFocus={() => setOpen(true)}
+   962→   962→        onKeyDown={(e) => {
+   963→   963→          if (e.key === "Enter") {
+   964→   964→            e.preventDefault();
+   965→   965→            if (open && filtered.length > 0) {
+   966→   966→              onChange(filtered[0]);
+   967→   967→              setOpen(false);
+   968→   968→            } else {
+   969→   969→              onEnter?.();
+   970→   970→            }
+   971→   971→          }
+   972→   972→        }}
+   973→   973→        placeholder={placeholder}
+   974→   974→        className="h-11"
+   975→   975→      />
+   976→   976→      {open && !disabled && filtered.length > 0 && (
+   977→   977→        <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-md border bg-popover shadow-lg">
+   978→   978→          <ul className="max-h-56 overflow-y-auto scroll-thin py-1">
+   979→   979→            {filtered.map((s) => (
+   980→   980→              <li key={s}>
+   981→   981→                <button
+   982→   982→                  type="button"
+   983→   983→                  onMouseEnter={() => {}}
+   984→   984→                  onClick={() => { onChange(s); setOpen(false); onEnter?.(); }}
+   985→   985→                  className={cn("flex w-full px-3 py-1.5 text-left text-sm hover:bg-accent", s === value && "bg-accent")}
+   986→   986→                >
+   987→   987→                  {s}
+   988→   988→                </button>
+   989→   989→              </li>
+   990→   990→            ))}
+   991→   991→          </ul>
+   992→   992→        </div>
+   993→   993→      )}
+   994→   994→    </div>
+   995→   995→  );
+   996→   996→});
+   997→   997→
+   998→   998→function AutoFillGrid({ group, factoryPO, size, qty, shippingStatus }: { group: any; factoryPO: string; size: string; qty: string; shippingStatus: string }) {
+   999→   999→  const rows: { label: string; value: string | null; field: string }[] = [
+  1000→  1000→    { label: "MODEL", value: group.model, field: "model" },
+  1001→  1001→    { label: "SKU", value: group.sku, field: "sku" },
+  1002→  1002→    { label: "ITEM", value: group.item, field: "item" },
+  1003→  1003→    { label: "Season", value: group.season, field: "season" },
+  1004→  1004→    { label: "Color Code", value: group.colorCode, field: "colorCode" },
+  1005→  1005→    { label: "COLOR CODE", value: group.colorCode2, field: "colorCode2" },
+  1006→  1006→    { label: "PAINTING", value: group.painting, field: "painting" },
+  1007→  1007→    { label: "PRINTING COLOR", value: group.printingColor, field: "printingColor" },
+  1008→  1008→    { label: "Dead Line", value: group.nearestDeadline || group.deadline, field: "deadline" },
+  1009→  1009→    { label: "Q'ty 1", value: qty, field: "qty1" },
+  1010→  1010→    { label: "Q'ty 2", value: computeQty2Preview(shippingStatus, qty), field: "qty2" },
+  1011→  1011→  ];
+  1012→  1012→  return (
+  1013→  1013→    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+  1014→  1014→      {rows.map((r) => {
+  1015→  1015→        const isInput = r.field === "qty1" || r.field === "qty2";
+  1016→  1016→        return (
+  1017→  1017→          <div key={r.label} className={cn("rounded-md border p-2.5", isInput ? "border-primary/30 bg-primary/5" : "bg-muted/30")}>
+  1018→  1018→            <div className="flex items-center justify-between">
+  1019→  1019→              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{r.label}</span>
+  1020→  1020→              {isInput && <Badge variant="outline" className="text-[9px] py-0">computed</Badge>}
+  1021→  1021→            </div>
+  1022→  1022→            <div className={cn("mt-0.5 text-sm font-medium break-words", !r.value && "text-muted-foreground/50")}>
+  1023→  1023→              {r.value || "—"}
+  1024→  1024→            </div>
+  1025→  1025→          </div>
+  1026→  1026→        );
+  1027→  1027→      })}
+  1028→  1028→    </div>
+  1029→  1029→  );
+  1030→  1030→}
+  1031→  1031→

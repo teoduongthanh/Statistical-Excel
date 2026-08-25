@@ -437,3 +437,58 @@ Stage Summary:
   * The `ShipmentFilters` interface in `shipment-service.ts` line 46 is missing the `season` field that line 74 of the same file references — pre-existing TS error, not caused by my UI work, but it would block strict CI if/when fixed. A one-line `season?: string;` addition to that interface will resolve it.
   * Consider adding a "select only short-output rows" / "select only overdue rows" quick-filter button above the table to speed up common workflows.
   * The export API hardcodes a default `templatePath` to a MAFATE template file on disk; for ONYX / MIZUNO this template may not exist. If `generateShipmentExcel` falls back gracefully, fine; otherwise the route may need a per-product template path lookup (out of scope for this UI task).
+
+---
+Task ID: PAG-1
+Agent: general-purpose
+Task: Add pagination to 4 views
+
+Work Log:
+- Read worklog.md to absorb prior context (Next.js 16 + Prisma SQLite + shadcn/ui + react-query + Zustand store at `@/store/app-store` exporting `currentProduct`/`refreshKey`/`bumpRefresh`; emerald/violet/rose product palette, no indigo/blue). Confirmed the `api.listEntries` response shape includes `{ rows, total, page, pageSize, totalPages }` (src/lib/api-client.ts:133-142) so server-side pagination is supported.
+- Inspected all 4 target view files before editing:
+  * `product-data-entry-view.tsx` (~1031 lines): `entriesQ` used `api.listEntries({ productType: currentProduct, page: 1, pageSize: 50 })` with no page navigation; entries table rendered `entryRows` directly inside a CardContent. `Button` already imported (line 27).
+  * `product-production-tracking-view.tsx` (~1598 lines): two tables — "Priority Alerts" rendering `sortedAlerts.map(...)` and "Production Groups" rendering `sortedGroups.map(...)`; both `sortedAlerts`/`sortedGroups` are useMemo'd sorted slices of the full server response. `Button` already imported (line 44).
+  * `quantity-validation-view.tsx` (~579 lines): validation table renders `groups.map(...)` where `groups = data?.groups ?? []`. `Button` already imported (line 25). Existing footer at the bottom showed "Showing N groups · X inconsistent · Y consistent".
+  * `order-notes-view.tsx` (~965 lines): timeline rendered `groups.map(...)` where `groups = useMemo(() => groupByDate(notes), [notes])` groups the flat `notes` array by date. `Button` already imported (line 26).
+- **File 1 — `product-data-entry-view.tsx`** (server-side pagination):
+  * Added `const [entryPage, setEntryPage] = React.useState(1)` and `const ENTRY_PAGE_SIZE = 20`.
+  * Changed `entriesQ` queryKey to include `entryPage` and queryFn to `api.listEntries({ productType: currentProduct, page: entryPage, pageSize: ENTRY_PAGE_SIZE })` (was `page: 1, pageSize: 50`).
+  * Added `const entryTotalPages = entriesQ.data?.totalPages ?? 1`.
+  * Added `React.useEffect(() => { setEntryPage(1); }, [currentProduct])` so switching product resets to page 1.
+  * Wrapped the entries-table branch of the existing ternary in a `<>` fragment and appended a `<div className="flex items-center justify-between border-t px-3 py-2">` pagination footer after the table: left side shows `Page {entryPage} of {entryTotalPages} ({entryTotal} total)`, right side has Prev/Next `Button variant="outline" size="sm"` with `disabled={entryPage <= 1}` / `disabled={entryPage >= entryTotalPages}` and `onClick={() => setEntryPage(p => Math.max(1, p - 1))}` / `onClick={() => setEntryPage(p => p + 1)}`.
+- **File 2 — `product-production-tracking-view.tsx`** (client-side pagination for BOTH tables):
+  * Added state: `const [groupPage, setGroupPage] = React.useState(1)`, `const [alertPage, setAlertPage] = React.useState(1)`, `const GROUP_PAGE_SIZE = 20`, `const ALERT_PAGE_SIZE = 20`.
+  * Added paged slices after the existing `sortedGroups`/`sortedAlerts` useMemo blocks: `const groupTotalPages = Math.max(1, Math.ceil(sortedGroups.length / GROUP_PAGE_SIZE))`, `const alertTotalPages = Math.max(1, Math.ceil(sortedAlerts.length / ALERT_PAGE_SIZE))`, `const pagedGroups = sortedGroups.slice((groupPage - 1) * GROUP_PAGE_SIZE, groupPage * GROUP_PAGE_SIZE)`, `const pagedAlerts = sortedAlerts.slice((alertPage - 1) * ALERT_PAGE_SIZE, alertPage * ALERT_PAGE_SIZE)`.
+  * Added `React.useEffect(() => { setGroupPage(1); setAlertPage(1); }, [currentProduct, refreshKey])` so a product switch (or refresh bump) resets both pages.
+  * Reset both pages in `applyFilters()` and `resetFilters()` (added `setGroupPage(1); setAlertPage(1);` to each).
+  * Alerts table: changed `sortedAlerts.map(...)` → `pagedAlerts.map(...)` and inserted a new pagination footer (`flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2`) after the `</Table>` closing, with `Page {alertPage} of {alertTotalPages} ({sortedAlerts.length} alerts)` on the left and Prev/Next buttons on the right; only rendered when `sortedAlerts.length > 0`.
+  * Groups table: changed `sortedGroups.map(...)` → `pagedGroups.map(...)`; inserted a new pagination footer with `Page {groupPage} of {groupTotalPages} ({sortedGroups.length} groups)` + Prev/Next; kept the existing "Showing X of Y groups · Order/Missing/Processing totals" footer below it (updated its "Showing" count to use `pagedGroups.length` to reflect the visible slice).
+- **File 3 — `quantity-validation-view.tsx`** (client-side pagination):
+  * Added `const [valPage, setValPage] = React.useState(1)` and `const VAL_PAGE_SIZE = 20`.
+  * Added `const pagedGroups = groups.slice((valPage - 1) * VAL_PAGE_SIZE, valPage * VAL_PAGE_SIZE)` and `const valTotalPages = Math.max(1, Math.ceil(groups.length / VAL_PAGE_SIZE))`.
+  * Reset `valPage` in `applyFilters()` and `resetFilters()` (added `setValPage(1)` to each).
+  * Changed the table render `groups.map((g) => <ValidationRow … />)` → `pagedGroups.map(...)`.
+  * Added a new pagination footer above the existing "Showing N groups · inconsistent/consistent" footer: `flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2` with `Page {valPage} of {valTotalPages} ({groups.length} groups)` + Prev/Next; only rendered when `groups.length > 0`. Updated the existing footer's "Showing" count to `pagedGroups.length`.
+- **File 4 — `order-notes-view.tsx`** (client-side pagination on the notes timeline):
+  * Added `const [notePage, setNotePage] = React.useState(1)` and `const NOTE_PAGE_SIZE = 15`.
+  * Changed `groups` derivation from `useMemo(() => groupByDate(notes), [notes])` to slice the flat `notes` array FIRST and then group: `const noteTotalPages = Math.max(1, Math.ceil(notes.length / NOTE_PAGE_SIZE))`, `const pagedNotes = notes.slice((notePage - 1) * NOTE_PAGE_SIZE, notePage * NOTE_PAGE_SIZE)`, `const groups = useMemo(() => groupByDate(pagedNotes), [pagedNotes])`. This keeps date-header grouping intact per page (each page re-groups its own 15 notes by date).
+  * Reset `notePage` in `applyFilters()` and `clearFilters()` (added `setNotePage(1)` to each).
+  * Added a standalone pagination footer below the timeline conditional block (between the timeline and the Edit/Delete dialogs): `flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card/60 px-3 py-2` with `Page {notePage} of {noteTotalPages} ({notes.length} total notes)` + Prev/Next; only rendered when `notes.length > 0`. Used a `rounded-lg border bg-card/60` wrapper since it sits outside a Card container (matches the filter-card visual style above).
+- Verified per-file: `npx eslint <file>` exits 0 with no output for all 4 files (run individually after each edit, then re-run on all 4 together).
+- Verified type-check: `npx tsc --noEmit -p tsconfig.json` reports ZERO new errors in any of the 4 modified files. The only 2 TS errors mentioning `product-data-entry-view.tsx` (lines 348-349: `Property 'needsConfirm' does not exist on type ...`) are PRE-EXISTING in the `confirmDeleteEntry` handler — confirmed by `git stash` + re-check on HEAD (same 2 errors at lines 338-339). Not caused by my pagination changes.
+
+Stage Summary:
+- 4 view files modified, each with working Prev/Next pagination that resets to page 1 on context change (product switch, filter apply/reset). All existing functionality preserved — pagination is purely additive.
+  * `product-data-entry-view.tsx` — SERVER-side pagination: query now passes `page={entryPage}, pageSize={ENTRY_PAGE_SIZE=20}` (was hardcoded `page:1, pageSize:50`). Total pages come from the API's `totalPages` field. Useful because the underlying entry table can grow large; only the requested 20-row page is fetched from the DB.
+  * `product-production-tracking-view.tsx` — CLIENT-side pagination on BOTH tables (alerts + production groups), page size 20 each. Pages reset on `currentProduct` change AND on `refreshKey` change AND on filter apply/reset. Server still returns up to its existing 5000-row limit; the client slices the already-sorted arrays per page.
+  * `quantity-validation-view.tsx` — CLIENT-side pagination, page size 20. Pages reset on filter apply/reset.
+  * `order-notes-view.tsx` — CLIENT-side pagination on the flat notes array (page size 15), then date-grouping is recomputed per page so each page shows only its own date headers. Pages reset on filter apply/clear.
+- All 4 footers share the same visual pattern: `Page X of Y (N total)` left + Prev/Next `Button variant="outline" size="sm"` right; Prev disabled when `page <= 1`, Next disabled when `page >= totalPages`; styled with `flex items-center justify-between border-t px-3 py-2` (the notes-view variant uses `rounded-lg border bg-card/60` instead of `border-t` because it sits outside a Card).
+- `totalPages` calculation: server-side (file 1) uses `entriesQ.data?.totalPages ?? 1` (already returned by `api.listEntries`); client-side (files 2/3/4) uses `Math.max(1, Math.ceil(total / PAGE_SIZE))` to avoid a 0-page edge case on empty result sets.
+- No new dependencies added. No new imports needed (`Button` already imported in all 4 files). Did NOT add `ChevronLeft`/`ChevronRight` icons because the spec'd footer uses plain "Prev"/"Next" text labels — adding unused imports would trigger eslint `no-unused-vars`.
+- ESLint clean on all 4 files (exit 0, no warnings). TypeScript: 0 new errors introduced; the 2 pre-existing errors in `product-data-entry-view.tsx`'s `confirmDeleteEntry` (lines 348-349) predate this task and are unrelated.
+- Next actions (optional, for future agents / main):
+  * If the entry table grows beyond a few hundred rows for a product, consider also adding a "jump to page N" input on file 1's footer.
+  * Files 2 & 3 fetch the full server response (up to 5000 rows for production groups, unbounded for validation) and slice client-side; if these ever become slow, the corresponding API routes could be upgraded to accept `page`/`pageSize` params (similar to `listEntries`) and the views switched to server-side pagination using the same footer component.
+  * Consider extracting the repeated `flex items-center justify-between border-t px-3 py-2` + Prev/Next + counter pattern into a shared `<PaginationFooter page totalPages total onPageChange />` component under `src/components/common/` since it's now duplicated across 4 views.
+

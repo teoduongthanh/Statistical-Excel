@@ -65,6 +65,10 @@ export function QuantityValidationView() {
   const [applied, setApplied] = React.useState<ValidationFilters>(EMPTY_FILTERS);
   const [expandedRows, setExpandedRows] = React.useState<Set<string>>(new Set());
 
+  // ===== Client-side pagination for the validation table =====
+  const [valPage, setValPage] = React.useState(1);
+  const VAL_PAGE_SIZE = 20;
+
   const q = useQuery({
     queryKey: ["quantity-validation", applied],
     queryFn: () => api.validateQuantities(applied),
@@ -73,12 +77,14 @@ export function QuantityValidationView() {
   function applyFilters() {
     setApplied(form);
     setExpandedRows(new Set());
+    setValPage(1);
   }
 
   function resetFilters() {
     setForm(EMPTY_FILTERS);
     setApplied(EMPTY_FILTERS);
     setExpandedRows(new Set());
+    setValPage(1);
   }
 
   function toggleRow(key: string) {
@@ -92,6 +98,11 @@ export function QuantityValidationView() {
 
   const data = q.data;
   const groups = data?.groups ?? [];
+  const pagedGroups = groups.slice(
+    (valPage - 1) * VAL_PAGE_SIZE,
+    valPage * VAL_PAGE_SIZE
+  );
+  const valTotalPages = Math.max(1, Math.ceil(groups.length / VAL_PAGE_SIZE));
   const stats = {
     total: data?.total ?? 0,
     inconsistent: data?.inconsistent ?? 0,
@@ -318,7 +329,7 @@ export function QuantityValidationView() {
                     </td>
                   </tr>
                 ) : (
-                  groups.map((g) => (
+                  pagedGroups.map((g) => (
                     <ValidationRow
                       key={g.key}
                       group={g}
@@ -332,9 +343,34 @@ export function QuantityValidationView() {
           </div>
 
           {groups.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2">
+              <span className="text-xs text-muted-foreground">
+                Page {valPage} of {valTotalPages} ({groups.length} groups)
+              </span>
+              <div className="flex gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={valPage <= 1}
+                  onClick={() => setValPage((p) => Math.max(1, p - 1))}
+                >
+                  Prev
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={valPage >= valTotalPages}
+                  onClick={() => setValPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
+          {groups.length > 0 && (
             <div className="flex items-center justify-between border-t px-4 py-2 text-[11px] text-muted-foreground">
               <span>
-                Showing {groups.length} group{groups.length === 1 ? "" : "s"}
+                Showing {pagedGroups.length} group{pagedGroups.length === 1 ? "" : "s"}
               </span>
               <span>
                 {stats.inconsistent} inconsistent · {stats.consistent} consistent

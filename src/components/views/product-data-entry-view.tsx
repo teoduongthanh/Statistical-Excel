@@ -99,13 +99,23 @@ export function ProductDataEntryView() {
   const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const [bulkDeleting, setBulkDeleting] = React.useState(false);
 
-  // Fetch entries for this product (today's entries + recent).
+  // ===== Entries table pagination (server-side via page/pageSize) =====
+  const [entryPage, setEntryPage] = React.useState(1);
+  const ENTRY_PAGE_SIZE = 20;
+
+  // Fetch entries for this product (today's entries + recent), paginated.
   const entriesQ = useQuery({
-    queryKey: ["data-entry-entries", currentProduct, refreshKey],
-    queryFn: () => api.listEntries({ productType: currentProduct, page: 1, pageSize: 50 }),
+    queryKey: ["data-entry-entries", currentProduct, refreshKey, entryPage],
+    queryFn: () => api.listEntries({ productType: currentProduct, page: entryPage, pageSize: ENTRY_PAGE_SIZE }),
   });
   const entryRows = entriesQ.data?.rows ?? [];
   const entryTotal = entriesQ.data?.total ?? 0;
+  const entryTotalPages = entriesQ.data?.totalPages ?? 1;
+
+  // Reset to first page whenever the product context changes.
+  React.useEffect(() => {
+    setEntryPage(1);
+  }, [currentProduct]);
 
   // Keep context checkboxes (spec §48 — extended to PO NO# + Factory PO)
   const [keepStatus, setKeepStatus] = React.useState(true);
@@ -709,6 +719,7 @@ export function ProductDataEntryView() {
               No entries yet for {currentProduct}. Add data using the form above.
             </div>
           ) : (
+            <>
             <div className="overflow-x-auto scroll-thin">
               <table className="w-full text-xs">
                 <thead className="bg-muted/40 sticky top-0">
@@ -782,6 +793,30 @@ export function ProductDataEntryView() {
                 )}
               </table>
             </div>
+            <div className="flex items-center justify-between border-t px-3 py-2">
+              <span className="text-xs text-muted-foreground">
+                Page {entryPage} of {entryTotalPages} ({entryTotal} total)
+              </span>
+              <div className="flex gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={entryPage <= 1}
+                  onClick={() => setEntryPage((p) => Math.max(1, p - 1))}
+                >
+                  Prev
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={entryPage >= entryTotalPages}
+                  onClick={() => setEntryPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          </>
           )}
         </CardContent>
       </Card>

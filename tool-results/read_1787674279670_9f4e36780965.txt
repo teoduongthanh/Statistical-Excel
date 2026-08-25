@@ -1,0 +1,1598 @@
+     1→"use client";
+     2→
+     3→// =====================================================================
+     4→// ProductProductionTrackingView
+     5→// ---------------------------------------------------------------------
+     6→// Shows the Order → Output → Pending → Input production timeline and
+     7→// alert table for the currently-selected product (spec §49).
+     8→//
+     9→// All API calls are product-scoped: `api.getProductionGroups(currentProduct, …)`
+    10→// and `api.getAlerts(currentProduct, …)` — the product is mandatory and
+    11→// isolation is enforced both client-side (here) and server-side (route.ts).
+    12→// =====================================================================
+    13→
+    14→import * as React from "react";
+    15→import { useQuery } from "@tanstack/react-query";
+    16→import {
+    17→  AlertTriangle,
+    18→  AlertCircle,
+    19→  Activity,
+    20→  Clock,
+    21→  CheckCircle2,
+    22→  Boxes,
+    23→  Layers,
+    24→  TrendingDown,
+    25→  Search,
+    26→  Filter,
+    27→  RotateCcw,
+    28→  Loader2,
+    29→  ChevronDown,
+    30→  ChevronRight,
+    31→  Factory,
+    32→  Truck,
+    33→  PackageCheck,
+    34→  Info,
+    35→  X,
+    36→} from "lucide-react";
+    37→
+    38→import { api } from "@/lib/api-client";
+    39→import { cn } from "@/lib/utils";
+    40→import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
+    41→
+    42→import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+    43→import { Input } from "@/components/ui/input";
+    44→import { Button } from "@/components/ui/button";
+    45→import { Badge } from "@/components/ui/badge";
+    46→import { Skeleton } from "@/components/ui/skeleton";
+    47→import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+    48→import {
+    49→  Table,
+    50→  TableHeader,
+    51→  TableBody,
+    52→  TableHead,
+    53→  TableRow,
+    54→  TableCell,
+    55→} from "@/components/ui/table";
+    56→
+    57→// =====================================================================
+    58→// Types — match the shapes returned by /api/production/groups and
+    59→// /api/production/alerts (see aggregation-service.ts).
+    60→// =====================================================================
+    61→
+    62→type DeadlineStatus =
+    63→  | "OVERDUE"
+    64→  | "DUE_TODAY"
+    65→  | "DUE_TOMORROW"
+    66→  | "DUE_THIS_WEEK"
+    67→  | "UPCOMING"
+    68→  | "COMPLETED"
+    69→  | "NO_DEADLINE";
+    70→
+    71→type QuantityStatus =
+    72→  | "COMPLETED"
+    73→  | "PROCESSING"
+    74→  | "WARNING"
+    75→  | "NOT_STARTED";
+    76→
+    77→type AlertPriority = "HIGH" | "MEDIUM" | "LOW" | "INFO";
+    78→
+    79→interface AlertInfo {
+    80→  priority: AlertPriority;
+    81→  deadlineStatus: DeadlineStatus;
+    82→  quantityStatus: QuantityStatus;
+    83→  outputRemaining: number;
+    84→  missing: number;
+    85→  messages: string[];
+    86→}
+    87→
+    88→interface ProductionGroup {
+    89→  key: string;
+    90→  poNo: string;
+    91→  factoryPO: string;
+    92→  model: string;
+    93→  sku: string;
+    94→  season: string;
+    95→  colorCode: string;
+    96→  colorCode2: string;
+    97→  size: string;
+    98→  deadline: string | null;
+    99→  deadlineStatus: DeadlineStatus;
+   100→  alert: AlertInfo;
+   101→  orderQty: number;
+   102→  outputQty: number;
+   103→  pendingQty: number;
+   104→  inputQty: number;
+   105→  outputRemaining: number;
+   106→  processing: number;
+   107→  inputRemaining: number;
+   108→  outputRate: number;
+   109→  completionRate: number;
+   110→  processingRate: number;
+   111→  missing: number;
+   112→  quantityStatus: QuantityStatus;
+   113→  rowCount: number;
+   114→}
+   115→
+   116→interface AlertsResponse {
+   117→  total: number;
+   118→  high: number;
+   119→  medium: number;
+   120→  low: number;
+   121→  alerts: ProductionGroup[];
+   122→}
+   123→
+   124→interface GroupsResponse {
+   125→  total: number;
+   126→  groups: ProductionGroup[];
+   127→}
+   128→
+   129→interface TrackingFilters {
+   130→  factoryPO: string;
+   131→  poNo: string;
+   132→  model: string;
+   133→  size: string;
+   134→  deadlineFrom: string;
+   135→  deadlineTo: string;
+   136→}
+   137→
+   138→const EMPTY_FILTERS: TrackingFilters = {
+   139→  factoryPO: "",
+   140→  poNo: "",
+   141→  model: "",
+   142→  size: "",
+   143→  deadlineFrom: "",
+   144→  deadlineTo: "",
+   145→};
+   146→
+   147→// =====================================================================
+   148→// Constants — visual mapping tables
+   149→// =====================================================================
+   150→
+   151→const PRIORITY_RANK: Record<AlertPriority, number> = {
+   152→  HIGH: 0,
+   153→  MEDIUM: 1,
+   154→  LOW: 2,
+   155→  INFO: 3,
+   156→};
+   157→
+   158→const PRIORITY_META: Record<
+   159→  AlertPriority,
+   160→  { dot: string; label: string; badge: string; row: string; icon: React.ComponentType<{ className?: string }> }
+   161→> = {
+   162→  HIGH: {
+   163→    dot: "🔴",
+   164→    label: "HIGH",
+   165→    badge:
+   166→      "border-rose-200 bg-rose-100 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/50 dark:text-rose-300",
+   167→    row: "bg-rose-50/60 hover:bg-rose-50 dark:bg-rose-950/20 dark:hover:bg-rose-950/30",
+   168→    icon: AlertTriangle,
+   169→  },
+   170→  MEDIUM: {
+   171→    dot: "🟠",
+   172→    label: "MEDIUM",
+   173→    badge:
+   174→      "border-amber-200 bg-amber-100 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-300",
+   175→    row: "bg-amber-50/40 hover:bg-amber-50 dark:bg-amber-950/10 dark:hover:bg-amber-950/20",
+   176→    icon: AlertCircle,
+   177→  },
+   178→  LOW: {
+   179→    dot: "🟡",
+   180→    label: "LOW",
+   181→    badge:
+   182→      "border-yellow-200 bg-yellow-100 text-yellow-700 dark:border-yellow-900/50 dark:bg-yellow-950/50 dark:text-yellow-300",
+   183→    row: "hover:bg-muted/30",
+   184→    icon: Info,
+   185→  },
+   186→  INFO: {
+   187→    dot: "⚪",
+   188→    label: "INFO",
+   189→    badge: "border-border bg-muted text-muted-foreground",
+   190→    row: "hover:bg-muted/30",
+   191→    icon: Info,
+   192→  },
+   193→};
+   194→
+   195→const DEADLINE_META: Record<DeadlineStatus, { label: string; badge: string }> = {
+   196→  OVERDUE: {
+   197→    label: "Overdue",
+   198→    badge:
+   199→      "border-rose-200 bg-rose-100 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/50 dark:text-rose-300",
+   200→  },
+   201→  DUE_TODAY: {
+   202→    label: "Due today",
+   203→    badge:
+   204→      "border-rose-200 bg-rose-100 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/50 dark:text-rose-300",
+   205→  },
+   206→  DUE_TOMORROW: {
+   207→    label: "Due tomorrow",
+   208→    badge:
+   209→      "border-amber-200 bg-amber-100 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-300",
+   210→  },
+   211→  DUE_THIS_WEEK: {
+   212→    label: "This week",
+   213→    badge:
+   214→      "border-amber-200 bg-amber-100 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-300",
+   215→  },
+   216→  UPCOMING: {
+   217→    label: "Upcoming",
+   218→    badge:
+   219→      "border-emerald-200 bg-emerald-100 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-300",
+   220→  },
+   221→  COMPLETED: {
+   222→    label: "Completed",
+   223→    badge:
+   224→      "border-emerald-200 bg-emerald-100 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-300",
+   225→  },
+   226→  NO_DEADLINE: {
+   227→    label: "No deadline",
+   228→    badge: "border-border bg-muted text-muted-foreground",
+   229→  },
+   230→};
+   231→
+   232→const QTY_STATUS_META: Record<
+   233→  QuantityStatus,
+   234→  { label: string; dot: string; badge: string }
+   235→> = {
+   236→  COMPLETED: {
+   237→    label: "Completed",
+   238→    dot: "🟢",
+   239→    badge:
+   240→      "border-emerald-200 bg-emerald-100 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-300",
+   241→  },
+   242→  PROCESSING: {
+   243→    label: "Processing",
+   244→    dot: "🔵",
+   245→    badge:
+   246→      "border-sky-200 bg-sky-100 text-sky-700 dark:border-sky-900/50 dark:bg-sky-950/50 dark:text-sky-300",
+   247→  },
+   248→  WARNING: {
+   249→    label: "Warning",
+   250→    dot: "🟡",
+   251→    badge:
+   252→      "border-amber-200 bg-amber-100 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-300",
+   253→  },
+   254→  NOT_STARTED: {
+   255→    label: "Not started",
+   256→    dot: "⚪",
+   257→    badge: "border-border bg-muted text-muted-foreground",
+   258→  },
+   259→};
+   260→
+   261→// The four shipping statuses used by the Order → Output → Pending → Input timeline.
+   262→const SHIPPING_STATUSES = [
+   263→  {
+   264→    id: 1,
+   265→    key: "order",
+   266→    label: "1. Order",
+   267→    icon: Factory,
+   268→    desc: "Quantity ordered from the factory for outsource processing (per quarter).",
+   269→    tone: "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300",
+   270→  },
+   271→  {
+   272→    id: 2,
+   273→    key: "output",
+   274→    label: "2. Output",
+   275→    icon: Truck,
+   276→    desc: "Quantity actually sent out to the factory for processing.",
+   277→    tone: "border-amber-300 bg-amber-100 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-300",
+   278→  },
+   279→  {
+   280→    id: 3,
+   281→    key: "pending",
+   282→    label: "3. Pending",
+   283→    icon: Clock,
+   284→    desc: "Mirror of Output recorded as a NEGATIVE qty (an offset, not a real order).",
+   285→    tone: "border-violet-300 bg-violet-100 text-violet-700 dark:border-violet-900/50 dark:bg-violet-950/50 dark:text-violet-300",
+   286→  },
+   287→  {
+   288→    id: 4,
+   289→    key: "input",
+   290→    label: "4. Input",
+   291→    icon: PackageCheck,
+   292→    desc: "Quantity received back from the factory after processing is complete.",
+   293→    tone: "border-emerald-300 bg-emerald-100 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-300",
+   294→  },
+   295→] as const;
+   296→
+   297→// =====================================================================
+   298→// Helpers
+   299→// =====================================================================
+   300→
+   301→function fmt(n: number | null | undefined): string {
+   302→  if (n === null || n === undefined) return "—";
+   303→  if (!Number.isFinite(n)) return "—";
+   304→  return n.toLocaleString();
+   305→}
+   306→
+   307→function clampPct(n: number): number {
+   308→  if (!Number.isFinite(n)) return 0;
+   309→  return Math.max(0, Math.min(100, n));
+   310→}
+   311→
+   312→function formatDeadline(s: string | null | undefined): string {
+   313→  if (!s) return "—";
+   314→  const str = String(s).trim();
+   315→  if (!str) return "—";
+   316→  // Try common formats: yyyy-MM-dd, dd/MM/yyyy, ISO.
+   317→  const dmy = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+   318→  if (dmy) {
+   319→    const d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
+   320→    if (!isNaN(d.getTime())) {
+   321→      return d.toLocaleDateString(undefined, {
+   322→        year: "numeric",
+   323→        month: "short",
+   324→        day: "2-digit",
+   325→      });
+   326→    }
+   327→  }
+   328→  const iso = new Date(str);
+   329→  if (!isNaN(iso.getTime())) {
+   330→    return iso.toLocaleDateString(undefined, {
+   331→      year: "numeric",
+   332→      month: "short",
+   333→      day: "2-digit",
+   334→    });
+   335→  }
+   336→  return str;
+   337→}
+   338→
+   339→function completionTone(rate: number): string {
+   340→  const r = clampPct(rate);
+   341→  if (r >= 95) return "text-emerald-600 dark:text-emerald-400";
+   342→  if (r >= 80) return "text-amber-600 dark:text-amber-400";
+   343→  return "text-rose-600 dark:text-rose-400";
+   344→}
+   345→
+   346→function qtyCellClass(n: number, opts?: { warningZero?: boolean }): string {
+   347→  if (n === 0 && opts?.warningZero) {
+   348→    return "text-muted-foreground tabular-nums";
+   349→  }
+   350→  if (n > 0) return "tabular-nums";
+   351→  if (n < 0) return "text-amber-600 dark:text-amber-400 tabular-nums";
+   352→  return "text-muted-foreground tabular-nums";
+   353→}
+   354→
+   355→// =====================================================================
+   356→// Stat card
+   357→// =====================================================================
+   358→
+   359→type StatTone = "primary" | "warning" | "danger" | "info";
+   360→
+   361→const STAT_TONES: Record<StatTone, { text: string; bg: string; ring: string }> = {
+   362→  primary: {
+   363→    text: "text-emerald-600 dark:text-emerald-400",
+   364→    bg: "bg-emerald-50 dark:bg-emerald-950/40",
+   365→    ring: "ring-emerald-500/20",
+   366→  },
+   367→  warning: {
+   368→    text: "text-amber-600 dark:text-amber-400",
+   369→    bg: "bg-amber-50 dark:bg-amber-950/40",
+   370→    ring: "ring-amber-500/20",
+   371→  },
+   372→  danger: {
+   373→    text: "text-rose-600 dark:text-rose-400",
+   374→    bg: "bg-rose-50 dark:bg-rose-950/40",
+   375→    ring: "ring-rose-500/20",
+   376→  },
+   377→  info: {
+   378→    text: "text-sky-600 dark:text-sky-400",
+   379→    bg: "bg-sky-50 dark:bg-sky-950/40",
+   380→    ring: "ring-sky-500/20",
+   381→  },
+   382→};
+   383→
+   384→function StatCard({
+   385→  label,
+   386→  value,
+   387→  icon: Icon,
+   388→  tone,
+   389→  loading,
+   390→  sub,
+   391→}: {
+   392→  label: string;
+   393→  value: string;
+   394→  icon: React.ComponentType<{ className?: string }>;
+   395→  tone: StatTone;
+   396→  loading?: boolean;
+   397→  sub?: React.ReactNode;
+   398→}) {
+   399→  const t = STAT_TONES[tone];
+   400→  return (
+   401→    <Card className="overflow-hidden">
+   402→      <CardContent className="p-4">
+   403→        <div className="flex items-start justify-between gap-2">
+   404→          <div className="min-w-0">
+   405→            <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+   406→            {loading ? (
+   407→              <Skeleton className="mt-2 h-7 w-24" />
+   408→            ) : (
+   409→              <p className={cn("mt-1 text-2xl font-bold tracking-tight tabular-nums", t.text)}>
+   410→                {value}
+   411→              </p>
+   412→            )}
+   413→            {sub ? <div className="mt-1 text-[11px] text-muted-foreground">{sub}</div> : null}
+   414→          </div>
+   415→          <div
+   416→            className={cn(
+   417→              "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ring-1",
+   418→              t.bg,
+   419→              t.ring
+   420→            )}
+   421→          >
+   422→            <Icon className={cn("h-4 w-4", t.text)} />
+   423→          </div>
+   424→        </div>
+   425→      </CardContent>
+   426→    </Card>
+   427→  );
+   428→}
+   429→
+   430→// =====================================================================
+   431→// Loading / empty helpers
+   432→// =====================================================================
+   433→
+   434→function TableSkeleton({ rows = 8, cols = 12 }: { rows?: number; cols?: number }) {
+   435→  return (
+   436→    <>
+   437→      {Array.from({ length: rows }).map((_, i) => (
+   438→        <TableRow key={i}>
+   439→          <TableCell colSpan={cols} className="px-3 py-3">
+   440→            <div className="h-3 w-full animate-pulse rounded bg-muted" />
+   441→          </TableCell>
+   442→        </TableRow>
+   443→      ))}
+   444→    </>
+   445→  );
+   446→}
+   447→
+   448→function EmptyRow({
+   449→  colSpan,
+   450→  message,
+   451→  hint,
+   452→  icon: Icon = Boxes,
+   453→}: {
+   454→  colSpan: number;
+   455→  message: string;
+   456→  hint?: string;
+   457→  icon?: React.ComponentType<{ className?: string }>;
+   458→}) {
+   459→  return (
+   460→    <TableRow className="hover:bg-transparent">
+   461→      <TableCell colSpan={colSpan} className="px-3 py-10 text-center">
+   462→        <div className="flex flex-col items-center justify-center gap-2">
+   463→          <Icon className="h-8 w-8 text-muted-foreground/40" />
+   464→          <div className="text-sm font-medium">{message}</div>
+   465→          {hint ? (
+   466→            <div className="max-w-md text-xs text-muted-foreground">{hint}</div>
+   467→          ) : null}
+   468→        </div>
+   469→      </TableCell>
+   470→    </TableRow>
+   471→  );
+   472→}
+   473→
+   474→// =====================================================================
+   475→// Small badge helpers
+   476→// =====================================================================
+   477→
+   478→function PriorityBadge({ priority }: { priority: AlertPriority }) {
+   479→  const m = PRIORITY_META[priority] ?? PRIORITY_META.INFO;
+   480→  const Icon = m.icon;
+   481→  return (
+   482→    <Badge className={cn("gap-1 text-[10px]", m.badge)}>
+   483→      <span aria-hidden>{m.dot}</span>
+   484→      <Icon className="h-3 w-3" />
+   485→      {m.label}
+   486→    </Badge>
+   487→  );
+   488→}
+   489→
+   490→function DeadlineBadge({ status }: { status: DeadlineStatus }) {
+   491→  const m = DEADLINE_META[status] ?? DEADLINE_META.NO_DEADLINE;
+   492→  return <Badge className={cn("text-[10px]", m.badge)}>{m.label}</Badge>;
+   493→}
+   494→
+   495→function QtyStatusBadge({ status }: { status: QuantityStatus }) {
+   496→  const m = QTY_STATUS_META[status] ?? QTY_STATUS_META.NOT_STARTED;
+   497→  return (
+   498→    <Badge className={cn("gap-1 text-[10px]", m.badge)}>
+   499→      <span aria-hidden>{m.dot}</span>
+   500→      {m.label}
+   501→    </Badge>
+   502→  );
+   503→}
+   504→
+   505→// =====================================================================
+   506→// Alert table row (expandable alert messages)
+   507→// =====================================================================
+   508→
+   509→function AlertRow({
+   510→  group,
+   511→  expanded,
+   512→  onToggle,
+   513→}: {
+   514→  group: ProductionGroup;
+   515→  expanded: boolean;
+   516→  onToggle: () => void;
+   517→}) {
+   518→  const m = PRIORITY_META[group.alert.priority] ?? PRIORITY_META.INFO;
+   519→  const hasMessages = (group.alert.messages?.length ?? 0) > 0;
+   520→  return (
+   521→    <>
+   522→      <TableRow className={cn("border-t transition-colors", m.row)}>
+   523→        <TableCell className="px-2 py-1.5">
+   524→          {hasMessages ? (
+   525→            <button
+   526→              type="button"
+   527→              onClick={onToggle}
+   528→              aria-label={expanded ? "Collapse messages" : "Expand messages"}
+   529→              aria-expanded={expanded}
+   530→              className="flex h-6 w-6 items-center justify-center rounded hover:bg-accent"
+   531→            >
+   532→              {expanded ? (
+   533→                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+   534→              ) : (
+   535→                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+   536→              )}
+   537→            </button>
+   538→          ) : (
+   539→            <span className="block h-6 w-6" />
+   540→          )}
+   541→        </TableCell>
+   542→        <TableCell className="px-3 py-1.5">
+   543→          <PriorityBadge priority={group.alert.priority} />
+   544→        </TableCell>
+   545→        <TableCell className="px-3 py-1.5">
+   546→          <span className="font-mono text-[11px]">{group.factoryPO || "—"}</span>
+   547→        </TableCell>
+   548→        <TableCell className="max-w-[140px] truncate px-3 py-1.5" title={group.model}>
+   549→          {group.model || <span className="text-muted-foreground/40">—</span>}
+   550→        </TableCell>
+   551→        <TableCell className="px-3 py-1.5">
+   552→          {group.size ? (
+   553→            <Badge variant="outline" className="font-mono text-[10px]">
+   554→              {group.size}
+   555→            </Badge>
+   556→          ) : (
+   557→            <span className="text-muted-foreground/40">—</span>
+   558→          )}
+   559→        </TableCell>
+   560→        <TableCell className="whitespace-nowrap px-3 py-1.5 text-[11px]">
+   561→          {formatDeadline(group.deadline)}
+   562→        </TableCell>
+   563→        <TableCell className="px-3 py-1.5">
+   564→          <DeadlineBadge status={group.deadlineStatus} />
+   565→        </TableCell>
+   566→        <TableCell className="px-3 py-1.5 text-right tabular-nums">{fmt(group.orderQty)}</TableCell>
+   567→        <TableCell className="px-3 py-1.5 text-right tabular-nums">{fmt(group.outputQty)}</TableCell>
+   568→        <TableCell className="px-3 py-1.5 text-right tabular-nums">{fmt(group.inputQty)}</TableCell>
+   569→        <TableCell
+   570→          className={cn(
+   571→            "px-3 py-1.5 text-right",
+   572→            group.processing > 0
+   573→              ? "text-amber-600 dark:text-amber-400 tabular-nums"
+   574→              : "text-muted-foreground tabular-nums"
+   575→          )}
+   576→        >
+   577→          {fmt(group.processing)}
+   578→        </TableCell>
+   579→        <TableCell
+   580→          className={cn(
+   581→            "px-3 py-1.5 text-right font-medium",
+   582→            group.missing > 0
+   583→              ? "text-rose-600 dark:text-rose-400 tabular-nums"
+   584→              : "text-muted-foreground tabular-nums"
+   585→          )}
+   586→        >
+   587→          {fmt(group.missing)}
+   588→        </TableCell>
+   589→        <TableCell
+   590→          className={cn("px-3 py-1.5 text-right font-medium tabular-nums", completionTone(group.completionRate))}
+   591→        >
+   592→          {clampPct(group.completionRate).toFixed(1)}%
+   593→        </TableCell>
+   594→      </TableRow>
+   595→      {hasMessages && expanded && (
+   596→        <TableRow className={cn("border-t", m.row)}>
+   597→          <TableCell colSpan={13} className="px-6 py-3">
+   598→            <div className="rounded-md border border-border/60 bg-background/80 p-3">
+   599→              <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+   600→                <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+   601→                {group.alert.messages.length} alert message
+   602→                {group.alert.messages.length === 1 ? "" : "s"}
+   603→              </div>
+   604→              <ul className="space-y-1">
+   605→                {group.alert.messages.map((msg, i) => (
+   606→                  <li
+   607→                    key={i}
+   608→                    className="flex items-start gap-2 text-[11px] text-foreground/80"
+   609→                  >
+   610→                    <span className="mt-0.5 text-muted-foreground">•</span>
+   611→                    <span className="break-words whitespace-pre-wrap">{msg}</span>
+   612→                  </li>
+   613→                ))}
+   614→              </ul>
+   615→            </div>
+   616→          </TableCell>
+   617→        </TableRow>
+   618→      )}
+   619→    </>
+   620→  );
+   621→}
+   622→
+   623→// =====================================================================
+   624→// Production group row (expandable Order→Output→Pending→Input timeline)
+   625→// =====================================================================
+   626→
+   627→function ProductionGroupRow({
+   628→  group,
+   629→  expanded,
+   630→  onToggle,
+   631→}: {
+   632→  group: ProductionGroup;
+   633→  expanded: boolean;
+   634→  onToggle: () => void;
+   635→}) {
+   636→  return (
+   637→    <>
+   638→      <TableRow
+   639→        className={cn(
+   640→          "border-t transition-colors hover:bg-muted/40",
+   641→          group.alert.priority === "HIGH" &&
+   642→            "bg-rose-50/40 dark:bg-rose-950/10",
+   643→          group.alert.priority === "MEDIUM" &&
+   644→            "bg-amber-50/30 dark:bg-amber-950/10"
+   645→        )}
+   646→      >
+   647→        <TableCell className="px-2 py-1.5">
+   648→          <button
+   649→            type="button"
+   650→            onClick={onToggle}
+   651→            aria-label={expanded ? "Collapse timeline" : "Expand timeline"}
+   652→            aria-expanded={expanded}
+   653→            className="flex h-6 w-6 items-center justify-center rounded hover:bg-accent"
+   654→          >
+   655→            {expanded ? (
+   656→              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+   657→            ) : (
+   658→              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+   659→            )}
+   660→          </button>
+   661→        </TableCell>
+   662→        <TableCell className="whitespace-nowrap px-3 py-1.5 font-medium text-primary">
+   663→          {group.poNo || "—"}
+   664→        </TableCell>
+   665→        <TableCell className="whitespace-nowrap px-3 py-1.5">
+   666→          <span className="font-mono text-[11px]">{group.factoryPO || "—"}</span>
+   667→        </TableCell>
+   668→        <TableCell className="max-w-[140px] truncate px-3 py-1.5" title={group.model}>
+   669→          {group.model || <span className="text-muted-foreground/40">—</span>}
+   670→        </TableCell>
+   671→        <TableCell className="px-3 py-1.5">
+   672→          {group.size ? (
+   673→            <Badge variant="outline" className="font-mono text-[10px]">
+   674→              {group.size}
+   675→            </Badge>
+   676→          ) : (
+   677→            <span className="text-muted-foreground/40">—</span>
+   678→          )}
+   679→        </TableCell>
+   680→        <TableCell className="px-3 py-1.5 text-[11px]">
+   681→          {group.colorCode ? (
+   682→            <span title={group.colorCode} className="block max-w-[120px] truncate">
+   683→              {group.colorCode}
+   684→            </span>
+   685→          ) : (
+   686→            <span className="text-muted-foreground/40">—</span>
+   687→          )}
+   688→        </TableCell>
+   689→        <TableCell className="px-3 py-1.5 text-right tabular-nums">{fmt(group.orderQty)}</TableCell>
+   690→        <TableCell className="px-3 py-1.5 text-right tabular-nums">{fmt(group.outputQty)}</TableCell>
+   691→        <TableCell
+   692→          className={cn(
+   693→            "px-3 py-1.5 text-right",
+   694→            group.pendingQty < 0
+   695→              ? "text-violet-600 dark:text-violet-400 tabular-nums"
+   696→              : "text-muted-foreground tabular-nums"
+   697→          )}
+   698→        >
+   699→          {fmt(group.pendingQty)}
+   700→        </TableCell>
+   701→        <TableCell className="px-3 py-1.5 text-right tabular-nums">{fmt(group.inputQty)}</TableCell>
+   702→        <TableCell
+   703→          className={cn(
+   704→            "px-3 py-1.5 text-right",
+   705→            qtyCellClass(group.processing)
+   706→          )}
+   707→        >
+   708→          {fmt(group.processing)}
+   709→        </TableCell>
+   710→        <TableCell className={cn("px-3 py-1.5 text-right", qtyCellClass(group.outputRemaining))}>
+   711→          {fmt(group.outputRemaining)}
+   712→        </TableCell>
+   713→        <TableCell className={cn("px-3 py-1.5 text-right", qtyCellClass(group.inputRemaining))}>
+   714→          {fmt(group.inputRemaining)}
+   715→        </TableCell>
+   716→        <TableCell
+   717→          className={cn("px-3 py-1.5 text-right tabular-nums", completionTone(group.outputRate))}
+   718→        >
+   719→          {clampPct(group.outputRate).toFixed(1)}%
+   720→        </TableCell>
+   721→        <TableCell
+   722→          className={cn(
+   723→            "px-3 py-1.5 text-right font-medium tabular-nums",
+   724→            completionTone(group.completionRate)
+   725→          )}
+   726→        >
+   727→          {clampPct(group.completionRate).toFixed(1)}%
+   728→        </TableCell>
+   729→        <TableCell className="whitespace-nowrap px-3 py-1.5 text-[11px]">
+   730→          {formatDeadline(group.deadline)}
+   731→        </TableCell>
+   732→        <TableCell className="px-3 py-1.5">
+   733→          <QtyStatusBadge status={group.quantityStatus} />
+   734→        </TableCell>
+   735→      </TableRow>
+   736→      {expanded && (
+   737→        <TableRow className="border-t bg-muted/20">
+   738→          <TableCell colSpan={18} className="px-4 py-4">
+   739→            <GroupTimeline group={group} />
+   740→          </TableCell>
+   741→        </TableRow>
+   742→      )}
+   743→    </>
+   744→  );
+   745→}
+   746→
+   747→// =====================================================================
+   748→// Group timeline — the four-stage Order → Output → Pending → Input
+   749→// flow with quantities, rates, and remaining counters.
+   750→// =====================================================================
+   751→
+   752→function GroupTimeline({ group }: { group: ProductionGroup }) {
+   753→  const stages = [
+   754→    {
+   755→      key: "order",
+   756→      label: "1. Order",
+   757→      icon: Factory,
+   758→      tone:
+   759→        "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300",
+   760→      qty: group.orderQty,
+   761→      rate: 100,
+   762→      remaining: null as number | null,
+   763→      remainingLabel: "Demand",
+   764→      desc: "Quantity ordered from the factory.",
+   765→    },
+   766→    {
+   767→      key: "output",
+   768→      label: "2. Output",
+   769→      icon: Truck,
+   770→      tone:
+   771→        "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300",
+   772→      qty: group.outputQty,
+   773→      rate: group.outputRate,
+   774→      remaining: group.outputRemaining,
+   775→      remainingLabel: "Remaining to output",
+   776→      desc: "Quantity actually sent out for processing.",
+   777→    },
+   778→    {
+   779→      key: "pending",
+   780→      label: "3. Pending",
+   781→      icon: Clock,
+   782→      tone:
+   783→        "border-violet-300 bg-violet-50 text-violet-700 dark:border-violet-900/50 dark:bg-violet-950/40 dark:text-violet-300",
+   784→      qty: group.pendingQty,
+   785→      rate: group.processingRate,
+   786→      remaining: group.processing,
+   787→      remainingLabel: "In processing",
+   788→      desc: "Offset entry (negative). Processing = Output − Input.",
+   789→    },
+   790→    {
+   791→      key: "input",
+   792→      label: "4. Input",
+   793→      icon: PackageCheck,
+   794→      tone:
+   795→        "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300",
+   796→      qty: group.inputQty,
+   797→      rate: group.completionRate,
+   798→      remaining: group.inputRemaining,
+   799→      remainingLabel: "Missing",
+   800→      desc: "Quantity received back from factory.",
+   801→    },
+   802→  ];
+   803→
+   804→  return (
+   805→    <div className="rounded-lg border border-border/60 bg-background/80 p-4">
+   806→      {/* Heading row */}
+   807→      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+   808→        <div className="flex flex-wrap items-center gap-1.5">
+   809→          <span className="font-mono text-[11px] font-semibold">{group.factoryPO}</span>
+   810→          <Badge variant="outline" className="font-mono text-[10px]">
+   811→            {group.size}
+   812→          </Badge>
+   813→          {group.model ? (
+   814→            <span className="text-[11px] text-muted-foreground">{group.model}</span>
+   815→          ) : null}
+   816→          <span className="text-[11px] text-muted-foreground">·</span>
+   817→          <span className="text-[11px] text-muted-foreground">
+   818→            PO {group.poNo || "—"}
+   819→          </span>
+   820→          <span className="text-[11px] text-muted-foreground">·</span>
+   821→          <span className="text-[11px] text-muted-foreground">
+   822→            Deadline {formatDeadline(group.deadline)}
+   823→          </span>
+   824→        </div>
+   825→        <div className="flex flex-wrap items-center gap-1.5">
+   826→          <DeadlineBadge status={group.deadlineStatus} />
+   827→          <QtyStatusBadge status={group.quantityStatus} />
+   828→          <PriorityBadge priority={group.alert.priority} />
+   829→          <Badge variant="secondary" className="text-[10px]">
+   830→            {group.rowCount} row{group.rowCount === 1 ? "" : "s"}
+   831→          </Badge>
+   832→        </div>
+   833→      </div>
+   834→
+   835→      {/* Stage pipeline */}
+   836→      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+   837→        {stages.map((s, idx) => {
+   838→          const Icon = s.icon;
+   839→          return (
+   840→            <div
+   841→              key={s.key}
+   842→              className={cn("relative rounded-lg border p-3", s.tone)}
+   843→            >
+   844→              {/* Arrow connector (hidden on small screens) */}
+   845→              {idx < stages.length - 1 ? (
+   846→                <div
+   847→                  aria-hidden
+   848→                  className="absolute -right-3 top-1/2 hidden -translate-y-1/2 lg:block"
+   849→                >
+   850→                  <ChevronRight className="h-4 w-4 text-muted-foreground/60" />
+   851→                </div>
+   852→              ) : null}
+   853→              <div className="flex items-center gap-2">
+   854→                <div className="flex h-7 w-7 items-center justify-center rounded-md bg-background/60">
+   855→                  <Icon className="h-3.5 w-3.5" />
+   856→                </div>
+   857→                <div className="text-[11px] font-semibold">{s.label}</div>
+   858→              </div>
+   859→              <div className="mt-2 text-2xl font-bold tabular-nums">{fmt(s.qty)}</div>
+   860→              <div className="mt-1 flex items-center justify-between text-[10px]">
+   861→                <span className="opacity-70">{s.desc}</span>
+   862→              </div>
+   863→              {/* Progress bar */}
+   864→              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-background/40">
+   865→                <div
+   866→                  className="h-full rounded-full bg-current opacity-70"
+   867→                  style={{ width: `${clampPct(s.rate)}%` }}
+   868→                />
+   869→              </div>
+   870→              <div className="mt-1.5 flex items-center justify-between text-[10px]">
+   871→                <span className="opacity-70">{clampPct(s.rate).toFixed(1)}% of order</span>
+   872→                {s.remaining !== null ? (
+   873→                  <span className="font-medium">
+   874→                    {s.remainingLabel}: {fmt(s.remaining)}
+   875→                  </span>
+   876→                ) : (
+   877→                  <span className="opacity-70">Baseline</span>
+   878→                )}
+   879→              </div>
+   880→            </div>
+   881→          );
+   882→        })}
+   883→      </div>
+   884→
+   885→      {/* Inline alert messages, if any */}
+   886→      {group.alert.messages.length > 0 ? (
+   887→        <div className="mt-3 rounded-md border border-amber-300/40 bg-amber-50/60 p-2.5 dark:border-amber-900/40 dark:bg-amber-950/20">
+   888→          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+   889→            <AlertTriangle className="h-3.5 w-3.5" />
+   890→            Alert messages ({group.alert.messages.length})
+   891→          </div>
+   892→          <ul className="space-y-1">
+   893→            {group.alert.messages.map((msg, i) => (
+   894→              <li key={i} className="flex items-start gap-1.5 text-[11px] text-foreground/80">
+   895→                <span className="mt-0.5 text-amber-500">•</span>
+   896→                <span className="break-words whitespace-pre-wrap">{msg}</span>
+   897→              </li>
+   898→            ))}
+   899→          </ul>
+   900→        </div>
+   901→      ) : null}
+   902→    </div>
+   903→  );
+   904→}
+   905→
+   906→// =====================================================================
+   907→// Status legend
+   908→// =====================================================================
+   909→
+   910→function StatusLegend() {
+   911→  return (
+   912→    <Card>
+   913→      <CardHeader className="pb-3">
+   914→        <CardTitle className="flex items-center gap-2 text-sm">
+   915→          <Info className="h-4 w-4 text-primary" /> Status Legend
+   916→        </CardTitle>
+   917→      </CardHeader>
+   918→      <CardContent className="space-y-4">
+   919→        {/* Shipping statuses (the 4-stage flow) */}
+   920→        <div>
+   921→          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+   922→            Shipping Statuses (production timeline)
+   923→          </div>
+   924→          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+   925→            {SHIPPING_STATUSES.map((s) => {
+   926→              const Icon = s.icon;
+   927→              return (
+   928→                <div
+   929→                  key={s.key}
+   930→                  className={cn("flex items-start gap-2 rounded-md border p-2", s.tone)}
+   931→                >
+   932→                  <Icon className="mt-0.5 h-4 w-4 shrink-0" />
+   933→                  <div className="min-w-0">
+   934→                    <div className="text-[11px] font-semibold">{s.label}</div>
+   935→                    <div className="text-[10px] leading-snug opacity-80">{s.desc}</div>
+   936→                  </div>
+   937→                </div>
+   938→              );
+   939→            })}
+   940→          </div>
+   941→        </div>
+   942→
+   943→        {/* Deadline statuses */}
+   944→        <div>
+   945→          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+   946→            Deadline Statuses
+   947→          </div>
+   948→          <div className="flex flex-wrap gap-1.5">
+   949→            {(Object.keys(DEADLINE_META) as DeadlineStatus[]).map((k) => (
+   950→              <Badge key={k} className={cn("text-[10px]", DEADLINE_META[k].badge)}>
+   951→                {DEADLINE_META[k].label}
+   952→              </Badge>
+   953→            ))}
+   954→          </div>
+   955→          <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
+   956→            Computed relative to today. <strong>Overdue</strong> and <strong>Due today</strong> are
+   957→            high-urgency; <strong>Due tomorrow</strong> and <strong>This week</strong> are medium;
+   958→            <strong> Upcoming</strong> is low. <strong>Completed</strong> overrides deadline
+   959→            urgency; <strong>No deadline</strong> means the master row has no Dead Line value.
+   960→          </p>
+   961→        </div>
+   962→
+   963→        {/* Quantity statuses */}
+   964→        <div>
+   965→          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+   966→            Quantity Statuses
+   967→          </div>
+   968→          <div className="flex flex-wrap gap-1.5">
+   969→            {(Object.keys(QTY_STATUS_META) as QuantityStatus[]).map((k) => (
+   970→              <Badge key={k} className={cn("gap-1 text-[10px]", QTY_STATUS_META[k].badge)}>
+   971→                <span aria-hidden>{QTY_STATUS_META[k].dot}</span>
+   972→                {QTY_STATUS_META[k].label}
+   973→              </Badge>
+   974→            ))}
+   975→          </div>
+   976→          <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
+   977→            <strong>Completed</strong> (🟢): Input ≥ Order and Output ≥ Order.{" "}
+   978→            <strong>Processing</strong> (🔵): some Output or Input recorded but not yet complete.{" "}
+   979→            <strong>Warning</strong> (🟡): Order exists but nothing has been sent yet.{" "}
+   980→            <strong>Not started</strong>: no Order quantity recorded.
+   981→          </p>
+   982→        </div>
+   983→
+   984→        {/* Priority badges */}
+   985→        <div>
+   986→          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+   987→            Alert Priorities
+   988→          </div>
+   989→          <div className="flex flex-wrap gap-1.5">
+   990→            {(Object.keys(PRIORITY_META) as AlertPriority[]).map((k) => (
+   991→              <PriorityBadge key={k} priority={k} />
+   992→            ))}
+   993→          </div>
+   994→          <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
+   995→            <strong>HIGH</strong> = overdue with missing units, or due-today with output shortage.{" "}
+   996→            <strong>MEDIUM</strong> = due-soon or output shortage. <strong>LOW</strong> = completed
+   997→            but listed for visibility. <strong>INFO</strong> = no issue.
+   998→          </p>
+   999→        </div>
+  1000→      </CardContent>
+  1001→    </Card>
+  1002→  );
+  1003→}
+  1004→
+  1005→// =====================================================================
+  1006→// Main view
+  1007→// =====================================================================
+  1008→
+  1009→export function ProductProductionTrackingView() {
+  1010→  const { currentProduct, refreshKey, bumpRefresh } = useAppStore();
+  1011→  const theme = PRODUCT_THEME[currentProduct];
+  1012→
+  1013→  // Filters — `form` is what the user types; `applied` is what we query with.
+  1014→  const [form, setForm] = React.useState<TrackingFilters>(EMPTY_FILTERS);
+  1015→  const [applied, setApplied] = React.useState<TrackingFilters>(EMPTY_FILTERS);
+  1016→  const [expandedAlerts, setExpandedAlerts] = React.useState<Set<string>>(new Set());
+  1017→  const [expandedGroups, setExpandedGroups] = React.useState<Set<string>>(new Set());
+  1018→
+  1019→  // Build the filter map passed to the API. We always pass currentProduct
+  1020→  // as the first argument (mandatory) and only forward non-empty filter
+  1021→  // values as additional query params.
+  1022→  const filterParams = React.useMemo(() => {
+  1023→    const p: Record<string, string> = {};
+  1024→    if (applied.factoryPO) p.factoryPO = applied.factoryPO;
+  1025→    if (applied.poNo) p.poNo = applied.poNo;
+  1026→    if (applied.model) p.model = applied.model;
+  1027→    if (applied.size) p.size = applied.size;
+  1028→    if (applied.deadlineFrom) p.dateFrom = applied.deadlineFrom;
+  1029→    if (applied.deadlineTo) p.dateTo = applied.deadlineTo;
+  1030→    return p;
+  1031→  }, [applied]);
+  1032→
+  1033→  // Sort & limit the alert payload — the API returns up to `limit` items
+  1034→  // already sorted by priority then deadline, but we re-sort defensively
+  1035→  // in case the server changes.
+  1036→  const alertsQuery = useQuery({
+  1037→    queryKey: ["production-alerts", currentProduct, filterParams, refreshKey],
+  1038→    queryFn: () => api.getAlerts(currentProduct, 30),
+  1039→    enabled: Boolean(currentProduct),
+  1040→    staleTime: 30_000,
+  1041→  });
+  1042→
+  1043→  const groupsQuery = useQuery({
+  1044→    queryKey: ["production-groups", currentProduct, filterParams, refreshKey],
+  1045→    queryFn: () => api.getProductionGroups(currentProduct, filterParams),
+  1046→    enabled: Boolean(currentProduct),
+  1047→    staleTime: 30_000,
+  1048→  });
+  1049→
+  1050→  const alertsData: AlertsResponse | undefined = alertsQuery.data as
+  1051→    | AlertsResponse
+  1052→    | undefined;
+  1053→  const groupsData: GroupsResponse | undefined = groupsQuery.data as
+  1054→    | GroupsResponse
+  1055→    | undefined;
+  1056→
+  1057→  // Defensive sort: priority asc, then deadline asc (missing deadline last).
+  1058→  const sortedAlerts = React.useMemo(() => {
+  1059→    const arr = (alertsData?.alerts ?? []).slice();
+  1060→    arr.sort((a, b) => {
+  1061→      const p =
+  1062→        PRIORITY_RANK[a.alert.priority] - PRIORITY_RANK[b.alert.priority];
+  1063→      if (p !== 0) return p;
+  1064→      return (a.deadline ?? "9999").localeCompare(b.deadline ?? "9999");
+  1065→    });
+  1066→    return arr;
+  1067→  }, [alertsData?.alerts]);
+  1068→
+  1069→  // Sorted production groups — preserve server order (already by nearest
+  1070→  // deadline asc) but bump HIGH-priority rows to the top on the client for
+  1071→  // visibility, then keep deadline order otherwise.
+  1072→  const sortedGroups = React.useMemo(() => {
+  1073→    const arr = (groupsData?.groups ?? []).slice();
+  1074→    arr.sort((a, b) => {
+  1075→      const pa = PRIORITY_RANK[a.alert.priority];
+  1076→      const pb = PRIORITY_RANK[b.alert.priority];
+  1077→      if (pa !== pb) return pa - pb;
+  1078→      return (a.deadline ?? "9999").localeCompare(b.deadline ?? "9999");
+  1079→    });
+  1080→    return arr;
+  1081→  }, [groupsData?.groups]);
+  1082→
+  1083→  // Summary totals (computed across all returned groups — server-side
+  1084→  // pagination limit is 5000 so this is a representative sample).
+  1085→  const totals = React.useMemo(() => {
+  1086→    const gs = groupsData?.groups ?? [];
+  1087→    let totalOrders = 0;
+  1088→    let totalProcessing = 0;
+  1089→    let totalMissing = 0;
+  1090→    for (const g of gs) {
+  1091→      totalOrders += g.orderQty || 0;
+  1092→      totalProcessing += g.processing || 0;
+  1093→      totalMissing += g.missing || 0;
+  1094→    }
+  1095→    return { totalOrders, totalProcessing, totalMissing };
+  1096→  }, [groupsData?.groups]);
+  1097→
+  1098→  const highAlerts = alertsData?.high ?? 0;
+  1099→  const isLoading = groupsQuery.isLoading || alertsQuery.isLoading;
+  1100→  const isFetching = groupsQuery.isFetching || alertsQuery.isFetching;
+  1101→  const isError = groupsQuery.isError || alertsQuery.isError;
+  1102→  const hasFilters = Object.values(applied).some(Boolean);
+  1103→
+  1104→  function applyFilters() {
+  1105→    setApplied(form);
+  1106→    setExpandedAlerts(new Set());
+  1107→    setExpandedGroups(new Set());
+  1108→  }
+  1109→
+  1110→  function resetFilters() {
+  1111→    setForm(EMPTY_FILTERS);
+  1112→    setApplied(EMPTY_FILTERS);
+  1113→    setExpandedAlerts(new Set());
+  1114→    setExpandedGroups(new Set());
+  1115→  }
+  1116→
+  1117→  function toggleAlert(key: string) {
+  1118→    setExpandedAlerts((s) => {
+  1119→      const next = new Set(s);
+  1120→      if (next.has(key)) next.delete(key);
+  1121→      else next.add(key);
+  1122→      return next;
+  1123→    });
+  1124→  }
+  1125→
+  1126→  function toggleGroup(key: string) {
+  1127→    setExpandedGroups((s) => {
+  1128→      const next = new Set(s);
+  1129→      if (next.has(key)) next.delete(key);
+  1130→      else next.add(key);
+  1131→      return next;
+  1132→    });
+  1133→  }
+  1134→
+  1135→  function expandAllGroups() {
+  1136→    setExpandedGroups(new Set(sortedGroups.map((g) => g.key)));
+  1137→  }
+  1138→
+  1139→  function collapseAllGroups() {
+  1140→    setExpandedGroups(new Set());
+  1141→  }
+  1142→
+  1143→  const productLabel = theme.label;
+  1144→
+  1145→  return (
+  1146→    <div className="space-y-5">
+  1147→      {/* ---------------- Header ---------------- */}
+  1148→      <div className="flex flex-col gap-1">
+  1149→        <div className="flex items-center gap-2">
+  1150→          <h1 className="text-lg font-semibold tracking-tight">Production Tracking</h1>
+  1151→          <Badge className={cn("gap-1 text-[10px]", theme.badge)}>
+  1152→            <Factory className="h-3 w-3" />
+  1153→            {productLabel}
+  1154→          </Badge>
+  1155→          {isFetching && !isLoading ? (
+  1156→            <Badge variant="secondary" className="text-[10px]">
+  1157→              <Loader2 className="h-3 w-3 animate-spin" />
+  1158→              refreshing
+  1159→            </Badge>
+  1160→          ) : null}
+  1161→        </div>
+  1162→        <p className="text-sm text-muted-foreground">
+  1163→          Order → Output → Pending → Input production timeline and prioritized alerts for{" "}
+  1164→          <strong>{productLabel}</strong>.
+  1165→        </p>
+  1166→      </div>
+  1167→
+  1168→      {/* ---------------- Filter bar ---------------- */}
+  1169→      <Card>
+  1170→        <CardHeader className="pb-3">
+  1171→          <CardTitle className="flex items-center gap-2 text-sm">
+  1172→            <Filter className="h-4 w-4 text-primary" /> Filters
+  1173→          </CardTitle>
+  1174→        </CardHeader>
+  1175→        <CardContent className="space-y-3">
+  1176→          <div className="grid grid-cols-1 gap-3 md:grid-cols-3 lg:grid-cols-6">
+  1177→            <div className="space-y-1.5">
+  1178→              <label className="text-xs font-medium text-muted-foreground" htmlFor="pt-factory-po">
+  1179→                Factory PO
+  1180→              </label>
+  1181→              <Input
+  1182→                id="pt-factory-po"
+  1183→                value={form.factoryPO}
+  1184→                onChange={(e) => setForm((f) => ({ ...f, factoryPO: e.target.value }))}
+  1185→                onKeyDown={(e) => {
+  1186→                  if (e.key === "Enter") applyFilters();
+  1187→                }}
+  1188→                placeholder="e.g. MH26110228"
+  1189→                className="h-9"
+  1190→                autoComplete="off"
+  1191→                spellCheck={false}
+  1192→              />
+  1193→            </div>
+  1194→            <div className="space-y-1.5">
+  1195→              <label className="text-xs font-medium text-muted-foreground" htmlFor="pt-po-no">
+  1196→                PO NO#
+  1197→              </label>
+  1198→              <Input
+  1199→                id="pt-po-no"
+  1200→                value={form.poNo}
+  1201→                onChange={(e) => setForm((f) => ({ ...f, poNo: e.target.value }))}
+  1202→                onKeyDown={(e) => {
+  1203→                  if (e.key === "Enter") applyFilters();
+  1204→                }}
+  1205→                placeholder="e.g. H411351070"
+  1206→                className="h-9"
+  1207→                autoComplete="off"
+  1208→                spellCheck={false}
+  1209→              />
+  1210→            </div>
+  1211→            <div className="space-y-1.5">
+  1212→              <label className="text-xs font-medium text-muted-foreground" htmlFor="pt-model">
+  1213→                Model
+  1214→              </label>
+  1215→              <Input
+  1216→                id="pt-model"
+  1217→                value={form.model}
+  1218→                onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+  1219→                onKeyDown={(e) => {
+  1220→                  if (e.key === "Enter") applyFilters();
+  1221→                }}
+  1222→                placeholder="e.g. MAFATE5 MS"
+  1223→                className="h-9"
+  1224→                autoComplete="off"
+  1225→                spellCheck={false}
+  1226→              />
+  1227→            </div>
+  1228→            <div className="space-y-1.5">
+  1229→              <label className="text-xs font-medium text-muted-foreground" htmlFor="pt-size">
+  1230→                Size
+  1231→              </label>
+  1232→              <Input
+  1233→                id="pt-size"
+  1234→                value={form.size}
+  1235→                onChange={(e) => setForm((f) => ({ ...f, size: e.target.value }))}
+  1236→                onKeyDown={(e) => {
+  1237→                  if (e.key === "Enter") applyFilters();
+  1238→                }}
+  1239→                placeholder="e.g. M(07)"
+  1240→                className="h-9"
+  1241→                autoComplete="off"
+  1242→                spellCheck={false}
+  1243→              />
+  1244→            </div>
+  1245→            <div className="space-y-1.5">
+  1246→              <label className="text-xs font-medium text-muted-foreground" htmlFor="pt-deadline-from">
+  1247→                Deadline From
+  1248→              </label>
+  1249→              <Input
+  1250→                id="pt-deadline-from"
+  1251→                type="date"
+  1252→                value={form.deadlineFrom}
+  1253→                onChange={(e) => setForm((f) => ({ ...f, deadlineFrom: e.target.value }))}
+  1254→                className="h-9"
+  1255→              />
+  1256→            </div>
+  1257→            <div className="space-y-1.5">
+  1258→              <label className="text-xs font-medium text-muted-foreground" htmlFor="pt-deadline-to">
+  1259→                Deadline To
+  1260→              </label>
+  1261→              <Input
+  1262→                id="pt-deadline-to"
+  1263→                type="date"
+  1264→                value={form.deadlineTo}
+  1265→                onChange={(e) => setForm((f) => ({ ...f, deadlineTo: e.target.value }))}
+  1266→                className="h-9"
+  1267→              />
+  1268→            </div>
+  1269→          </div>
+  1270→          <div className="flex flex-wrap items-center gap-2">
+  1271→            <Button size="sm" onClick={applyFilters} disabled={isLoading}>
+  1272→              <Search className="mr-1.5 h-3.5 w-3.5" /> Apply
+  1273→            </Button>
+  1274→            <Button size="sm" variant="outline" onClick={resetFilters} disabled={isLoading}>
+  1275→              <RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Reset
+  1276→            </Button>
+  1277→            <Button size="sm" variant="ghost" onClick={bumpRefresh} disabled={isLoading}>
+  1278→              <Loader2 className={cn("mr-1.5 h-3.5 w-3.5", isFetching && "animate-spin")} />
+  1279→              Refresh
+  1280→            </Button>
+  1281→            {hasFilters ? (
+  1282→              <div className="flex flex-wrap items-center gap-1.5">
+  1283→                <span className="text-[11px] text-muted-foreground">Active:</span>
+  1284→                {Object.entries(applied).map(([k, v]) =>
+  1285→                  v ? (
+  1286→                    <Badge key={k} variant="secondary" className="gap-1 text-[10px]">
+  1287→                      {k}: {v}
+  1288→                      <button
+  1289→                        type="button"
+  1290→                        onClick={() => {
+  1291→                          setForm((f) => ({ ...f, [k]: "" }));
+  1292→                          setApplied((a) => ({ ...a, [k]: "" }));
+  1293→                        }}
+  1294→                        className="ml-0.5 rounded-sm hover:bg-accent"
+  1295→                        aria-label={`Clear ${k} filter`}
+  1296→                      >
+  1297→                        <X className="h-3 w-3" />
+  1298→                      </button>
+  1299→                    </Badge>
+  1300→                  ) : null
+  1301→                )}
+  1302→              </div>
+  1303→            ) : null}
+  1304→          </div>
+  1305→        </CardContent>
+  1306→      </Card>
+  1307→
+  1308→      {/* ---------------- Error ---------------- */}
+  1309→      {isError ? (
+  1310→        <Alert variant="destructive">
+  1311→          <AlertCircle className="h-4 w-4" />
+  1312→          <AlertTitle>Failed to load production tracking data</AlertTitle>
+  1313→          <AlertDescription>
+  1314→            {(groupsQuery.error || alertsQuery.error) instanceof Error
+  1315→              ? ((groupsQuery.error || alertsQuery.error) as Error).message
+  1316→              : "Unknown error."}{" "}
+  1317→            <button
+  1318→              type="button"
+  1319→              onClick={() => {
+  1320→                groupsQuery.refetch();
+  1321→                alertsQuery.refetch();
+  1322→              }}
+  1323→              className="underline underline-offset-2 hover:opacity-80"
+  1324→            >
+  1325→              Try again
+  1326→            </button>
+  1327→          </AlertDescription>
+  1328→        </Alert>
+  1329→      ) : null}
+  1330→
+  1331→      {/* ---------------- Summary stat cards ---------------- */}
+  1332→      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+  1333→        <StatCard
+  1334→          label="Total Orders"
+  1335→          value={fmt(totals.totalOrders)}
+  1336→          icon={Boxes}
+  1337→          tone="primary"
+  1338→          loading={isLoading}
+  1339→          sub={
+  1340→            <span>
+  1341→              {groupsData?.total ?? 0} group{(groupsData?.total ?? 0) === 1 ? "" : "s"}
+  1342→            </span>
+  1343→          }
+  1344→        />
+  1345→        <StatCard
+  1346→          label="Total Processing"
+  1347→          value={fmt(totals.totalProcessing)}
+  1348→          icon={Activity}
+  1349→          tone="info"
+  1350→          loading={isLoading}
+  1351→          sub={<span>Output − Input (in-flight)</span>}
+  1352→        />
+  1353→        <StatCard
+  1354→          label="Total Missing"
+  1355→          value={fmt(totals.totalMissing)}
+  1356→          icon={TrendingDown}
+  1357→          tone="danger"
+  1358→          loading={isLoading}
+  1359→          sub={<span>Order − Input (not yet received)</span>}
+  1360→        />
+  1361→        <StatCard
+  1362→          label="High Priority Alerts"
+  1363→          value={fmt(highAlerts)}
+  1364→          icon={AlertTriangle}
+  1365→          tone="danger"
+  1366→          loading={isLoading}
+  1367→          sub={
+  1368→            <span>
+  1369→              {alertsData?.total ?? 0} total alert{(alertsData?.total ?? 0) === 1 ? "" : "s"}
+  1370→            </span>
+  1371→          }
+  1372→        />
+  1373→      </div>
+  1374→
+  1375→      {/* ---------------- Alert table ---------------- */}
+  1376→      <Card>
+  1377→        <CardContent className="p-0">
+  1378→          <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5">
+  1379→            <div className="flex items-center gap-2 text-sm">
+  1380→              <AlertTriangle className="h-4 w-4 text-rose-500" />
+  1381→              <span className="font-medium">Priority Alerts</span>
+  1382→              <Badge variant="outline" className="text-[10px]">
+  1383→                {sortedAlerts.length} of {alertsData?.total ?? 0}
+  1384→              </Badge>
+  1385→              {highAlerts > 0 ? (
+  1386→                <Badge
+  1387→                  variant="outline"
+  1388→                  className="border-rose-300 bg-rose-50 text-[10px] text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-300"
+  1389→                >
+  1390→                  {highAlerts} high
+  1391→                </Badge>
+  1392→              ) : null}
+  1393→            </div>
+  1394→            <span className="hidden text-[11px] text-muted-foreground md:inline">
+  1395→              Sorted by priority then deadline (soonest first)
+  1396→            </span>
+  1397→          </div>
+  1398→          <div className="overflow-x-auto scroll-thin">
+  1399→            <Table className="text-xs">
+  1400→              <TableHeader className="bg-muted/40">
+  1401→                <TableRow>
+  1402→                  <TableHead className="w-8 px-2 py-2" />
+  1403→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1404→                    Priority
+  1405→                  </TableHead>
+  1406→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1407→                    Factory PO
+  1408→                  </TableHead>
+  1409→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1410→                    Model
+  1411→                  </TableHead>
+  1412→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1413→                    Size
+  1414→                  </TableHead>
+  1415→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1416→                    Deadline
+  1417→                  </TableHead>
+  1418→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1419→                    Deadline Status
+  1420→                  </TableHead>
+  1421→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1422→                    Order
+  1423→                  </TableHead>
+  1424→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1425→                    Output
+  1426→                  </TableHead>
+  1427→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1428→                    Input
+  1429→                  </TableHead>
+  1430→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1431→                    Processing
+  1432→                  </TableHead>
+  1433→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1434→                    Missing
+  1435→                  </TableHead>
+  1436→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1437→                    Completion%
+  1438→                  </TableHead>
+  1439→                </TableRow>
+  1440→              </TableHeader>
+  1441→              <TableBody>
+  1442→                {alertsQuery.isLoading ? (
+  1443→                  <TableSkeleton rows={6} cols={13} />
+  1444→                ) : sortedAlerts.length === 0 ? (
+  1445→                  <EmptyRow
+  1446→                    colSpan={13}
+  1447→                    message="No alerts"
+  1448→                    hint="All production groups for this product are on-track given the current filters."
+  1449→                    icon={CheckCircle2}
+  1450→                  />
+  1451→                ) : (
+  1452→                  sortedAlerts.map((g) => (
+  1453→                    <AlertRow
+  1454→                      key={g.key}
+  1455→                      group={g}
+  1456→                      expanded={expandedAlerts.has(g.key)}
+  1457→                      onToggle={() => toggleAlert(g.key)}
+  1458→                    />
+  1459→                  ))
+  1460→                )}
+  1461→              </TableBody>
+  1462→            </Table>
+  1463→          </div>
+  1464→        </CardContent>
+  1465→      </Card>
+  1466→
+  1467→      {/* ---------------- Production groups table ---------------- */}
+  1468→      <Card>
+  1469→        <CardContent className="p-0">
+  1470→          <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5">
+  1471→            <div className="flex items-center gap-2 text-sm">
+  1472→              <Layers className="h-4 w-4 text-primary" />
+  1473→              <span className="font-medium">Production Groups</span>
+  1474→              <Badge variant="outline" className="text-[10px]">
+  1475→                {sortedGroups.length} group{sortedGroups.length === 1 ? "" : "s"}
+  1476→              </Badge>
+  1477→            </div>
+  1478→            <div className="flex items-center gap-2">
+  1479→              <Button
+  1480→                size="sm"
+  1481→                variant="ghost"
+  1482→                onClick={expandAllGroups}
+  1483→                disabled={sortedGroups.length === 0}
+  1484→                className="h-8 text-[11px]"
+  1485→              >
+  1486→                <ChevronDown className="mr-1 h-3 w-3" /> Expand all
+  1487→              </Button>
+  1488→              <Button
+  1489→                size="sm"
+  1490→                variant="ghost"
+  1491→                onClick={collapseAllGroups}
+  1492→                disabled={expandedGroups.size === 0}
+  1493→                className="h-8 text-[11px]"
+  1494→              >
+  1495→                <ChevronRight className="mr-1 h-3 w-3" /> Collapse all
+  1496→              </Button>
+  1497→            </div>
+  1498→          </div>
+  1499→          <div className="overflow-x-auto scroll-thin">
+  1500→            <Table className="text-xs">
+  1501→              <TableHeader className="bg-muted/40">
+  1502→                <TableRow>
+  1503→                  <TableHead className="w-8 px-2 py-2" />
+  1504→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1505→                    PO NO#
+  1506→                  </TableHead>
+  1507→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1508→                    Factory PO
+  1509→                  </TableHead>
+  1510→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1511→                    Model
+  1512→                  </TableHead>
+  1513→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1514→                    Size
+  1515→                  </TableHead>
+  1516→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1517→                    Color
+  1518→                  </TableHead>
+  1519→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1520→                    Order
+  1521→                  </TableHead>
+  1522→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1523→                    Output
+  1524→                  </TableHead>
+  1525→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1526→                    Pending
+  1527→                  </TableHead>
+  1528→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1529→                    Input
+  1530→                  </TableHead>
+  1531→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1532→                    Processing
+  1533→                  </TableHead>
+  1534→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1535→                    Output Rem.
+  1536→                  </TableHead>
+  1537→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1538→                    Input Rem.
+  1539→                  </TableHead>
+  1540→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1541→                    Output%
+  1542→                  </TableHead>
+  1543→                  <TableHead className="whitespace-nowrap px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">
+  1544→                    Completion%
+  1545→                  </TableHead>
+  1546→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1547→                    Deadline
+  1548→                  </TableHead>
+  1549→                  <TableHead className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+  1550→                    Qty Status
+  1551→                  </TableHead>
+  1552→                </TableRow>
+  1553→              </TableHeader>
+  1554→              <TableBody>
+  1555→                {groupsQuery.isLoading ? (
+  1556→                  <TableSkeleton rows={8} cols={18} />
+  1557→                ) : sortedGroups.length === 0 ? (
+  1558→                  <EmptyRow
+  1559→                    colSpan={18}
+  1560→                    message="No production groups"
+  1561→                    hint={`No ${productLabel} production data matches the current filters. Try resetting the filters or import more data.`}
+  1562→                    icon={Factory}
+  1563→                  />
+  1564→                ) : (
+  1565→                  sortedGroups.map((g) => (
+  1566→                    <ProductionGroupRow
+  1567→                      key={g.key}
+  1568→                      group={g}
+  1569→                      expanded={expandedGroups.has(g.key)}
+  1570→                      onToggle={() => toggleGroup(g.key)}
+  1571→                    />
+  1572→                  ))
+  1573→                )}
+  1574→              </TableBody>
+  1575→            </Table>
+  1576→          </div>
+  1577→          {sortedGroups.length > 0 ? (
+  1578→            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2 text-[11px] text-muted-foreground">
+  1579→              <span>
+  1580→                Showing {sortedGroups.length} of {groupsData?.total ?? sortedGroups.length} groups
+  1581→              </span>
+  1582→              <span className="tabular-nums">
+  1583→                Order {fmt(totals.totalOrders)} · Missing {fmt(totals.totalMissing)} · Processing{" "}
+  1584→                {fmt(totals.totalProcessing)}
+  1585→              </span>
+  1586→            </div>
+  1587→          ) : null}
+  1588→        </CardContent>
+  1589→      </Card>
+  1590→
+  1591→      {/* ---------------- Status legend ---------------- */}
+  1592→      <StatusLegend />
+  1593→    </div>
+  1594→  );
+  1595→}
+  1596→
+  1597→export default ProductProductionTrackingView;
+  1598→

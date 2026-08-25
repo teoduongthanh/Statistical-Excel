@@ -1016,6 +1016,12 @@ export function ProductProductionTrackingView() {
   const [expandedAlerts, setExpandedAlerts] = React.useState<Set<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = React.useState<Set<string>>(new Set());
 
+  // ===== Client-side pagination for groups & alerts tables =====
+  const [groupPage, setGroupPage] = React.useState(1);
+  const [alertPage, setAlertPage] = React.useState(1);
+  const GROUP_PAGE_SIZE = 20;
+  const ALERT_PAGE_SIZE = 20;
+
   // Build the filter map passed to the API. We always pass currentProduct
   // as the first argument (mandatory) and only forward non-empty filter
   // values as additional query params.
@@ -1101,10 +1107,31 @@ export function ProductProductionTrackingView() {
   const isError = groupsQuery.isError || alertsQuery.isError;
   const hasFilters = Object.values(applied).some(Boolean);
 
+  // ===== Paged slices for the two tables =====
+  const groupTotalPages = Math.max(1, Math.ceil(sortedGroups.length / GROUP_PAGE_SIZE));
+  const alertTotalPages = Math.max(1, Math.ceil(sortedAlerts.length / ALERT_PAGE_SIZE));
+  const pagedGroups = sortedGroups.slice(
+    (groupPage - 1) * GROUP_PAGE_SIZE,
+    groupPage * GROUP_PAGE_SIZE
+  );
+  const pagedAlerts = sortedAlerts.slice(
+    (alertPage - 1) * ALERT_PAGE_SIZE,
+    alertPage * ALERT_PAGE_SIZE
+  );
+
+  // Reset both pages to 1 when the product context changes (currentProduct
+  // or refreshKey) so a stale page index never points past the end.
+  React.useEffect(() => {
+    setGroupPage(1);
+    setAlertPage(1);
+  }, [currentProduct, refreshKey]);
+
   function applyFilters() {
     setApplied(form);
     setExpandedAlerts(new Set());
     setExpandedGroups(new Set());
+    setGroupPage(1);
+    setAlertPage(1);
   }
 
   function resetFilters() {
@@ -1112,6 +1139,8 @@ export function ProductProductionTrackingView() {
     setApplied(EMPTY_FILTERS);
     setExpandedAlerts(new Set());
     setExpandedGroups(new Set());
+    setGroupPage(1);
+    setAlertPage(1);
   }
 
   function toggleAlert(key: string) {
@@ -1449,7 +1478,7 @@ export function ProductProductionTrackingView() {
                     icon={CheckCircle2}
                   />
                 ) : (
-                  sortedAlerts.map((g) => (
+                  pagedAlerts.map((g) => (
                     <AlertRow
                       key={g.key}
                       group={g}
@@ -1461,6 +1490,31 @@ export function ProductProductionTrackingView() {
               </TableBody>
             </Table>
           </div>
+          {sortedAlerts.length > 0 ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2">
+              <span className="text-xs text-muted-foreground">
+                Page {alertPage} of {alertTotalPages} ({sortedAlerts.length} alerts)
+              </span>
+              <div className="flex gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={alertPage <= 1}
+                  onClick={() => setAlertPage((p) => Math.max(1, p - 1))}
+                >
+                  Prev
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={alertPage >= alertTotalPages}
+                  onClick={() => setAlertPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -1562,7 +1616,7 @@ export function ProductProductionTrackingView() {
                     icon={Factory}
                   />
                 ) : (
-                  sortedGroups.map((g) => (
+                  pagedGroups.map((g) => (
                     <ProductionGroupRow
                       key={g.key}
                       group={g}
@@ -1575,9 +1629,34 @@ export function ProductProductionTrackingView() {
             </Table>
           </div>
           {sortedGroups.length > 0 ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2">
+              <span className="text-xs text-muted-foreground">
+                Page {groupPage} of {groupTotalPages} ({sortedGroups.length} groups)
+              </span>
+              <div className="flex gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={groupPage <= 1}
+                  onClick={() => setGroupPage((p) => Math.max(1, p - 1))}
+                >
+                  Prev
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={groupPage >= groupTotalPages}
+                  onClick={() => setGroupPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          {sortedGroups.length > 0 ? (
             <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2 text-[11px] text-muted-foreground">
               <span>
-                Showing {sortedGroups.length} of {groupsData?.total ?? sortedGroups.length} groups
+                Showing {pagedGroups.length} of {groupsData?.total ?? sortedGroups.length} groups
               </span>
               <span className="tabular-nums">
                 Order {fmt(totals.totalOrders)} · Missing {fmt(totals.totalMissing)} · Processing{" "}

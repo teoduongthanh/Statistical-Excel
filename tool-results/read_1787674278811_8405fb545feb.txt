@@ -1,0 +1,965 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import { useQuery, useQueryClient } from "@tanstack/react-query";
+     5→import {
+     6→  StickyNote,
+     7→  Plus,
+     8→  Calendar,
+     9→  Trash2,
+    10→  Pencil,
+    11→  Search,
+    12→  Loader2,
+    13→  Inbox,
+    14→  Save,
+    15→  User,
+    16→  Hash,
+    17→} from "lucide-react";
+    18→import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
+    19→import { api } from "@/lib/api-client";
+    20→import { cn } from "@/lib/utils";
+    21→import { toast } from "sonner";
+    22→import type { OrderNote } from "@/types";
+    23→
+    24→import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+    25→import { Input } from "@/components/ui/input";
+    26→import { Button } from "@/components/ui/button";
+    27→import { Badge } from "@/components/ui/badge";
+    28→import { Textarea } from "@/components/ui/textarea";
+    29→import { Label } from "@/components/ui/label";
+    30→import {
+    31→  Dialog,
+    32→  DialogContent,
+    33→  DialogHeader,
+    34→  DialogTitle,
+    35→  DialogFooter,
+    36→} from "@/components/ui/dialog";
+    37→import {
+    38→  Select,
+    39→  SelectContent,
+    40→  SelectItem,
+    41→  SelectTrigger,
+    42→  SelectValue,
+    43→} from "@/components/ui/select";
+    44→
+    45→/* ------------------------------------------------------------------ */
+    46→/* Helpers                                                            */
+    47→/* ------------------------------------------------------------------ */
+    48→
+    49→const COMMON_SIZES = ["XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL", "OS"];
+    50→
+    51→/** Returns today's date as YYYY-MM-DD in local time (not UTC). */
+    52→function todayLocalISO(): string {
+    53→  const d = new Date();
+    54→  const y = d.getFullYear();
+    55→  const m = String(d.getMonth() + 1).padStart(2, "0");
+    56→  const day = String(d.getDate()).padStart(2, "0");
+    57→  return `${y}-${m}-${day}`;
+    58→}
+    59→
+    60→/** Formats an ISO date string (YYYY-MM-DD) into e.g. "Mon, Jan 15, 2026". */
+    61→function formatNoteDate(iso: string): string {
+    62→  if (!iso) return "—";
+    63→  const d = new Date(iso + "T00:00:00");
+    64→  if (Number.isNaN(d.getTime())) return iso;
+    65→  return d.toLocaleDateString(undefined, {
+    66→    weekday: "short",
+    67→    year: "numeric",
+    68→    month: "short",
+    69→    day: "numeric",
+    70→  });
+    71→}
+    72→
+    73→/** Formats an ISO timestamp into a short local time like "3:42 PM". */
+    74→function formatTime(iso: string): string {
+    75→  const d = new Date(iso);
+    76→  if (Number.isNaN(d.getTime())) return "";
+    77→  return d.toLocaleTimeString(undefined, {
+    78→    hour: "numeric",
+    79→    minute: "2-digit",
+    80→  });
+    81→}
+    82→
+    83→/** True when the YYYY-MM-DD date string equals today (local). */
+    84→function isToday(iso: string): boolean {
+    85→  return iso === todayLocalISO();
+    86→}
+    87→
+    88→interface GroupedNotes {
+    89→  date: string;
+    90→  notes: OrderNote[];
+    91→}
+    92→
+    93→/** Groups notes by noteDate (descending) preserving in-group createdAt order. */
+    94→function groupByDate(notes: OrderNote[]): GroupedNotes[] {
+    95→  const map = new Map<string, OrderNote[]>();
+    96→  for (const n of notes) {
+    97→    const key = n.noteDate;
+    98→    if (!map.has(key)) map.set(key, []);
+    99→    map.get(key)!.push(n);
+   100→  }
+   101→  return Array.from(map.entries())
+   102→    .sort((a, b) => (a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0))
+   103→    .map(([date, items]) => ({
+   104→      date,
+   105→      // Most recent first within the day.
+   106→      notes: items
+   107→        .slice()
+   108→        .sort((a, b) =>
+   109→          a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0
+   110→        ),
+   111→    }));
+   112→}
+   113→
+   114→/* ------------------------------------------------------------------ */
+   115→/* Create-note form                                                   */
+   116→/* ------------------------------------------------------------------ */
+   117→
+   118→interface NewNoteForm {
+   119→  factoryPO: string;
+   120→  size: string;
+   121→  noteDate: string;
+   122→  content: string;
+   123→  poNo: string;
+   124→  author: string;
+   125→}
+   126→
+   127→function CreateNoteForm({ onCreated }: { onCreated: () => void }) {
+   128→  const [form, setForm] = React.useState<NewNoteForm>({
+   129→    factoryPO: "",
+   130→    size: "",
+   131→    noteDate: todayLocalISO(),
+   132→    content: "",
+   133→    poNo: "",
+   134→    author: "",
+   135→  });
+   136→  const [submitting, setSubmitting] = React.useState(false);
+   137→
+   138→  const update = React.useCallback(
+   139→    <K extends keyof NewNoteForm>(key: K, value: NewNoteForm[K]) => {
+   140→      setForm((f) => ({ ...f, [key]: value }));
+   141→    },
+   142→    []
+   143→  );
+   144→
+   145→  const canSubmit =
+   146→    form.factoryPO.trim() &&
+   147→    form.size.trim() &&
+   148→    form.noteDate &&
+   149→    form.content.trim() &&
+   150→    !submitting;
+   151→
+   152→  async function handleSubmit(e: React.FormEvent) {
+   153→    e.preventDefault();
+   154→    if (!canSubmit) return;
+   155→    setSubmitting(true);
+   156→    try {
+   157→      const created = await api.createNote({
+   158→        factoryPO: form.factoryPO.trim(),
+   159→        size: form.size.trim(),
+   160→        noteDate: form.noteDate,
+   161→        content: form.content.trim(),
+   162→        poNo: form.poNo.trim() || undefined,
+   163→        author: form.author.trim() || undefined,
+   164→      });
+   165→      toast.success("Note added", {
+   166→        description: `${created.factoryPO} · Size ${created.size} · ${formatNoteDate(
+   167→          created.noteDate
+   168→        )}`,
+   169→      });
+   170→      setForm({
+   171→        factoryPO: "",
+   172→        size: "",
+   173→        noteDate: todayLocalISO(),
+   174→        content: "",
+   175→        poNo: "",
+   176→        author: "",
+   177→      });
+   178→      onCreated();
+   179→    } catch (err) {
+   180→      toast.error("Failed to add note", {
+   181→        description: err instanceof Error ? err.message : String(err),
+   182→      });
+   183→    } finally {
+   184→      setSubmitting(false);
+   185→    }
+   186→  }
+   187→
+   188→  return (
+   189→    <Card className="border-emerald-200/60 bg-gradient-to-br from-emerald-50/80 via-amber-50/40 to-teal-50/60 dark:border-emerald-900/40 dark:from-emerald-950/20 dark:via-amber-950/10 dark:to-teal-950/20">
+   190→      <CardHeader className="pb-4">
+   191→        <CardTitle className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300">
+   192→          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-300 text-amber-900 shadow-sm">
+   193→            <StickyNote className="h-4 w-4" />
+   194→          </span>
+   195→          New Order Note
+   196→        </CardTitle>
+   197→      </CardHeader>
+   198→      <CardContent>
+   199→        <form onSubmit={handleSubmit} className="grid gap-4">
+   200→          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+   201→            {/* Factory PO */}
+   202→            <div className="grid gap-1.5">
+   203→              <Label htmlFor="nf-fpo" className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+   204→                Factory PO <span className="text-destructive">*</span>
+   205→              </Label>
+   206→              <SmartAutocomplete
+   207→                field="factoryPO"
+   208→                value={form.factoryPO}
+   209→                onChange={(v) => update("factoryPO", v)}
+   210→                placeholder="Search Factory PO…"
+   211→              />
+   212→            </div>
+   213→
+   214→            {/* Size */}
+   215→            <div className="grid gap-1.5">
+   216→              <Label htmlFor="nf-size" className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+   217→                Size <span className="text-destructive">*</span>
+   218→              </Label>
+   219→              <Input
+   220→                id="nf-size"
+   221→                list="nf-size-options"
+   222→                value={form.size}
+   223→                onChange={(e) => update("size", e.target.value)}
+   224→                placeholder="e.g. M, 42, OS"
+   225→                className="h-11"
+   226→              />
+   227→              <datalist id="nf-size-options">
+   228→                {COMMON_SIZES.map((s) => (
+   229→                  <option key={s} value={s} />
+   230→                ))}
+   231→              </datalist>
+   232→            </div>
+   233→
+   234→            {/* Note date */}
+   235→            <div className="grid gap-1.5">
+   236→              <Label htmlFor="nf-date" className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+   237→                Note Date <span className="text-destructive">*</span>
+   238→              </Label>
+   239→              <div className="relative">
+   240→                <Calendar className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+   241→                <Input
+   242→                  id="nf-date"
+   243→                  type="date"
+   244→                  value={form.noteDate}
+   245→                  onChange={(e) => update("noteDate", e.target.value)}
+   246→                  className="h-11 pl-9"
+   247→                />
+   248→              </div>
+   249→            </div>
+   250→
+   251→            {/* Author */}
+   252→            <div className="grid gap-1.5">
+   253→              <Label htmlFor="nf-author" className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+   254→                Author
+   255→              </Label>
+   256→              <div className="relative">
+   257→                <User className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+   258→                <Input
+   259→                  id="nf-author"
+   260→                  value={form.author}
+   261→                  onChange={(e) => update("author", e.target.value)}
+   262→                  placeholder="Optional"
+   263→                  className="h-11 pl-9"
+   264→                />
+   265→              </div>
+   266→            </div>
+   267→          </div>
+   268→
+   269→          {/* PO No (optional) */}
+   270→          <div className="grid gap-1.5 md:max-w-sm">
+   271→            <Label htmlFor="nf-pono" className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+   272→              PO No.
+   273→            </Label>
+   274→            <div className="relative">
+   275→              <Hash className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+   276→              <Input
+   277→                id="nf-pono"
+   278→                value={form.poNo}
+   279→                onChange={(e) => update("poNo", e.target.value)}
+   280→                placeholder="Optional PO number"
+   281→                className="h-11 pl-9"
+   282→              />
+   283→            </div>
+   284→          </div>
+   285→
+   286→          {/* Content */}
+   287→          <div className="grid gap-1.5">
+   288→            <Label htmlFor="nf-content" className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+   289→              Content <span className="text-destructive">*</span>
+   290→            </Label>
+   291→            <Textarea
+   292→              id="nf-content"
+   293→              value={form.content}
+   294→              onChange={(e) => update("content", e.target.value)}
+   295→              placeholder="What's happening with this order today? Delays, changes, follow-ups, issues…"
+   296→              rows={4}
+   297→              className="resize-y bg-yellow-50/40 dark:bg-amber-950/10"
+   298→            />
+   299→            <p className="text-[11px] text-muted-foreground">
+   300→              {form.content.length} characters
+   301→            </p>
+   302→          </div>
+   303→
+   304→          <div className="flex flex-wrap items-center gap-2">
+   305→            <Button
+   306→              type="submit"
+   307→              disabled={!canSubmit}
+   308→              className="bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-700 dark:hover:bg-emerald-600"
+   309→            >
+   310→              {submitting ? (
+   311→                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+   312→              ) : (
+   313→                <Plus className="mr-2 h-4 w-4" />
+   314→              )}
+   315→              Add Note
+   316→            </Button>
+   317→            <Button
+   318→              type="button"
+   319→              variant="ghost"
+   320→              onClick={() =>
+   321→                setForm({
+   322→                  factoryPO: "",
+   323→                  size: "",
+   324→                  noteDate: todayLocalISO(),
+   325→                  content: "",
+   326→                  poNo: "",
+   327→                  author: "",
+   328→                })
+   329→              }
+   330→              disabled={submitting}
+   331→            >
+   332→              Clear
+   333→            </Button>
+   334→            {!form.factoryPO.trim() && (
+   335→              <span className="text-xs text-muted-foreground">
+   336→                Tip: start typing a Factory PO to see fuzzy matches.
+   337→              </span>
+   338→            )}
+   339→          </div>
+   340→        </form>
+   341→      </CardContent>
+   342→    </Card>
+   343→  );
+   344→}
+   345→
+   346→/* ------------------------------------------------------------------ */
+   347→/* Edit dialog                                                        */
+   348→/* ------------------------------------------------------------------ */
+   349→
+   350→interface EditState {
+   351→  open: boolean;
+   352→  loading: boolean;
+   353→  note: OrderNote | null;
+   354→  content: string;
+   355→  noteDate: string;
+   356→  poNo: string;
+   357→}
+   358→
+   359→function EditNoteDialog({
+   360→  state,
+   361→  setState,
+   362→  onSaved,
+   363→}: {
+   364→  state: EditState;
+   365→  setState: React.Dispatch<React.SetStateAction<EditState>>;
+   366→  onSaved: () => void;
+   367→}) {
+   368→  function close() {
+   369→    setState((s) => ({ ...s, open: false, note: null }));
+   370→  }
+   371→
+   372→  async function handleSave() {
+   373→    if (!state.note) return;
+   374→    setState((s) => ({ ...s, loading: true }));
+   375→    try {
+   376→      await api.updateNote(state.note.id, {
+   377→        content: state.content.trim(),
+   378→        noteDate: state.noteDate,
+   379→        poNo: state.poNo.trim() || null,
+   380→      });
+   381→      toast.success("Note updated");
+   382→      close();
+   383→      onSaved();
+   384→    } catch (err) {
+   385→      toast.error("Failed to update note", {
+   386→        description: err instanceof Error ? err.message : String(err),
+   387→      });
+   388→    } finally {
+   389→      setState((s) => ({ ...s, loading: false }));
+   390→    }
+   391→  }
+   392→
+   393→  return (
+   394→    <Dialog open={state.open} onOpenChange={(o) => (o ? null : close())}>
+   395→      <DialogContent className="sm:max-w-lg">
+   396→        <DialogHeader>
+   397→          <DialogTitle className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300">
+   398→            <Pencil className="h-4 w-4" />
+   399→            Edit Note
+   400→          </DialogTitle>
+   401→        </DialogHeader>
+   402→        {state.note && (
+   403→          <div className="grid gap-4 py-2">
+   404→            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+   405→              <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+   406→                {state.note.factoryPO}
+   407→              </Badge>
+   408→              <Badge variant="outline">Size {state.note.size}</Badge>
+   409→            </div>
+   410→
+   411→            <div className="grid gap-1.5">
+   412→              <Label htmlFor="ed-content" className="text-xs font-medium">
+   413→                Content
+   414→              </Label>
+   415→              <Textarea
+   416→                id="ed-content"
+   417→                value={state.content}
+   418→                onChange={(e) =>
+   419→                  setState((s) => ({ ...s, content: e.target.value }))
+   420→                }
+   421→                rows={5}
+   422→                className="resize-y bg-yellow-50/40 dark:bg-amber-950/10"
+   423→              />
+   424→            </div>
+   425→
+   426→            <div className="grid grid-cols-2 gap-3">
+   427→              <div className="grid gap-1.5">
+   428→                <Label htmlFor="ed-date" className="text-xs font-medium">
+   429→                  Note Date
+   430→                </Label>
+   431→                <Input
+   432→                  id="ed-date"
+   433→                  type="date"
+   434→                  value={state.noteDate}
+   435→                  onChange={(e) =>
+   436→                    setState((s) => ({ ...s, noteDate: e.target.value }))
+   437→                  }
+   438→                />
+   439→              </div>
+   440→              <div className="grid gap-1.5">
+   441→                <Label htmlFor="ed-pono" className="text-xs font-medium">
+   442→                  PO No.
+   443→                </Label>
+   444→                <Input
+   445→                  id="ed-pono"
+   446→                  value={state.poNo}
+   447→                  onChange={(e) =>
+   448→                    setState((s) => ({ ...s, poNo: e.target.value }))
+   449→                  }
+   450→                  placeholder="Optional"
+   451→                />
+   452→              </div>
+   453→            </div>
+   454→          </div>
+   455→        )}
+   456→        <DialogFooter>
+   457→          <Button variant="ghost" onClick={close} disabled={state.loading}>
+   458→            Cancel
+   459→          </Button>
+   460→          <Button
+   461→            onClick={handleSave}
+   462→            disabled={
+   463→              state.loading || !state.content.trim() || !state.noteDate
+   464→            }
+   465→            className="bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-700 dark:hover:bg-emerald-600"
+   466→          >
+   467→            {state.loading ? (
+   468→              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+   469→            ) : (
+   470→              <Save className="mr-2 h-4 w-4" />
+   471→            )}
+   472→            Save Changes
+   473→          </Button>
+   474→        </DialogFooter>
+   475→      </DialogContent>
+   476→    </Dialog>
+   477→  );
+   478→}
+   479→
+   480→/* ------------------------------------------------------------------ */
+   481→/* Delete confirmation dialog                                         */
+   482→/* ------------------------------------------------------------------ */
+   483→
+   484→interface DeleteState {
+   485→  open: boolean;
+   486→  loading: boolean;
+   487→  note: OrderNote | null;
+   488→}
+   489→
+   490→function DeleteNoteDialog({
+   491→  state,
+   492→  setState,
+   493→  onDeleted,
+   494→}: {
+   495→  state: DeleteState;
+   496→  setState: React.Dispatch<React.SetStateAction<DeleteState>>;
+   497→  onDeleted: () => void;
+   498→}) {
+   499→  function close() {
+   500→    setState((s) => ({ ...s, open: false, note: null }));
+   501→  }
+   502→
+   503→  async function handleDelete() {
+   504→    if (!state.note) return;
+   505→    setState((s) => ({ ...s, loading: true }));
+   506→    try {
+   507→      await api.deleteNote(state.note.id);
+   508→      toast.success("Note deleted", {
+   509→        description: `${state.note.factoryPO} · Size ${state.note.size}`,
+   510→      });
+   511→      close();
+   512→      onDeleted();
+   513→    } catch (err) {
+   514→      toast.error("Failed to delete note", {
+   515→        description: err instanceof Error ? err.message : String(err),
+   516→      });
+   517→    } finally {
+   518→      setState((s) => ({ ...s, loading: false }));
+   519→    }
+   520→  }
+   521→
+   522→  return (
+   523→    <Dialog open={state.open} onOpenChange={(o) => (o ? null : close())}>
+   524→      <DialogContent className="sm:max-w-md">
+   525→        <DialogHeader>
+   526→          <DialogTitle className="flex items-center gap-2 text-destructive">
+   527→            <Trash2 className="h-4 w-4" />
+   528→            Delete Note
+   529→          </DialogTitle>
+   530→        </DialogHeader>
+   531→        {state.note && (
+   532→          <div className="py-2 text-sm text-muted-foreground">
+   533→            Are you sure you want to delete this note for{" "}
+   534→            <span className="font-semibold text-foreground">
+   535→              {state.note.factoryPO}
+   536→            </span>{" "}
+   537→            (Size {state.note.size})? This action cannot be undone.
+   538→          </div>
+   539→        )}
+   540→        <DialogFooter>
+   541→          <Button variant="ghost" onClick={close} disabled={state.loading}>
+   542→            Cancel
+   543→          </Button>
+   544→          <Button
+   545→            variant="destructive"
+   546→            onClick={handleDelete}
+   547→            disabled={state.loading}
+   548→          >
+   549→            {state.loading ? (
+   550→              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+   551→            ) : (
+   552→              <Trash2 className="mr-2 h-4 w-4" />
+   553→            )}
+   554→            Delete
+   555→          </Button>
+   556→        </DialogFooter>
+   557→      </DialogContent>
+   558→    </Dialog>
+   559→  );
+   560→}
+   561→
+   562→/* ------------------------------------------------------------------ */
+   563→/* Single note card                                                   */
+   564→/* ------------------------------------------------------------------ */
+   565→
+   566→function NoteCard({
+   567→  note,
+   568→  onEdit,
+   569→  onDelete,
+   570→}: {
+   571→  note: OrderNote;
+   572→  onEdit: (n: OrderNote) => void;
+   573→  onDelete: (n: OrderNote) => void;
+   574→}) {
+   575→  return (
+   576→    <div
+   577→      className={cn(
+   578→        "group relative overflow-hidden rounded-lg border bg-card shadow-sm transition-all",
+   579→        "hover:border-emerald-300 hover:shadow-md dark:hover:border-emerald-800",
+   580→        "border-border"
+   581→      )}
+   582→    >
+   583→      {/* Sticky-note accent stripe */}
+   584→      <div className="absolute inset-y-0 left-0 w-1.5 bg-gradient-to-b from-amber-300 to-yellow-400" />
+   585→      <div className="p-4 pl-5">
+   586→        <div className="mb-2 flex flex-wrap items-center gap-2">
+   587→          <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300">
+   588→            {note.factoryPO}
+   589→          </Badge>
+   590→          <Badge variant="outline" className="font-medium">
+   591→            Size {note.size}
+   592→          </Badge>
+   593→          {note.poNo && (
+   594→            <Badge variant="secondary" className="text-xs">
+   595→              PO: {note.poNo}
+   596→            </Badge>
+   597→          )}
+   598→          {note.author && (
+   599→            <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+   600→              <User className="h-3 w-3" />
+   601→              {note.author}
+   602→            </span>
+   603→          )}
+   604→        </div>
+   605→
+   606→        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">
+   607→          {note.content}
+   608→        </p>
+   609→
+   610→        <div className="mt-3 flex items-center justify-between">
+   611→          <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+   612→            <Calendar className="h-3 w-3" />
+   613→            {formatTime(note.createdAt)}
+   614→            {note.updatedAt && note.updatedAt !== note.createdAt && (
+   615→              <span className="italic opacity-70">· edited</span>
+   616→            )}
+   617→          </span>
+   618→          <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+   619→            <Button
+   620→              size="sm"
+   621→              variant="ghost"
+   622→              className="h-7 px-2 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950/30"
+   623→              onClick={() => onEdit(note)}
+   624→            >
+   625→              <Pencil className="mr-1 h-3 w-3" />
+   626→              Edit
+   627→            </Button>
+   628→            <Button
+   629→              size="sm"
+   630→              variant="ghost"
+   631→              className="h-7 px-2 text-destructive hover:bg-red-50 hover:text-destructive dark:hover:bg-red-950/30"
+   632→              onClick={() => onDelete(note)}
+   633→            >
+   634→              <Trash2 className="mr-1 h-3 w-3" />
+   635→              Delete
+   636→            </Button>
+   637→          </div>
+   638→        </div>
+   639→      </div>
+   640→    </div>
+   641→  );
+   642→}
+   643→
+   644→/* ------------------------------------------------------------------ */
+   645→/* Loading & empty skeletons                                          */
+   646→/* ------------------------------------------------------------------ */
+   647→
+   648→function NoteSkeleton() {
+   649→  return (
+   650→    <div className="overflow-hidden rounded-lg border border-border bg-card">
+   651→      <div className="absolute inset-y-0 left-0 w-1.5 bg-amber-200" />
+   652→      <div className="p-4 pl-5">
+   653→        <div className="mb-2 flex gap-2">
+   654→          <div className="h-5 w-24 animate-pulse rounded bg-emerald-100 dark:bg-emerald-950/40" />
+   655→          <div className="h-5 w-14 animate-pulse rounded bg-muted" />
+   656→        </div>
+   657→        <div className="space-y-2">
+   658→          <div className="h-3 w-full animate-pulse rounded bg-muted" />
+   659→          <div className="h-3 w-4/5 animate-pulse rounded bg-muted" />
+   660→          <div className="h-3 w-2/3 animate-pulse rounded bg-muted" />
+   661→        </div>
+   662→      </div>
+   663→    </div>
+   664→  );
+   665→}
+   666→
+   667→function EmptyState({ hasFilters }: { hasFilters: boolean }) {
+   668→  return (
+   669→    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card/50 py-16 text-center">
+   670→      <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+   671→        <Inbox className="h-7 w-7" />
+   672→      </div>
+   673→      <h3 className="text-lg font-semibold">No notes yet</h3>
+   674→      <p className="mt-1 max-w-md text-sm text-muted-foreground">
+   675→        {hasFilters
+   676→          ? "No notes match your filters. Try clearing them or picking another date."
+   677→          : "Add your first order note using the form above. Notes are grouped by date so you can track what happens day-to-day."}
+   678→      </p>
+   679→    </div>
+   680→  );
+   681→}
+   682→
+   683→/* ------------------------------------------------------------------ */
+   684→/* Main view                                                          */
+   685→/* ------------------------------------------------------------------ */
+   686→
+   687→export function OrderNotesView() {
+   688→  const qc = useQueryClient();
+   689→  const queryKey = React.useMemo(() => ["order-notes"] as const, []);
+   690→
+   691→  // Filter bar state (committed on search).
+   692→  const [filterFactoryPO, setFilterFactoryPO] = React.useState("");
+   693→  const [filterDate, setFilterDate] = React.useState("");
+   694→  const [filterSize, setFilterSize] = React.useState("ALL");
+   695→
+   696→  // Committed filters actually used in the query.
+   697→  const [committed, setCommitted] = React.useState<{
+   698→    factoryPO: string;
+   699→    noteDate: string;
+   700→    size: string;
+   701→  }>({ factoryPO: "", noteDate: "", size: "" });
+   702→
+   703→  const params = React.useMemo(
+   704→    () => ({
+   705→      factoryPO: committed.factoryPO || undefined,
+   706→      size: committed.size || undefined,
+   707→      noteDate: committed.noteDate || undefined,
+   708→    }),
+   709→    [committed]
+   710→  );
+   711→
+   712→  const notesQuery = useQuery({
+   713→    queryKey: [...queryKey, params],
+   714→    queryFn: () => api.listNotes(params),
+   715→  });
+   716→
+   717→  const notes = notesQuery.data ?? [];
+   718→  const groups = React.useMemo(() => groupByDate(notes), [notes]);
+   719→
+   720→  function applyFilters() {
+   721→    setCommitted({
+   722→      factoryPO: filterFactoryPO.trim(),
+   723→      noteDate: filterDate,
+   724→      size: filterSize === "ALL" ? "" : filterSize,
+   725→    });
+   726→  }
+   727→
+   728→  function clearFilters() {
+   729→    setFilterFactoryPO("");
+   730→    setFilterDate("");
+   731→    setFilterSize("ALL");
+   732→    setCommitted({ factoryPO: "", noteDate: "", size: "" });
+   733→  }
+   734→
+   735→  function invalidate() {
+   736→    qc.invalidateQueries({ queryKey: [...queryKey] });
+   737→  }
+   738→
+   739→  // Edit / delete dialog state.
+   740→  const [editState, setEditState] = React.useState<EditState>({
+   741→    open: false,
+   742→    loading: false,
+   743→    note: null,
+   744→    content: "",
+   745→    noteDate: todayLocalISO(),
+   746→    poNo: "",
+   747→  });
+   748→  const [deleteState, setDeleteState] = React.useState<DeleteState>({
+   749→    open: false,
+   750→    loading: false,
+   751→    note: null,
+   752→  });
+   753→
+   754→  function openEdit(note: OrderNote) {
+   755→    setEditState({
+   756→      open: true,
+   757→      loading: false,
+   758→      note,
+   759→      content: note.content,
+   760→      noteDate: note.noteDate,
+   761→      poNo: note.poNo ?? "",
+   762→    });
+   763→  }
+   764→
+   765→  function openDelete(note: OrderNote) {
+   766→    setDeleteState({ open: true, loading: false, note });
+   767→  }
+   768→
+   769→  const hasActiveFilters =
+   770→    !!committed.factoryPO || !!committed.noteDate || !!committed.size;
+   771→
+   772→  return (
+   773→    <div className="space-y-6">
+   774→      {/* Header */}
+   775→      <div className="flex flex-wrap items-center justify-between gap-3">
+   776→        <div>
+   777→          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+   778→            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-300 text-amber-900 shadow-sm">
+   779→              <StickyNote className="h-5 w-5" />
+   780→            </span>
+   781→            Order Notes
+   782→          </h1>
+   783→          <p className="mt-1 text-sm text-muted-foreground">
+   784→            Daily journal for orders — track delays, follow-ups, and changes per
+   785→            Factory PO.
+   786→          </p>
+   787→        </div>
+   788→        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+   789→          <Badge
+   790→            variant="outline"
+   791→            className="border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300"
+   792→          >
+   793→            {notes.length} note{notes.length === 1 ? "" : "s"}
+   794→          </Badge>
+   795→          <Badge
+   796→            variant="outline"
+   797→            className="border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+   798→          >
+   799→            {groups.length} day{groups.length === 1 ? "" : "s"}
+   800→          </Badge>
+   801→        </div>
+   802→      </div>
+   803→
+   804→      {/* Create form */}
+   805→      <CreateNoteForm onCreated={invalidate} />
+   806→
+   807→      {/* Filter bar */}
+   808→      <Card className="border-border bg-card/60">
+   809→        <CardContent className="py-4">
+   810→          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+   811→            <div className="grid gap-1.5">
+   812→              <Label htmlFor="filter-fpo" className="text-xs font-medium">
+   813→                Factory PO
+   814→              </Label>
+   815→              <Input
+   816→                id="filter-fpo"
+   817→                value={filterFactoryPO}
+   818→                onChange={(e) => setFilterFactoryPO(e.target.value)}
+   819→                onKeyDown={(e) => {
+   820→                  if (e.key === "Enter") applyFilters();
+   821→                }}
+   822→                placeholder="Any Factory PO"
+   823→              />
+   824→            </div>
+   825→
+   826→            <div className="grid gap-1.5">
+   827→              <Label htmlFor="filter-size" className="text-xs font-medium">
+   828→                Size
+   829→              </Label>
+   830→              <Select
+   831→                value={filterSize}
+   832→                onValueChange={(v) => setFilterSize(v)}
+   833→              >
+   834→                <SelectTrigger id="filter-size" className="w-full">
+   835→                  <SelectValue placeholder="All sizes" />
+   836→                </SelectTrigger>
+   837→                <SelectContent>
+   838→                  <SelectItem value="ALL">All sizes</SelectItem>
+   839→                  {COMMON_SIZES.map((s) => (
+   840→                    <SelectItem key={s} value={s}>
+   841→                      {s}
+   842→                    </SelectItem>
+   843→                  ))}
+   844→                </SelectContent>
+   845→              </Select>
+   846→            </div>
+   847→
+   848→            <div className="grid gap-1.5">
+   849→              <Label htmlFor="filter-date" className="text-xs font-medium">
+   850→                Note Date
+   851→              </Label>
+   852→              <Input
+   853→                id="filter-date"
+   854→                type="date"
+   855→                value={filterDate}
+   856→                onChange={(e) => setFilterDate(e.target.value)}
+   857→              />
+   858→            </div>
+   859→
+   860→            <div className="flex items-end gap-2">
+   861→              <Button
+   862→                onClick={applyFilters}
+   863→                className="flex-1 bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-700 dark:hover:bg-emerald-600"
+   864→              >
+   865→                <Search className="mr-2 h-4 w-4" />
+   866→                Search
+   867→              </Button>
+   868→              {hasActiveFilters && (
+   869→                <Button variant="ghost" onClick={clearFilters}>
+   870→                  Clear
+   871→                </Button>
+   872→              )}
+   873→            </div>
+   874→          </div>
+   875→        </CardContent>
+   876→      </Card>
+   877→
+   878→      {/* Timeline / list */}
+   879→      {notesQuery.isLoading ? (
+   880→        <div className="space-y-6">
+   881→          {[0, 1].map((g) => (
+   882→            <div key={g} className="space-y-3">
+   883→              <div className="h-6 w-40 animate-pulse rounded bg-muted" />
+   884→              <div className="grid gap-3 md:grid-cols-2">
+   885→                <NoteSkeleton />
+   886→                <NoteSkeleton />
+   887→              </div>
+   888→            </div>
+   889→          ))}
+   890→        </div>
+   891→      ) : notesQuery.isError ? (
+   892→        <Card className="border-destructive/40 bg-destructive/5">
+   893→          <CardContent className="py-6 text-sm text-destructive">
+   894→            Failed to load notes:{" "}
+   895→            {notesQuery.error instanceof Error
+   896→              ? notesQuery.error.message
+   897→              : String(notesQuery.error)}
+   898→          </CardContent>
+   899→        </Card>
+   900→      ) : groups.length === 0 ? (
+   901→        <EmptyState hasFilters={hasActiveFilters} />
+   902→      ) : (
+   903→        <div className="space-y-8">
+   904→          {groups.map((group) => {
+   905→            const today = isToday(group.date);
+   906→            return (
+   907→              <section key={group.date} className="space-y-3">
+   908→                {/* Date header */}
+   909→                <div className="sticky top-0 z-10 flex items-center gap-3 bg-background/80 py-2 backdrop-blur">
+   910→                  <div className="relative">
+   911→                    <div
+   912→                      className={cn(
+   913→                        "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold shadow-sm",
+   914→                        today
+   915→                          ? "border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+   916→                          : "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300"
+   917→                      )}
+   918→                    >
+   919→                      <Calendar className="h-3 w-3" />
+   920→                      {formatNoteDate(group.date)}
+   921→                      {today && (
+   922→                        <span className="ml-1 rounded bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-950">
+   923→                          Today
+   924→                        </span>
+   925→                      )}
+   926→                    </div>
+   927→                  </div>
+   928→                  <div className="h-px flex-1 bg-gradient-to-r from-border to-transparent" />
+   929→                  <span className="text-xs text-muted-foreground">
+   930→                    {group.notes.length} note{group.notes.length === 1 ? "" : "s"}
+   931→                  </span>
+   932→                </div>
+   933→
+   934→                {/* Notes for this date */}
+   935→                <div className="grid gap-3 md:grid-cols-2">
+   936→                  {group.notes.map((note) => (
+   937→                    <NoteCard
+   938→                      key={note.id}
+   939→                      note={note}
+   940→                      onEdit={openEdit}
+   941→                      onDelete={openDelete}
+   942→                    />
+   943→                  ))}
+   944→                </div>
+   945→              </section>
+   946→            );
+   947→          })}
+   948→        </div>
+   949→      )}
+   950→
+   951→      {/* Dialogs */}
+   952→      <EditNoteDialog
+   953→        state={editState}
+   954→        setState={setEditState}
+   955→        onSaved={invalidate}
+   956→      />
+   957→      <DeleteNoteDialog
+   958→        state={deleteState}
+   959→        setState={setDeleteState}
+   960→        onDeleted={invalidate}
+   961→      />
+   962→    </div>
+   963→  );
+   964→}
+   965→
