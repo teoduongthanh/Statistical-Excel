@@ -15,12 +15,15 @@ import {
   X,
   Package,
   Boxes,
+  AlertTriangle,
+  Loader2,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -28,6 +31,16 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { FIELD_LABELS, type CanonicalField } from "@/lib/fields";
 import { cn } from "@/lib/utils";
@@ -106,6 +119,13 @@ export function ProductMasterDataView() {
   });
   const [editRow, setEditRow] = React.useState<any>(null);
   const [editData, setEditData] = React.useState<Record<string, string>>({});
+  const [savingEdit, setSavingEdit] = React.useState(false);
+  const [deleteRow, setDeleteRow] = React.useState<any>(null);
+  const [deleting, setDeleting] = React.useState(false);
+  // Bulk select + bulk delete
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+  const [bulkDeleting, setBulkDeleting] = React.useState(false);
 
   React.useEffect(() => {
     const t = setTimeout(() => {
@@ -179,9 +199,8 @@ export function ProductMasterDataView() {
 
   async function saveEdit() {
     if (!editRow) return;
+    setSavingEdit(true);
     try {
-      // Preserve product scope when editing — do not let the user move a row
-      // to another product via the master data editor.
       await api.updateMasterRow(editRow.id, { ...editData, productType: currentProduct });
       toast.success(`${currentProduct} master data row updated`);
       setEditRow(null);
@@ -190,19 +209,66 @@ export function ProductMasterDataView() {
       bumpRefresh();
     } catch (e) {
       toast.error("Update failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setSavingEdit(false);
     }
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm(`Delete this ${currentProduct} master data row? This will also rebuild the Factory PO index.`)) return;
+  function openDelete(row: any) {
+    setDeleteRow(row);
+  }
+
+  async function confirmDelete() {
+    if (!deleteRow) return;
+    setDeleting(true);
     try {
-      await api.deleteMasterRow(id);
+      await api.deleteMasterRow(deleteRow.id);
       toast.success(`${currentProduct} master data row deleted`);
+      setSelectedIds((s) => { const n = new Set(s); n.delete(deleteRow.id); return n; });
+      setDeleteRow(null);
       qc.invalidateQueries({ queryKey: ["product-master-data"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       bumpRefresh();
-    } catch {
-      toast.error("Delete failed");
+    } catch (e) {
+      toast.error("Delete failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  // Bulk select handlers
+  function toggleRow(id: string) {
+    setSelectedIds((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+  function toggleAllRows() {
+    if (selectedIds.size === rows.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(rows.map((r: any) => r.id)));
+  }
+
+  async function confirmBulkDelete() {
+    setBulkDeleting(true);
+    try {
+      const ids = [...selectedIds];
+      let deleted = 0;
+      for (const id of ids) {
+        await api.deleteMasterRow(id);
+        deleted++;
+      }
+      toast.success(`${deleted} master data rows deleted`);
+      setSelectedIds(new Set());
+      setBulkDeleteOpen(false);
+      qc.invalidateQueries({ queryKey: ["product-master-data"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      bumpRefresh();
+    } catch (e) {
+      toast.error("Bulk delete failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setBulkDeleting(false);
     }
   }
 
@@ -293,9 +359,15 @@ export function ProductMasterDataView() {
               <span className="text-muted-foreground">rows in {currentProduct}</span>
               {q.isFetching && <Badge variant="secondary" className="text-[10px]">loading…</Badge>}
             </div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Filter className="h-3.5 w-3.5" />
-              <select
+            <div className="flex items-center gap-2">
+              {selectedIds.size > 0 && (
+                <Button size="sm" variant="destructive" className="h-7 text-xs" onClick={() => setBulkDeleteOpen(true)}>
+                  <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete Selected ({selectedIds.size})
+                </Button>
+              )}
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Filter className="h-3.5 w-3.5" />
+                <select
                 value={pageSize}
                 onChange={(e) => {
                   setPageSize(Number(e.target.value));
@@ -309,12 +381,19 @@ export function ProductMasterDataView() {
                   </option>
                 ))}
               </select>
+              </div>
             </div>
           </div>
           <div className="overflow-x-auto scroll-thin">
             <table className="w-full text-xs">
               <thead className="bg-muted/40">
                 <tr>
+                  <th className="px-2 py-2 w-8">
+                    <Checkbox
+                      checked={rows.length > 0 && selectedIds.size === rows.length}
+                      onCheckedChange={toggleAllRows}
+                    />
+                  </th>
                   <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">
                     #
                   </th>
@@ -339,20 +418,25 @@ export function ProductMasterDataView() {
                 {q.isLoading ? (
                   Array.from({ length: 8 }).map((_, i) => (
                     <tr key={i} className="border-t">
-                      <td colSpan={COLUMNS.length + 2} className="px-3 py-3">
+                      <td colSpan={COLUMNS.length + 3} className="px-3 py-3">
                         <div className="h-3 w-full animate-pulse rounded bg-muted" />
                       </td>
                     </tr>
                   ))
                 ) : rows.length === 0 ? (
                   <tr>
-                    <td colSpan={COLUMNS.length + 2} className="px-3 py-10 text-center text-muted-foreground">
+                    <td colSpan={COLUMNS.length + 3} className="px-3 py-10 text-center text-muted-foreground">
                       No {currentProduct} master data rows found.
                     </td>
                   </tr>
                 ) : (
-                  rows.map((r: any, i) => (
-                    <tr key={r.id} className="border-t hover:bg-muted/30 group">
+                  rows.map((r: any, i) => {
+                    const isSelected = selectedIds.has(r.id);
+                    return (
+                    <tr key={r.id} className={cn("border-t hover:bg-muted/30 group", isSelected && "bg-primary/5")}>
+                      <td className="px-2 py-1.5">
+                        <Checkbox checked={isSelected} onCheckedChange={() => toggleRow(r.id)} />
+                      </td>
                       <td className="px-2 py-1.5 text-muted-foreground tabular-nums">
                         {(page - 1) * pageSize + i + 1}
                       </td>
@@ -389,14 +473,15 @@ export function ProductMasterDataView() {
                             variant="ghost"
                             size="icon"
                             className="h-7 w-7 text-destructive hover:text-destructive"
-                            onClick={() => handleDelete(r.id)}
+                            onClick={() => openDelete(r)}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
                       </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -454,6 +539,7 @@ export function ProductMasterDataView() {
                         setEditData((d) => ({ ...d, [f]: e.target.value }))
                       }
                       className="h-8 text-xs"
+                      inputMode={f === "qty1" || f === "qty2" ? "numeric" : undefined}
                       disabled={f === "productType"}
                     />
                   </div>
@@ -469,12 +555,71 @@ export function ProductMasterDataView() {
             <Button variant="outline" onClick={() => setEditRow(null)}>
               <X className="mr-1.5 h-4 w-4" /> Cancel
             </Button>
-            <Button onClick={saveEdit} className={cn(theme.bg, "hover:opacity-90")}>
-              <Save className="mr-1.5 h-4 w-4" /> Save Changes
+            <Button onClick={saveEdit} disabled={savingEdit} className={cn(theme.bg, "hover:opacity-90")}>
+              {savingEdit ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Save className="mr-1.5 h-4 w-4" />} Save Changes
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Single delete confirmation */}
+      <AlertDialog open={!!deleteRow} onOpenChange={(o) => { if (!o) setDeleteRow(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Trash2 className="h-5 w-5 text-destructive" /> Delete Master Data Row
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this {currentProduct} master data row?
+              This will also rebuild the Factory PO index.
+              {deleteRow && (
+                <span className="mt-2 block text-xs font-mono bg-muted/40 rounded p-2">
+                  {deleteRow.shippingStatus || "—"} · {deleteRow.factoryPO} · {deleteRow.size} · Qty1={deleteRow.qty1}
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); confirmDelete(); }}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />}
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk delete confirmation */}
+      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" /> Delete {selectedIds.size} Selected Rows?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              You are about to delete <strong>{selectedIds.size}</strong> master data row(s).
+              <span className="mt-2 block text-xs text-amber-600">
+                ⚠ This will also rebuild the Factory PO index. This action cannot be undone.
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); confirmBulkDelete(); }}
+              disabled={bulkDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {bulkDeleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />}
+              Delete {selectedIds.size} Rows
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

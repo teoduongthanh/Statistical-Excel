@@ -37,7 +37,16 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
   const updateData: any = {};
   for (const [k, v] of Object.entries(body)) {
-    if (v !== undefined) updateData[k] = v === "" ? null : v;
+    if (v === undefined) continue;
+    if (v === "") {
+      updateData[k] = null;
+    } else if (k === "qty1" || k === "qty2") {
+      // qty1/qty2 are Int in DB — parse to integer.
+      const n = parseInt(String(v), 10);
+      updateData[k] = isNaN(n) ? 0 : n;
+    } else {
+      updateData[k] = v;
+    }
   }
 
   const updated = await db.masterData.update({ where: { id }, data: updateData });
