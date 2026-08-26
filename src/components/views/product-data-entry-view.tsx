@@ -19,6 +19,7 @@ import {
   X,
   Table2,
   Calculator,
+  Database,
 } from "lucide-react";
 import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
 import { api } from "@/lib/api-client";
@@ -98,10 +99,9 @@ export function ProductDataEntryView() {
   const [deleteWarn, setDeleteWarn] = React.useState<{ id: string; message: string } | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const [bulkDeleting, setBulkDeleting] = React.useState(false);
-  // Add to Master Data dialog
-  const [showAddMasterDialog, setShowAddMasterDialog] = React.useState(false);
-  const [addingMaster, setAddingMaster] = React.useState(false);
-  const [masterFormData, setMasterFormData] = React.useState<Record<string, string>>({});
+  // ===== Add entries to Master Data =====
+  const [selectedMasterIds, setSelectedMasterIds] = React.useState<Set<string>>(new Set());
+  const [addingToMaster, setAddingToMaster] = React.useState(false);
 
   // ===== Entries table pagination (server-side via page/pageSize) =====
   const [entryPage, setEntryPage] = React.useState(1);
@@ -254,68 +254,68 @@ export function ProductDataEntryView() {
     }
   }
 
-  // ===== Add to Master Data handler =====
-  function openAddMasterDialog() {
-    // Pre-fill with form values.
-    setMasterFormData({
-      factoryPO,
-      poNo,
-      size,
-      shippingStatus,
-      model: "",
-      sku: "",
-      item: "",
-      season: "",
-      colorCode: "",
-      colorCode2: "",
-      painting: "",
-      printingColor: "",
-      deadline: "",
-    });
-    setShowAddMasterDialog(true);
-  }
-
-  async function confirmAddMaster() {
-    setAddingMaster(true);
-    try {
-      const res = await api.addMasterRow({
-        productType: currentProduct,
-        factoryPO: masterFormData.factoryPO || factoryPO,
-        size: masterFormData.size || size,
-        poNo: masterFormData.poNo || poNo,
-        shippingStatus: masterFormData.shippingStatus || shippingStatus,
-        model: masterFormData.model,
-        sku: masterFormData.sku,
-        item: masterFormData.item,
-        season: masterFormData.season,
-        colorCode: masterFormData.colorCode,
-        colorCode2: masterFormData.colorCode2,
-        painting: masterFormData.painting,
-        printingColor: masterFormData.printingColor,
-        deadline: masterFormData.deadline,
-      });
-      if (res.ok) {
-        toast.success("Added to Master Data", {
-          description: `${masterFormData.factoryPO || factoryPO} · ${masterFormData.size || size}`,
-        });
-        setShowAddMasterDialog(false);
-        bumpRefresh();
-        // Re-trigger lookup so auto-fill works now.
-        const group = await api.lookupFactoryPO(factoryPO, currentProduct);
-        if (group) setAutoFill(group);
-      } else {
-        toast.error("Failed to add", { description: res.error });
-      }
-    } catch (e) {
-      toast.error("Failed to add to Master Data", { description: e instanceof Error ? e.message : "" });
-    } finally {
-      setAddingMaster(false);
-    }
-  }
-
   // Enter-key navigation (spec §11, §43).
   // When in an autocomplete dropdown that is open, Enter selects the suggestion first.
   // When the dropdown is closed (or no suggestion), Enter moves to the next field.
+
+  // ===== Add entries to Master Data handlers =====
+  function toggleMasterRow(id: string) {
+    setSelectedMasterIds((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+  function toggleAllMasterRows() {
+    if (selectedMasterIds.size === entryRows.length) setSelectedMasterIds(new Set());
+    else setSelectedMasterIds(new Set(entryRows.map((r: any) => r.id)));
+  }
+
+  async function addEntriesToMasterData(mode: "selected" | "all") {
+    const rowsToAdd = mode === "selected"
+      ? entryRows.filter((r: any) => selectedMasterIds.has(r.id))
+      : entryRows;
+    if (rowsToAdd.length === 0) {
+      toast.error("No rows to add");
+      return;
+    }
+    setAddingToMaster(true);
+    try {
+      let added = 0, skipped = 0;
+      for (const r of rowsToAdd) {
+        const res = await api.addMasterRow({
+          productType: currentProduct,
+          factoryPO: r.factoryPO,
+          size: r.size,
+          poNo: r.poNo,
+          shippingStatus: r.shippingStatus,
+          model: r.model,
+          sku: r.sku,
+          item: r.item,
+          season: r.season,
+          colorCode: r.colorCode,
+          colorCode2: r.colorCode2,
+          painting: r.painting,
+          printingColor: r.printingColor,
+          deadline: r.deadline,
+          qty1: r.qty1,
+          qty2: r.qty2,
+        });
+        if (res.ok) added++;
+        else skipped++;
+      }
+      toast.success(`${added} rows added to Master Data`, {
+        description: skipped > 0 ? `${skipped} already existed (skipped)` : undefined,
+      });
+      setSelectedMasterIds(new Set());
+      bumpRefresh();
+    } catch (e) {
+      toast.error("Failed to add to Master Data", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setAddingToMaster(false);
+    }
+  }
   function handleEnter(e: React.KeyboardEvent, currentField: string) {
     if (e.key !== "Enter") return;
     e.preventDefault();
@@ -603,20 +603,10 @@ export function ProductDataEntryView() {
                   />
                 </div>
                 {factoryPO && !lookupLoading && autoFill === null && (
-                  <div className="rounded-md border border-amber-500/30 bg-amber-50 dark:bg-amber-950/20 p-2.5 space-y-2">
-                    <p className="text-xs text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
-                      <AlertTriangle className="h-3.5 w-3.5" />
-                      Factory PO "{factoryPO}" not found in Master Data.
-                    </p>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-xs border-amber-400 text-amber-700 hover:bg-amber-100 dark:text-amber-300 dark:hover:bg-amber-950/40"
-                      onClick={() => openAddMasterDialog()}
-                    >
-                      <Plus className="h-3.5 w-3.5 mr-1" /> Add to Master Data
-                    </Button>
-                  </div>
+                  <p className="text-xs text-amber-600 flex items-center gap-1">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    Factory PO not in Master Data — you can add it to Master Data from the list below after saving.
+                  </p>
                 )}
               </div>
 
@@ -780,6 +770,29 @@ export function ProductDataEntryView() {
                   <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete Selected ({selectedEntryIds.size})
                 </Button>
               )}
+              {selectedMasterIds.size > 0 && (
+                <Button
+                  size="sm"
+                  className={cn("h-7 text-xs", theme.bg, "hover:opacity-90")}
+                  disabled={addingToMaster}
+                  onClick={() => addEntriesToMasterData("selected")}
+                >
+                  {addingToMaster ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1" />}
+                  Add Selected to Master Data ({selectedMasterIds.size})
+                </Button>
+              )}
+              {entryRows.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  disabled={addingToMaster}
+                  onClick={() => addEntriesToMasterData("all")}
+                >
+                  {addingToMaster ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1" />}
+                  Add All to Master Data
+                </Button>
+              )}
             </span>
           </CardTitle>
         </CardHeader>
@@ -806,6 +819,12 @@ export function ProductDataEntryView() {
                         onCheckedChange={toggleAllEntries}
                       />
                     </th>
+                    <th className="px-2 py-2 w-8" title="Select for Add to Master Data">
+                      <Checkbox
+                        checked={entryRows.length > 0 && selectedMasterIds.size === entryRows.length}
+                        onCheckedChange={toggleAllMasterRows}
+                      />
+                    </th>
                     <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Status</th>
                     <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">PO NO#</th>
                     <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Factory PO</th>
@@ -821,10 +840,14 @@ export function ProductDataEntryView() {
                 <tbody>
                   {entryRows.map((r: any) => {
                     const isSelected = selectedEntryIds.has(r.id);
+                    const isMasterSelected = selectedMasterIds.has(r.id);
                     return (
-                      <tr key={r.id} className={cn("border-t hover:bg-muted/30", isSelected && "bg-primary/5")}>
+                      <tr key={r.id} className={cn("border-t hover:bg-muted/30", isSelected && "bg-primary/5", isMasterSelected && "bg-emerald-50 dark:bg-emerald-950/20")}>
                         <td className="px-2 py-1.5">
                           <Checkbox checked={isSelected} onCheckedChange={() => toggleEntry(r.id)} />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <Checkbox checked={isMasterSelected} onCheckedChange={() => toggleMasterRow(r.id)} />
                         </td>
                         <td className="px-2 py-1.5">
                           <Badge variant="outline" className={cn("text-[9px]", shippingBadgeClass(r.shippingStatus))}>
@@ -857,13 +880,13 @@ export function ProductDataEntryView() {
                 {selectedEntryIds.size > 0 && (
                   <tfoot className="bg-primary/5 border-t-2 border-primary/20">
                     <tr>
-                      <td colSpan={6} className="px-2 py-2 text-right text-[11px] font-semibold uppercase text-muted-foreground">
+                      <td colSpan={7} className="px-2 py-2 text-right text-[11px] font-semibold uppercase text-muted-foreground">
                         <Calculator className="h-3 w-3 inline mr-1" />
                         Total ({totals.count} selected):
                       </td>
                       <td className="px-2 py-2 text-right tabular-nums font-bold text-primary text-sm">{totals.qty1Sum}</td>
                       <td className={cn("px-2 py-2 text-right tabular-nums font-bold text-sm", totals.qty2Sum < 0 && "text-rose-600")}>{totals.qty2Sum}</td>
-                      <td colSpan={3}></td>
+                      <td colSpan={4}></td>
                     </tr>
                   </tfoot>
                 )}
@@ -1014,63 +1037,6 @@ export function ProductDataEntryView() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      {/* Add to Master Data dialog */}
-      <Dialog open={showAddMasterDialog} onOpenChange={setShowAddMasterDialog}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto scroll-thin">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Plus className="h-4 w-4 text-primary" /> Add to Master Data
-              <Badge variant="outline" className={cn("ml-1 text-[10px]", theme.badge)}>
-                {currentProduct}
-              </Badge>
-            </DialogTitle>
-            <DialogDescription>
-              Create a new Master Data row for this Factory PO. After saving, the auto-fill will work immediately.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-2">
-              {[
-                { f: "factoryPO", l: "Factory PO *" },
-                { f: "poNo", l: "PO NO#" },
-                { f: "size", l: "Size *" },
-                { f: "shippingStatus", l: "Shipping Status" },
-                { f: "model", l: "MODEL" },
-                { f: "sku", l: "SKU" },
-                { f: "item", l: "ITEM" },
-                { f: "season", l: "Season" },
-                { f: "colorCode", l: "Color Code" },
-                { f: "colorCode2", l: "COLOR CODE" },
-                { f: "painting", l: "PAINTING" },
-                { f: "printingColor", l: "PRINTING COLOR" },
-                { f: "deadline", l: "Dead Line" },
-              ].map(({ f, l }) => (
-                <div key={f} className="space-y-1">
-                  <label className="text-[10px] font-semibold uppercase text-muted-foreground">{l}</label>
-                  <Input
-                    value={masterFormData[f] ?? ""}
-                    onChange={(e) => setMasterFormData((d) => ({ ...d, [f]: e.target.value }))}
-                    className="h-8 text-xs"
-                  />
-                </div>
-              ))}
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              Factory PO and Size are required. Other fields are optional — fill in what you know.
-            </p>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowAddMasterDialog(false)}>
-              <X className="mr-1.5 h-4 w-4" /> Cancel
-            </Button>
-            <Button onClick={confirmAddMaster} disabled={addingMaster}>
-              {addingMaster ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Plus className="mr-1.5 h-4 w-4" />}
-              Add to Master Data
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
