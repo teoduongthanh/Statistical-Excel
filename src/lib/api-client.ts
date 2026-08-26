@@ -103,6 +103,35 @@ export const api = {
     return jsonOrThrow(res);
   },
 
+  // Add a new row to Master Data from the Data Entry form.
+  // Used when a Factory PO doesn't exist yet and the user wants to create it.
+  addMasterRow: async (body: {
+    productType: string;
+    factoryPO: string;
+    size: string;
+    shippingStatus?: string;
+    model?: string;
+    sku?: string;
+    poNo?: string;
+    item?: string;
+    season?: string;
+    colorCode?: string;
+    colorCode2?: string;
+    painting?: string;
+    printingColor?: string;
+    qty1?: string | number;
+    qty2?: string | number;
+    deadline?: string;
+    date?: string;
+  }) => {
+    const res = await fetch("/api/master-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; row?: any; error?: string }>(res);
+  },
+
   searchMaster: async (
     q: string,
     field: CanonicalField,

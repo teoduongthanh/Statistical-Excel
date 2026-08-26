@@ -98,6 +98,10 @@ export function ProductDataEntryView() {
   const [deleteWarn, setDeleteWarn] = React.useState<{ id: string; message: string } | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const [bulkDeleting, setBulkDeleting] = React.useState(false);
+  // Add to Master Data dialog
+  const [showAddMasterDialog, setShowAddMasterDialog] = React.useState(false);
+  const [addingMaster, setAddingMaster] = React.useState(false);
+  const [masterFormData, setMasterFormData] = React.useState<Record<string, string>>({});
 
   // ===== Entries table pagination (server-side via page/pageSize) =====
   const [entryPage, setEntryPage] = React.useState(1);
@@ -247,6 +251,65 @@ export function ProductDataEntryView() {
       toast.error("Save failed", { description: e instanceof Error ? e.message : "" });
     } finally {
       setSaving(false);
+    }
+  }
+
+  // ===== Add to Master Data handler =====
+  function openAddMasterDialog() {
+    // Pre-fill with form values.
+    setMasterFormData({
+      factoryPO,
+      poNo,
+      size,
+      shippingStatus,
+      model: "",
+      sku: "",
+      item: "",
+      season: "",
+      colorCode: "",
+      colorCode2: "",
+      painting: "",
+      printingColor: "",
+      deadline: "",
+    });
+    setShowAddMasterDialog(true);
+  }
+
+  async function confirmAddMaster() {
+    setAddingMaster(true);
+    try {
+      const res = await api.addMasterRow({
+        productType: currentProduct,
+        factoryPO: masterFormData.factoryPO || factoryPO,
+        size: masterFormData.size || size,
+        poNo: masterFormData.poNo || poNo,
+        shippingStatus: masterFormData.shippingStatus || shippingStatus,
+        model: masterFormData.model,
+        sku: masterFormData.sku,
+        item: masterFormData.item,
+        season: masterFormData.season,
+        colorCode: masterFormData.colorCode,
+        colorCode2: masterFormData.colorCode2,
+        painting: masterFormData.painting,
+        printingColor: masterFormData.printingColor,
+        deadline: masterFormData.deadline,
+      });
+      if (res.ok) {
+        toast.success("Added to Master Data", {
+          description: `${masterFormData.factoryPO || factoryPO} · ${masterFormData.size || size}`,
+        });
+        setShowAddMasterDialog(false);
+        bumpRefresh();
+        // Re-trigger lookup so auto-fill works now.
+        const group = await api.lookupFactoryPO(factoryPO, currentProduct);
+        if (group) setAutoFill(group);
+      } else {
+        toast.error("Failed to add", { description: res.error });
+      }
+    } catch (e) {
+      toast.error("Failed to add to Master Data", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setAddingMaster(false);
     }
   }
 
@@ -540,7 +603,20 @@ export function ProductDataEntryView() {
                   />
                 </div>
                 {factoryPO && !lookupLoading && autoFill === null && (
-                  <p className="text-xs text-amber-600">Reference data not found for this Factory PO.</p>
+                  <div className="rounded-md border border-amber-500/30 bg-amber-50 dark:bg-amber-950/20 p-2.5 space-y-2">
+                    <p className="text-xs text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      Factory PO "{factoryPO}" not found in Master Data.
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs border-amber-400 text-amber-700 hover:bg-amber-100 dark:text-amber-300 dark:hover:bg-amber-950/40"
+                      onClick={() => openAddMasterDialog()}
+                    >
+                      <Plus className="h-3.5 w-3.5 mr-1" /> Add to Master Data
+                    </Button>
+                  </div>
                 )}
               </div>
 
@@ -938,6 +1014,63 @@ export function ProductDataEntryView() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Add to Master Data dialog */}
+      <Dialog open={showAddMasterDialog} onOpenChange={setShowAddMasterDialog}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto scroll-thin">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Plus className="h-4 w-4 text-primary" /> Add to Master Data
+              <Badge variant="outline" className={cn("ml-1 text-[10px]", theme.badge)}>
+                {currentProduct}
+              </Badge>
+            </DialogTitle>
+            <DialogDescription>
+              Create a new Master Data row for this Factory PO. After saving, the auto-fill will work immediately.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { f: "factoryPO", l: "Factory PO *" },
+                { f: "poNo", l: "PO NO#" },
+                { f: "size", l: "Size *" },
+                { f: "shippingStatus", l: "Shipping Status" },
+                { f: "model", l: "MODEL" },
+                { f: "sku", l: "SKU" },
+                { f: "item", l: "ITEM" },
+                { f: "season", l: "Season" },
+                { f: "colorCode", l: "Color Code" },
+                { f: "colorCode2", l: "COLOR CODE" },
+                { f: "painting", l: "PAINTING" },
+                { f: "printingColor", l: "PRINTING COLOR" },
+                { f: "deadline", l: "Dead Line" },
+              ].map(({ f, l }) => (
+                <div key={f} className="space-y-1">
+                  <label className="text-[10px] font-semibold uppercase text-muted-foreground">{l}</label>
+                  <Input
+                    value={masterFormData[f] ?? ""}
+                    onChange={(e) => setMasterFormData((d) => ({ ...d, [f]: e.target.value }))}
+                    className="h-8 text-xs"
+                  />
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Factory PO and Size are required. Other fields are optional — fill in what you know.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAddMasterDialog(false)}>
+              <X className="mr-1.5 h-4 w-4" /> Cancel
+            </Button>
+            <Button onClick={confirmAddMaster} disabled={addingMaster}>
+              {addingMaster ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Plus className="mr-1.5 h-4 w-4" />}
+              Add to Master Data
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

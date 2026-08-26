@@ -65,3 +65,89 @@ export async function GET(req: NextRequest) {
     rows: rows.map(masterRowToObj),
   });
 }
+
+// POST /api/master-data — add a single row to MasterData from the Data Entry form.
+// This allows users to create Master Data when a Factory PO doesn't exist yet.
+// After inserting, rebuilds the MasterGroup index so lookups work immediately.
+interface CreateMasterBody {
+  productType: string;
+  date?: string;
+  shippingStatus?: string;
+  model?: string;
+  sku?: string;
+  poNo?: string;
+  factoryPO: string;
+  item?: string;
+  season?: string;
+  colorCode?: string;
+  colorCode2?: string;
+  painting?: string;
+  printingColor?: string;
+  size: string;
+  qty1?: string | number;
+  qty2?: string | number;
+  deadline?: string;
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = (await req.json()) as CreateMasterBody;
+    if (!body.productType) {
+      return NextResponse.json({ error: "productType is required" }, { status: 400 });
+    }
+    if (!body.factoryPO) {
+      return NextResponse.json({ error: "factoryPO is required" }, { status: 400 });
+    }
+    if (!body.size) {
+      return NextResponse.json({ error: "size is required" }, { status: 400 });
+    }
+
+    // Check if this Factory PO + Size already exists in Master Data for this product.
+    const existing = await db.masterData.findFirst({
+      where: {
+        productType: body.productType,
+        factoryPO: body.factoryPO,
+        size: body.size,
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      return NextResponse.json(
+        { error: `Factory PO "${body.factoryPO}" with Size "${body.size}" already exists in Master Data` },
+        { status: 409 }
+      );
+    }
+
+    const created = await db.masterData.create({
+      data: {
+        productType: body.productType,
+        date: body.date || null,
+        shippingStatus: body.shippingStatus || null,
+        model: body.model || null,
+        sku: body.sku || null,
+        poNo: body.poNo || null,
+        factoryPO: body.factoryPO,
+        item: body.item || null,
+        season: body.season || null,
+        colorCode: body.colorCode || null,
+        colorCode2: body.colorCode2 || null,
+        painting: body.painting || null,
+        printingColor: body.printingColor || null,
+        size: body.size,
+        qty1: body.qty1 !== undefined && body.qty1 !== "" ? parseInt(String(body.qty1), 10) || 0 : null,
+        qty2: body.qty2 !== undefined && body.qty2 !== "" ? parseInt(String(body.qty2), 10) || 0 : null,
+        deadline: body.deadline || null,
+        sourceFile: "manual-entry",
+      },
+    });
+
+    // Rebuild MasterGroup index so the new Factory PO is immediately searchable.
+    const { rebuildMasterGroups } = await import("@/lib/master-service");
+    rebuildMasterGroups().catch(() => {});
+
+    return NextResponse.json({ ok: true, row: created });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Failed to add master data";
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
