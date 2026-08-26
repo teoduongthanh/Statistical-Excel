@@ -487,7 +487,8 @@ export async function validateQuantities(
         model: r.model || "",
         productType: r.productType,
         deadline: r.deadline,
-        orderQty: null, outputQty: null, inputQty: null, pendingQty: null,
+        orderQty: null, outputQty: null, inputQty: null,
+        pendingQty: null, // Pending = -Output (calculated, not stored)
         isConsistent: true, missingQty: null, errors: [],
       });
     }
@@ -501,9 +502,13 @@ export async function validateQuantities(
       g.outputQty = (g.outputQty ?? 0) + qtyNum;
     } else if (status.startsWith("4") || status.includes("input")) {
       g.inputQty = (g.inputQty ?? 0) + qtyNum;
-    } else if (status.startsWith("3") || status.includes("pending") || status.includes("spend")) {
-      g.pendingQty = (g.pendingQty ?? 0) + qtyNum;
     }
+    // 3.Pending rows are no longer stored in DB — Pending = -Output (calculated below).
+  }
+
+  // Set Pending = -Output for all groups (dynamic calculation).
+  for (const g of groups.values()) {
+    g.pendingQty = g.outputQty !== null ? -g.outputQty : null;
   }
 
   // Validate consistency.

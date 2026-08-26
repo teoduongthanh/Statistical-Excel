@@ -268,6 +268,11 @@ export async function confirmEntry(input: EntryInput, preview: EntryPreview): Pr
   try {
     // Run everything in a single transaction for atomicity (spec §40).
     // Auto-merge is DISABLED per user request: each entry creates a separate row.
+    //
+    // PENDING IS NO LONGER STORED: Previously, creating a 2.Output entry also
+    // created a paired 3.Pending record. This doubled the data volume and slowed
+    // the website. Pending is now calculated dynamically (= -Output) wherever
+    // needed. Only the main record is created here.
     const result = await db.$transaction(async (tx) => {
       const created: any[] = [];
 
@@ -282,33 +287,7 @@ export async function confirmEntry(input: EntryInput, preview: EntryPreview): Pr
       });
       created.push(mainRec);
 
-      // For Output: create the paired Pending record (spec §17, §18, §40).
-      // Both records share the same transactionGroupId for atomic delete/audit.
-      if (isOutputStatus(input.shippingStatus)) {
-        const txGroupId = makeTransactionGroupId(input.factoryPO);
-        const pendingStatus = "3.Pending";
-        const pendingQty2 = String(-Math.abs(qtyNum));
-
-        const pendingRec = await tx.entryData.create({
-          data: {
-            ...sharedData,
-            shippingStatus: pendingStatus,
-            qty1,
-            qty2: pendingQty2,
-            transactionGroupId: txGroupId,
-          },
-        });
-        created.push(pendingRec);
-
-        // Tag the main Output record with the same transactionGroupId.
-        await tx.entryData.update({
-          where: { id: mainRec.id },
-          data: { transactionGroupId: txGroupId },
-        });
-        mainRec.transactionGroupId = txGroupId;
-      }
-
-      return { created, merged: [] as { id: string; newQty: string }[] };
+      return { created, merged: [] as { id: string; newQty: number }[] };
     });
     return { ok: true, errors: [], created: result.created, merged: result.merged };
   } catch (e) {

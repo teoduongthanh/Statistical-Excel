@@ -88,10 +88,9 @@ export async function aggregateProduction(
       MAX(size) AS size,
       MIN(deadline) AS nearestDeadline,
       COUNT(*) AS rowCount,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN CAST(qty1 AS REAL) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN CAST(qty1 AS REAL) ELSE 0 END) AS outputQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '3%' OR LOWER(shippingStatus) = 'pending' THEN CAST(qty1 AS REAL) ELSE 0 END) AS pendingQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN CAST(qty1 AS REAL) ELSE 0 END) AS inputQty
+      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
+      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
+      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty
     FROM MasterData
     WHERE ${where}
     GROUP BY ${groupCols}
@@ -101,10 +100,12 @@ export async function aggregateProduction(
   const rows = await db.$queryRawUnsafe<any[]>(sql, ...params);
 
   return rows.map((r) => {
+    // Pending is calculated dynamically: Pending = -Output (no longer stored in DB).
+    const outputQty = Number(r.outputQty) || 0;
     const summary = computeProductionSummary({
       orderQty: Number(r.orderQty) || 0,
-      outputQty: Number(r.outputQty) || 0,
-      pendingQty: Number(r.pendingQty) || 0,
+      outputQty,
+      pendingQty: -outputQty, // Pending = -Output (dynamic, not stored)
       inputQty: Number(r.inputQty) || 0,
     });
     const deadline = r.nearestDeadline || null;
@@ -141,19 +142,19 @@ export async function getProductKPIs(filters: AggregationFilters) {
       COUNT(DISTINCT model) AS totalModels,
       COUNT(DISTINCT sku) AS totalSKUs,
       COUNT(*) AS totalRows,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN CAST(qty1 AS REAL) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN CAST(qty1 AS REAL) ELSE 0 END) AS outputQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '3%' OR LOWER(shippingStatus) = 'pending' THEN CAST(qty1 AS REAL) ELSE 0 END) AS pendingQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN CAST(qty1 AS REAL) ELSE 0 END) AS inputQty
+      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
+      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
+      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty
     FROM MasterData
     WHERE ${where}
   `;
   const rows = await db.$queryRawUnsafe<any[]>(sql, ...params);
   const r = rows[0] || {};
+  const outputQty = Number(r.outputQty) || 0;
   const summary = computeProductionSummary({
     orderQty: Number(r.orderQty) || 0,
-    outputQty: Number(r.outputQty) || 0,
-    pendingQty: Number(r.pendingQty) || 0,
+    outputQty,
+    pendingQty: -outputQty, // Pending = -Output (dynamic)
     inputQty: Number(r.inputQty) || 0,
   });
   return {
@@ -175,10 +176,9 @@ export async function aggregateByDimension(
   const sql = `
     SELECT
       "${dimension}" AS dim,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN CAST(qty1 AS REAL) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN CAST(qty1 AS REAL) ELSE 0 END) AS outputQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '3%' OR LOWER(shippingStatus) = 'pending' THEN CAST(qty1 AS REAL) ELSE 0 END) AS pendingQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN CAST(qty1 AS REAL) ELSE 0 END) AS inputQty,
+      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
+      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
+      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty,
       COUNT(*) AS rowCount
     FROM MasterData
     WHERE ${where} AND "${dimension}" IS NOT NULL AND "${dimension}" != ''
@@ -188,10 +188,11 @@ export async function aggregateByDimension(
   `;
   const rows = await db.$queryRawUnsafe<any[]>(sql, ...params);
   return rows.map((r) => {
+    const outputQty = Number(r.outputQty) || 0;
     const summary = computeProductionSummary({
       orderQty: Number(r.orderQty) || 0,
-      outputQty: Number(r.outputQty) || 0,
-      pendingQty: Number(r.pendingQty) || 0,
+      outputQty,
+      pendingQty: -outputQty, // Pending = -Output (dynamic)
       inputQty: Number(r.inputQty) || 0,
     });
     return {
