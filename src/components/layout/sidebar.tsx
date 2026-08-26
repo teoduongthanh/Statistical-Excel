@@ -64,6 +64,7 @@ const PRODUCT_NAV: NavGroup[] = [
       { key: "product-production-tracking", label: "Production Tracking", icon: Activity },
       { key: "product-statistics", label: "Statistics", icon: BarChart3 },
       { key: "product-shipment", label: "Daily Shipment", icon: Truck },
+      { key: "product-report", label: "Report & Validation", icon: ShieldCheck },
       { key: "product-import", label: "Import Excel", icon: Upload },
       { key: "product-export", label: "Export Excel", icon: Download },
     ],

@@ -389,6 +389,23 @@ export const api = {
     return res.blob();
   },
 
+  // Production Report & Data Validation
+  getReportGroups: async (productType: string, filters?: Record<string, string>) => {
+    const params = new URLSearchParams({ productType, ...(filters || {}) });
+    const res = await fetch(`/api/report/groups?${params}`);
+    return jsonOrThrow<{ groups: any[]; errors: any[]; summary: any }>(res);
+  },
+
+  exportReport: async (body: { productType: string; poNo?: string; factoryPO?: string; colorCode?: string; size?: string }): Promise<Blob> => {
+    const res = await fetch("/api/report/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error("Report export failed");
+    return res.blob();
+  },
+
   // Dashboard & history
   dashboard: async (): Promise<DashboardStats> => {
     const res = await fetch("/api/dashboard");

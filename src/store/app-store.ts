@@ -13,6 +13,7 @@ export type ViewKey =
   | "product-production-tracking"
   | "product-statistics"
   | "product-shipment"
+  | "product-report"
   | "product-import"
   | "product-export"
   | "product-review"

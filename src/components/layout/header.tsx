@@ -21,6 +21,7 @@ const VIEW_TITLES: Record<ViewKey, { title: string; subtitle: string; productSco
   "product-production-tracking": { title: "Production Tracking", subtitle: "Order → Output → Input timeline", productScoped: true },
   "product-statistics": { title: "Statistics", subtitle: "By Size / Color / Model / PO / Date", productScoped: true },
   "product-shipment": { title: "Daily Shipment Planning", subtitle: "Calculate remaining output, detect surplus, generate shipment sheets", productScoped: true },
+  "product-report": { title: "Production Report & Validation", subtitle: "Track production, detect data anomalies, export reports", productScoped: true },
   "product-import": { title: "Import Excel", subtitle: "Upload, map columns & build Master Data", productScoped: true },
   "product-export": { title: "Export Excel", subtitle: "Export entries or master data", productScoped: true },
   "product-review": { title: "Review & Merge", subtitle: "Compare entry data with Master Data side-by-side", productScoped: true },
