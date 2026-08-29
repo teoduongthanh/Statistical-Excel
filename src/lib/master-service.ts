@@ -23,7 +23,8 @@ const SHARED_COLS: CanonicalField[] = [
 ];
 const META_SHARED: CanonicalField[] = ["date", "shippingStatus", "deadline"];
 
-// Convert a DB master_data row to a plain object (string values).
+// Convert a DB master_data row to a plain object.
+// qty1/qty2 are Int (nullable); other fields are string|null.
 export function masterRowToObj(row: {
   id: string;
   date: string | null;
@@ -39,8 +40,8 @@ export function masterRowToObj(row: {
   painting: string | null;
   printingColor: string | null;
   size: string | null;
-  qty1: string | null;
-  qty2: string | null;
+  qty1: number | null;
+  qty2: number | null;
   deadline: string | null;
   productType: string | null;
   sourceFile: string | null;
@@ -120,7 +121,7 @@ export async function rebuildMasterGroups(sourceFile?: string, productType?: str
     } else {
       await tx.masterGroup.deleteMany({});
     }
-    const inserts = [];
+    const inserts: Promise<any>[] = [];
     for (const { productType: pt, factoryPO, rows: groupRows } of groups.values()) {
       const sharedFlags: SharedFlags = {};
       const picked: Record<string, string | null> = {};
@@ -358,7 +359,7 @@ export async function lookupFactoryPO(
 export interface EntryInput {
   factoryPO: string;
   size: string;
-  qty1: string;
+  qty1: string | number;
 }
 
 export interface ValidationResult {
@@ -371,11 +372,11 @@ export async function validateEntry(input: EntryInput, productType?: string): Pr
   const errors: string[] = [];
   const fpo = (input.factoryPO || "").trim();
   const size = (input.size || "").trim();
-  const qty1 = (input.qty1 || "").trim();
+  const qty1Str = String(input.qty1 ?? "").trim();
   if (!fpo) errors.push("Factory PO is required");
   if (!size) errors.push("Size is required");
-  if (!qty1) errors.push("Qty 1 is required");
-  if (qty1 && isNaN(Number(qty1))) errors.push("Qty 1 must be a number");
+  if (!qty1Str) errors.push("Qty 1 is required");
+  if (qty1Str && isNaN(Number(qty1Str))) errors.push("Qty 1 must be a number");
 
   if (errors.length) return { ok: false, errors };
 
@@ -408,14 +409,14 @@ export async function createEntry(
   }
   const g = vr.group;
   const qty1Num = Number(input.qty1);
-  const qty2 = opts.autoCalcQty2 ? String(-Math.abs(qty1Num)) : input.qty1;
+  const qty2 = opts.autoCalcQty2 ? -Math.abs(qty1Num) : qty1Num;
 
   const created = await db.entryData.create({
     data: {
       productType: opts.productType || g.productType || "MAFATE",
       factoryPO: input.factoryPO.trim(),
       size: input.size.trim(),
-      qty1: input.qty1.trim(),
+      qty1: qty1Num,
       qty2,
       date: g.date,
       shippingStatus: g.shippingStatus,
@@ -429,7 +430,6 @@ export async function createEntry(
       painting: g.painting,
       printingColor: g.printingColor,
       deadline: g.deadline,
-      productType: g.productType,
     },
   });
   return { ok: true as const, entry: created };

@@ -521,3 +521,61 @@ Stage Summary:
   * Extend `/api/report/export/route.ts` to also accept `model`, `season`, `dateFrom`, `dateTo` filters (currently it only forwards poNo/factoryPO/colorCode/size), so the Export button can fully honour all active filters shown in the filter bar.
   * Consider extracting this view's local `PaginationFooter` and `StatCard` / `FilterInput` atoms into a shared `src/components/common/` module — they are now duplicated across `product-shipment-view.tsx`, `master-data-view.tsx`, `product-statistics-view.tsx`, `product-review-view.tsx`, and now this view. (Already noted as a future cleanup in the prior worklog entry.)
   * Optionally add a `productionStatus` filter dropdown to the filter bar (the API already accepts `productionStatus` in `ReportFilters`) and a "show errors only" toggle to quickly narrow the table to flagged rows.
+
+---
+Task ID: FIX-QTY-1
+Agent: main (Z.ai Code)
+Task: Fix qty1/qty2 String→Int type error, remove duplicate check in master-data POST, fix data consistency (rebuildMasterGroups await + query invalidation)
+
+Work Log:
+- Investigated root cause of "Argument `qty1`: Invalid value provided. Expected Int, provided String" error. Found schema.prisma declared qty1/qty2 as String, but master-data POST route already converted to Int via parseInt — indicating the design intent was Int. The running Prisma client (in turbopack cache) expected Int, causing the mismatch.
+- **Schema migration (prisma/schema.prisma)**:
+  * MasterData.qty1: String? → Int?
+  * MasterData.qty2: String? → Int?
+  * EntryData.qty1: String → Int
+  * EntryData.qty2: String → Int
+  * Ran `bun run db:push` — Prisma cast all existing TEXT values (e.g. "200") to INTEGER (200). 26116 MasterData + 5 EntryData non-null values converted successfully. No data loss. Generated Prisma Client v6.19.2.
+- **entry-service.ts** (src/lib/entry-service.ts):
+  * `computeQty2()`: changed return type from `string` to `number`. Now returns `-Math.abs(n)` for pending, `n` for order/output/input.
+  * `EntryPreview.qty1/qty2` and `EntryPreviewRecord.qty1/qty2` types changed from `string` to `number`.
+  * `previewEntry()`: `qty1 = qtyNum` (was `String(qtyNum)`); `qty2 = computeQty2(...)` (now a number).
+  * `confirmEntry()`: `qty1 = qtyNum` (was `String(qtyNum)`); passes numbers to `tx.entryData.create()`. `pairedPending.qty2 = -Math.abs(qtyNum)` (was `String(...)`).
+  * Return type `merged?: { id: string; newQty: number }[]` (was `string`).
+- **master-service.ts** (src/lib/master-service.ts):
+  * `EntryInput.qty1`: changed type to `string | number`.
+  * `validateEntry()`: uses `String(input.qty1 ?? "").trim()` to handle both string and number input safely.
+  * `createEntry()`: `qty1: qty1Num` (was `input.qty1.trim()`); `qty2 = -Math.abs(qty1Num)` (was `String(...)`). Passes numbers to `db.entryData.create()`.
+  * `masterRowToObj()`: updated type annotation — `qty1: number | null`, `qty2: number | null` (was `string | null`).
+  * `rebuildMasterGroups()`: fixed TypeScript error by typing `const inserts: Promise<any>[] = []` (was untyped `never[]`).
+- **excel/import/route.ts** (src/app/api/excel/import/route.ts):
+  * `qty1`/`qty2` in `createMany` data: `parseInt(String(m.qty1), 10) || 0` with null fallback for empty/undefined (was passing raw strings).
+- **master-data/route.ts POST** (src/app/api/master-data/route.ts):
+  * **REMOVED duplicate check** (was blocking legitimate split shipments). Comment documents the business reason: "A single Order of 100 units may be fulfilled by several Output shipments (e.g. 20 + 30 + 50) and several Input receipts."
+  * `rebuildMasterGroups()`: changed from fire-and-forget `.catch(() => {})` to `await rebuildMasterGroups(body.productType)` (scoped to product). Wrapped in try/catch so rebuild failure doesn't fail the request.
+- **master-data/[id]/route.ts** (src/app/api/master-data/[id]/route.ts):
+  * PUT: `await rebuildMasterGroups(updated.productType || undefined)` (was fire-and-forget).
+  * DELETE: fetches `productType` before delete, then `await rebuildMasterGroups(productType)` (was fire-and-forget).
+- **entries/[id]/route.ts PUT** (src/app/api/entries/[id]/route.ts):
+  * `newQty1`: `typeof rawQty1 === "number" ? rawQty1 : parseInt(String(rawQty1), 10) || 0` — handles both string input and number from DB. Passes number to `updateData.qty1`.
+- **scripts/seed.ts**: `qty1`/`qty2` in `createMany`: `parseInt(String(m.qty1), 10) || 0` (was raw string).
+- **Verification**:
+  * `npx tsc --noEmit` — ZERO errors in any changed file (pre-existing errors in data-entry-view.tsx, quantity-check/recompute/route.ts remain untouched, unrelated to this task).
+  * `npx eslint` on all changed files — exit 0, no warnings.
+  * API tests via curl (server running):
+    - POST /api/entries/confirm with qty=50 → `{"ok":true,"created":[{"qty1":50,"qty2":50,...}]}` ✅ (Int, not String)
+    - POST /api/master-data with same PO+FPO+Size → HTTP 200 (no 409 duplicate error) ✅
+    - POST /api/master-data AGAIN with same PO+FPO+Size, different qty → HTTP 200 ✅ (split shipment allowed)
+    - No errors in dev.log ✅
+  * Agent Browser verification: page loads, Data Entry form renders, dashboard charts load, all API calls return 200.
+- **Query invalidation**: Confirmed all views already include `refreshKey` in their React Query keys (product-dashboard, product-data-entry, product-master-data, product-statistics, product-shipment, product-report, product-production-tracking, global-dashboard). `bumpRefresh()` in the Zustand store increments `refreshKey`, triggering refetch of ALL these views. Combined with `await rebuildMasterGroups()` (instead of fire-and-forget), the MasterGroup index is up-to-date before the UI refreshes — fixing the data consistency issue.
+- Cleaned up all test data created during verification (3 MasterData rows + 1 EntryData row).
+
+Stage Summary:
+- **3 bugs fixed**:
+  1. **qty1/qty2 type error** — Schema migrated String→Int; all create/update paths now pass numbers. The "Expected Int, provided String" Prisma error is resolved.
+  2. **Duplicate check blocking split shipments** — Removed the `findFirst` + 409 response from master-data POST. Multiple rows with same PO NO# + Factory PO + Size are now allowed, supporting the real-world workflow where an Order of 100 units is fulfilled by multiple Output shipments (20+30+50) and multiple Input receipts.
+  3. **Data consistency after add-to-master** — `rebuildMasterGroups()` now AWAITS completion (was fire-and-forget `.catch(() => {})`) in master-data POST, PUT, and DELETE routes. Combined with existing `refreshKey`-based query invalidation across all views, dashboards/statistics/shipments/reports now reflect new master data immediately.
+- **Files changed**: prisma/schema.prisma, src/lib/entry-service.ts, src/lib/master-service.ts, src/app/api/master-data/route.ts, src/app/api/master-data/[id]/route.ts, src/app/api/entries/[id]/route.ts, src/app/api/excel/import/route.ts, scripts/seed.ts.
+- **DB state**: 26138 MasterData rows, 5 EntryData rows. All qty1/qty2 values are now INTEGER in the DB (verified: SELECT returns numbers like 129, 50, 20000 — not strings).
+- **No breaking changes**: All read paths (aggregation-service, report-service, shipment-service) use `COALESCE(qty1, 0)` in SQL and `Number(r.qty1)` in JS — both work identically with Int or String. Excel export already handled numbers. No UI changes needed.
+- Note: The dev server must be restarted (pkill + bun run dev) to pick up the regenerated Prisma Client. Turbopack caches the old client in .next/dev/server/chunks.

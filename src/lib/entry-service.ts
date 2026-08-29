@@ -28,19 +28,20 @@ export const SHIPPING_STATUSES = [
 ] as const;
 
 // Compute Q'ty 2 from Q'ty 1 + Shipping Status (spec §10).
-export function computeQty2(shippingStatus: string, qty1: string): string {
-  const n = Number(qty1);
-  if (isNaN(n)) return "0";
+// Returns a number (qty1/qty2 are stored as Int in the DB).
+export function computeQty2(shippingStatus: string, qty1: number | string): number {
+  const n = typeof qty1 === "number" ? qty1 : Number(qty1);
+  if (isNaN(n)) return 0;
   const bucket = classifyShippingStatus(shippingStatus);
   switch (bucket) {
     case "pending":
-      return String(-Math.abs(n)); // 3.Pending → qty2 = -qty
+      return -Math.abs(n); // 3.Pending → qty2 = -qty
     case "order":
     case "output":
     case "input":
-      return String(n); // 1.Order, 2.Output, 4.Input → qty2 = qty
+      return n; // 1.Order, 2.Output, 4.Input → qty2 = qty
     default:
-      return String(n);
+      return n;
   }
 }
 
@@ -68,10 +69,10 @@ export interface EntryPreview {
   ok: boolean;
   errors: string[];
   warnings: string[];
-  // Computed fields
+  // Computed fields (numbers — qty1/qty2 are stored as Int)
   date: string;
-  qty1: string;
-  qty2: string;
+  qty1: number;
+  qty2: number;
   // Auto-filled from Master Data (empty if not found)
   model: string;
   sku: string;
@@ -92,8 +93,8 @@ export interface EntryPreview {
 
 export interface EntryPreviewRecord {
   shippingStatus: string;
-  qty1: string;
-  qty2: string;
+  qty1: number;
+  qty2: number;
 }
 
 // PREVIEW: validate + lookup + compute, NO database write (spec §38).
@@ -122,8 +123,8 @@ export async function previewEntry(input: EntryInput): Promise<EntryPreview> {
       errors,
       warnings,
       date: "",
-      qty1: "",
-      qty2: "",
+      qty1: 0,
+      qty2: 0,
       model: "",
       sku: "",
       item: "",
@@ -171,7 +172,7 @@ export async function previewEntry(input: EntryInput): Promise<EntryPreview> {
 
   // Date = today (at preview we show today, but final date is set at confirm).
   const date = new Date().toISOString().slice(0, 10);
-  const qty1 = String(qtyNum);
+  const qty1 = qtyNum;
   const qty2 = computeQty2(input.shippingStatus, input.qty);
 
   const preview: EntryPreview = {
@@ -199,7 +200,7 @@ export async function previewEntry(input: EntryInput): Promise<EntryPreview> {
     preview.pairedPending = {
       shippingStatus: "3.Pending",
       qty1: qty1,           // same qty1
-      qty2: String(-Math.abs(qtyNum)), // negated qty2
+      qty2: -Math.abs(qtyNum), // negated qty2
     };
   }
 
@@ -227,7 +228,7 @@ export async function confirmEntry(input: EntryInput, preview: EntryPreview): Pr
   ok: boolean;
   errors: string[];
   created?: any[];
-  merged?: { id: string; newQty: string }[];
+  merged?: { id: string; newQty: number }[];
 }> {
   // Re-validate (spec §39: validate again at confirm time).
   if (!preview.ok) {
@@ -241,7 +242,7 @@ export async function confirmEntry(input: EntryInput, preview: EntryPreview): Pr
   // Re-lookup master data (don't trust stale preview, spec §39).
   const group = await lookupFactoryPO(input.factoryPO, input.productType);
   const today = new Date().toISOString().slice(0, 10);
-  const qty1 = String(qtyNum);
+  const qty1 = qtyNum;
   const qty2 = computeQty2(input.shippingStatus, input.qty);
   const masterDataReference = group
     ? JSON.stringify({ factoryPO: input.factoryPO, poNo: input.poNo, size: input.size })

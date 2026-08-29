@@ -24,8 +24,8 @@ model MasterData {
   painting       String?
   printingColor  String?
   size           String?
-  qty1           String?
-  qty2           String?
+  qty1           Int?
+  qty2           Int?
   deadline       String?
   productType    String?  // "MAFATE" | "ONYX" | "MIZUNO"
   sourceFile     String?
@@ -93,8 +93,8 @@ model EntryData {
   painting            String?
   printingColor       String?
   size                String
-  qty1                String
-  qty2                String
+  qty1                Int
+  qty2                Int
   deadline            String?
   // Transaction grouping: an Output entry creates a paired Pending entry,
   // both share the same transactionGroupId for atomic delete/audit.

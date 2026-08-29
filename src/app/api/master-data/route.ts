@@ -102,21 +102,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "size is required" }, { status: 400 });
     }
 
-    // Check if this Factory PO + Size already exists in Master Data for this product.
-    const existing = await db.masterData.findFirst({
-      where: {
-        productType: body.productType,
-        factoryPO: body.factoryPO,
-        size: body.size,
-      },
-      select: { id: true },
-    });
-    if (existing) {
-      return NextResponse.json(
-        { error: `Factory PO "${body.factoryPO}" with Size "${body.size}" already exists in Master Data` },
-        { status: 409 }
-      );
-    }
+    // NO duplicate check: multiple rows with the same PO NO# + Factory PO + Size
+    // are legitimate. A single Order of 100 units may be fulfilled by several
+    // Output shipments (e.g. 20 + 30 + 50) and several Input receipts, each
+    // row recording one shipment/receipt event. Blocking duplicates here would
+    // prevent users from recording split shipments correctly.
 
     const created = await db.masterData.create({
       data: {
@@ -141,9 +131,17 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Rebuild MasterGroup index so the new Factory PO is immediately searchable.
-    const { rebuildMasterGroups } = await import("@/lib/master-service");
-    rebuildMasterGroups().catch(() => {});
+    // Rebuild MasterGroup index so the new Factory PO is immediately searchable
+    // and all downstream dashboards/aggregations reflect the new data.
+    // IMPORTANT: await completion so callers can refresh the UI knowing the
+    // index is up-to-date (prevents stale autocomplete / dashboard data).
+    try {
+      const { rebuildMasterGroups } = await import("@/lib/master-service");
+      await rebuildMasterGroups(body.productType);
+    } catch (rebuildErr) {
+      // Log but don't fail the request — the row was created successfully.
+      console.error("rebuildMasterGroups failed:", rebuildErr);
+    }
 
     return NextResponse.json({ ok: true, row: created });
   } catch (e) {

@@ -51,9 +51,14 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
   const updated = await db.masterData.update({ where: { id }, data: updateData });
 
-  // Rebuild MasterGroup index to reflect the change.
-  // This is a background-safe operation (rebuilds from all MasterData).
-  rebuildMasterGroups().catch(() => {});
+  // Rebuild MasterGroup index (scoped to this product) so all downstream
+  // dashboards/aggregations reflect the edit. Await completion so the caller
+  // can refresh the UI knowing the index is up-to-date.
+  try {
+    await rebuildMasterGroups(updated.productType || undefined);
+  } catch (rebuildErr) {
+    console.error("rebuildMasterGroups failed:", rebuildErr);
+  }
 
   return NextResponse.json({ ok: true, row: updated });
 }
@@ -61,7 +66,13 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 // DELETE /api/master-data/[id] — delete a single master data row.
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const existing = await db.masterData.findUnique({ where: { id }, select: { productType: true } });
+  const productType = existing?.productType || undefined;
   await db.masterData.delete({ where: { id } });
-  rebuildMasterGroups().catch(() => {});
+  try {
+    await rebuildMasterGroups(productType);
+  } catch (rebuildErr) {
+    console.error("rebuildMasterGroups failed:", rebuildErr);
+  }
   return NextResponse.json({ ok: true });
 }

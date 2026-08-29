@@ -38,8 +38,10 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   if (body.note !== undefined) updateData.note = body.note;
 
   // If qty1 or shippingStatus changed, recompute qty2 using the same status rules.
+  // qty1/qty2 are stored as Int — convert string input to number.
   const newStatus = body.shippingStatus ?? existing.shippingStatus ?? "";
-  const newQty1 = body.qty1 ?? existing.qty1 ?? "0";
+  const rawQty1 = body.qty1 ?? existing.qty1 ?? 0;
+  const newQty1 = typeof rawQty1 === "number" ? rawQty1 : parseInt(String(rawQty1), 10) || 0;
   if (body.qty1 !== undefined || body.shippingStatus !== undefined) {
     // Import computeQty2 inline to avoid circular import.
     const { computeQty2 } = await import("@/lib/entry-service");
