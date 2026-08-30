@@ -693,3 +693,42 @@ Stage Summary:
 - **UI verified**: Page renders, paste area works, nav works, no errors. The validation results display correctly when the API returns (verified by code review).
 - Files created: src/lib/bulk-validation-service.ts, src/lib/bulk-import-service.ts, src/app/api/bulk-validation/route.ts, src/app/api/bulk-import/route.ts, src/app/api/bulk-import/history/route.ts, src/components/views/product-bulk-check-view.tsx (~1258 lines).
 - Files modified: src/lib/api-client.ts (added bulkValidate, bulkImport, bulkImportHistory methods), src/store/app-store.ts (added ViewKey), src/app/page.tsx (registered view), src/components/layout/sidebar.tsx (added nav item), src/components/layout/header.tsx (fixed missing VIEW_TITLES entry).
+
+---
+Task ID: FIX-CONSISTENCY-3
+Agent: main (Z.ai Code)
+Task: Fix data inconsistency — when adding entry data → add to master data succeeds, but other features/dashboards don't reflect the new master data.
+
+Work Log:
+- Diagnosed the root cause: `rebuildMasterGroups(body.productType)` in the master-data POST route was passing productType as the FIRST argument. The function signature is `rebuildMasterGroups(sourceFile?, productType?)`. So passing "MAFATE" as the first arg made it filter `WHERE sourceFile = 'MAFATE'` — matching ZERO rows (no MasterData has sourceFile="MAFATE"). Result: 0 MasterGroup records rebuilt after each add-to-master operation. Dashboards that read MasterData directly (KPIs, statistics) showed new data, but MasterGroup-dependent features (autocomplete, factory-po lookup, production tracking groups) did NOT update.
+- **Re-confirmed the fix from the previous session was NOT applied** — the git history showed the bug was still present in the committed version. Re-applied the fix:
+  * `src/app/api/master-data/route.ts` POST: `await rebuildMasterGroups(undefined, body.productType)` (was `rebuildMasterGroups(body.productType)`)
+  * `src/app/api/master-data/[id]/route.ts` PUT: `await rebuildMasterGroups(undefined, updated.productType || undefined)` (was `rebuildMasterGroups(updated.productType || undefined)`)
+  * `src/app/api/master-data/[id]/route.ts` DELETE: `await rebuildMasterGroups(undefined, productType)` (was `rebuildMasterGroups(productType)`)
+- **Added a performance optimization**: the `addEntriesToMasterData` function in `product-data-entry-view.tsx` was calling `api.addMasterRow` N times (once per selected row), each call triggering a FULL `rebuildMasterGroups` (delete + recreate ALL groups for that product). With 10 rows, this = 10 full index rebuilds = very slow + race conditions.
+  * Created `POST /api/master-data/bulk` route: inserts all rows in a single transaction, then rebuilds the MasterGroup index ONCE per affected product.
+  * Added `api.bulkAddMasterRows(rows)` method to api-client.ts.
+  * Updated `addEntriesToMasterData` to use the bulk endpoint — now atomic, fast, and triggers exactly 1 index rebuild.
+- **Verified the fix end-to-end** (via curl API tests):
+  * POST /api/master-data/bulk with 5 rows (4 distinct Factory POs) → HTTP 200, `inserted: 5, productsAffected: 1` ✓
+  * MasterGroup index rebuilt correctly: 4 new groups created (BULK-TEST-1 to 4) with correct sizes ✓
+  * Dashboard reflects new data: orderQty 261786→261986 (+200), outputQty 226974→227074 (+100), inputQty 214875→214980 (+105), totalFactoryPOs 478→481 (+3), totalRows 23033→23038 (+5) ✓
+  * Factory-po lookup (used by autocomplete) returns the new group with `sizes:["M(12)"]` ✓
+  * No duplicate check — all 5 rows inserted even with same PO+FPO+Size (split shipment scenario) ✓
+- Agent Browser verification: Data Entry, Dashboard, and Bulk Check views all render without errors. No console or page errors.
+
+Stage Summary:
+- **Root cause**: `rebuildMasterGroups(body.productType)` passed productType as the `sourceFile` parameter (first arg), making the rebuild filter by `sourceFile="MAFATE"` which matches nothing → 0 groups rebuilt → stale MasterGroup index → autocomplete/factory-po lookup/production tracking didn't reflect new master data.
+- **Fix**: Changed all 3 call sites to `rebuildMasterGroups(undefined, productType)` — pass `undefined` for sourceFile, productType as the SECOND arg. This correctly scopes the rebuild to `WHERE productType = 'MAFATE'`.
+- **Performance improvement**: Added bulk add master data endpoint (`POST /api/master-data/bulk`) that inserts all rows in a single transaction + rebuilds the index ONCE per product (was N rebuilds for N rows). Updated the data-entry view to use this bulk endpoint.
+- **Files changed**: 
+  * `src/app/api/master-data/route.ts` — fixed rebuildMasterGroups param order
+  * `src/app/api/master-data/[id]/route.ts` — fixed rebuildMasterGroups param order (PUT + DELETE)
+  * `src/app/api/master-data/bulk/route.ts` — NEW bulk add endpoint (transaction + single rebuild)
+  * `src/lib/api-client.ts` — added `bulkAddMasterRows` method
+  * `src/components/views/product-data-entry-view.tsx` — updated `addEntriesToMasterData` to use bulk endpoint
+- **Data consistency guaranteed**: After adding entry data → add to master data:
+  1. MasterData table updated (new rows) ✓
+  2. MasterGroup index rebuilt (autocomplete + factory-po lookup work) ✓
+  3. `bumpRefresh()` triggers ALL views to refetch (they all include `refreshKey` in query keys) ✓
+  4. Dashboards (KPIs, statistics, shipments, reports, production tracking) all read MasterData directly and reflect new data ✓

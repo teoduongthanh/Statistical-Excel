@@ -132,6 +132,35 @@ export const api = {
     return jsonOrThrow<{ ok: boolean; row?: any; error?: string }>(res);
   },
 
+  // Bulk add master data rows in a single transaction + single MasterGroup
+  // rebuild (much faster than calling addMasterRow N times).
+  bulkAddMasterRows: async (rows: Array<{
+    productType: string;
+    factoryPO: string;
+    size: string;
+    poNo?: string;
+    shippingStatus?: string;
+    model?: string;
+    sku?: string;
+    item?: string;
+    season?: string;
+    colorCode?: string;
+    colorCode2?: string;
+    painting?: string;
+    printingColor?: string;
+    qty1?: string | number;
+    qty2?: string | number;
+    deadline?: string;
+    date?: string;
+  }>) => {
+    const res = await fetch("/api/master-data/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows }),
+    });
+    return jsonOrThrow<{ ok: boolean; inserted: number; createdIds: string[]; productsAffected: number; error?: string }>(res);
+  },
+
   searchMaster: async (
     q: string,
     field: CanonicalField,

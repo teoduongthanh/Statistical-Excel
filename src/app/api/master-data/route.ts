@@ -135,9 +135,13 @@ export async function POST(req: NextRequest) {
     // and all downstream dashboards/aggregations reflect the new data.
     // IMPORTANT: await completion so callers can refresh the UI knowing the
     // index is up-to-date (prevents stale autocomplete / dashboard data).
+    // NOTE: rebuildMasterGroups(sourceFile?, productType?) — pass undefined as
+    // the FIRST arg and productType as the SECOND arg to scope correctly.
+    // Passing body.productType as the first arg would filter by sourceFile="MAFATE"
+    // (matching nothing) and rebuild 0 groups — causing the stale-data bug.
     try {
       const { rebuildMasterGroups } = await import("@/lib/master-service");
-      await rebuildMasterGroups(body.productType);
+      await rebuildMasterGroups(undefined, body.productType);
     } catch (rebuildErr) {
       // Log but don't fail the request — the row was created successfully.
       console.error("rebuildMasterGroups failed:", rebuildErr);

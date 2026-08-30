@@ -55,7 +55,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   // dashboards/aggregations reflect the edit. Await completion so the caller
   // can refresh the UI knowing the index is up-to-date.
   try {
-    await rebuildMasterGroups(updated.productType || undefined);
+    await rebuildMasterGroups(undefined, updated.productType || undefined);
   } catch (rebuildErr) {
     console.error("rebuildMasterGroups failed:", rebuildErr);
   }
@@ -70,7 +70,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
   const productType = existing?.productType || undefined;
   await db.masterData.delete({ where: { id } });
   try {
-    await rebuildMasterGroups(productType);
+    await rebuildMasterGroups(undefined, productType);
   } catch (rebuildErr) {
     console.error("rebuildMasterGroups failed:", rebuildErr);
   }

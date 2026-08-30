@@ -282,33 +282,36 @@ export function ProductDataEntryView() {
     }
     setAddingToMaster(true);
     try {
-      let added = 0, skipped = 0;
-      for (const r of rowsToAdd) {
-        const res = await api.addMasterRow({
-          productType: currentProduct,
-          factoryPO: r.factoryPO,
-          size: r.size,
-          poNo: r.poNo,
-          shippingStatus: r.shippingStatus,
-          model: r.model,
-          sku: r.sku,
-          item: r.item,
-          season: r.season,
-          colorCode: r.colorCode,
-          colorCode2: r.colorCode2,
-          painting: r.painting,
-          printingColor: r.printingColor,
-          deadline: r.deadline,
-          qty1: r.qty1,
-          qty2: r.qty2,
-        });
-        if (res.ok) added++;
-        else skipped++;
-      }
+      // Use the BULK endpoint: insert all rows in a single transaction +
+      // rebuild MasterGroup index ONCE (not per row). This is much faster
+      // and ensures all dashboards reflect the new data immediately.
+      const bulkRows = rowsToAdd.map((r: any) => ({
+        productType: currentProduct,
+        factoryPO: r.factoryPO,
+        size: r.size,
+        poNo: r.poNo,
+        shippingStatus: r.shippingStatus,
+        model: r.model,
+        sku: r.sku,
+        item: r.item,
+        season: r.season,
+        colorCode: r.colorCode,
+        colorCode2: r.colorCode2,
+        painting: r.painting,
+        printingColor: r.printingColor,
+        deadline: r.deadline,
+        qty1: r.qty1,
+        qty2: r.qty2,
+      }));
+      const res = await api.bulkAddMasterRows(bulkRows);
+      const added = res.inserted;
       toast.success(`${added} rows added to Master Data`, {
-        description: skipped > 0 ? `${skipped} already existed (skipped)` : undefined,
+        description: `${res.productsAffected} product(s) index rebuilt`,
       });
       setSelectedMasterIds(new Set());
+      // bumpRefresh triggers ALL views (dashboards, statistics, shipments,
+      // reports, autocomplete lookups) to refetch because they all include
+      // refreshKey in their query keys.
       bumpRefresh();
     } catch (e) {
       toast.error("Failed to add to Master Data", { description: e instanceof Error ? e.message : "" });
