@@ -235,6 +235,94 @@ export const api = {
     return jsonOrThrow(res);
   },
 
+  // ===== Bulk Data Validation (Copy & Paste from Excel) =====
+  // Validates a batch of pasted Excel rows WITHOUT writing to the database.
+  // Returns the full validation result: summary, per-row results, grouped errors,
+  // current DB totals, and final simulated totals.
+  bulkValidate: async (body: {
+    productType: string;
+    rows: Record<string, string>[];
+  }) => {
+    const res = await fetch("/api/bulk-validation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{
+      ok: boolean;
+      summary: {
+        totalRows: number;
+        validRows: number;
+        warningRows: number;
+        errorRows: number;
+        productGroupsAffected: number;
+        duplicatePossible: number;
+        quantityErrors: number;
+        masterDataErrors: number;
+        deadlineErrors: number;
+      };
+      rows: any[];
+      groupedErrors: any[];
+      warnings: any[];
+      currentGroups: Record<string, any>;
+      finalGroups: Record<string, any>;
+    }>(res);
+  },
+
+  // Performs the actual database INSERT for validated bulk rows.
+  // Uses a transaction so the import is atomic.
+  bulkImport: async (body: {
+    productType: string;
+    rows: {
+      shippingStatus: string;
+      poNo: string;
+      factoryPO: string;
+      size: string;
+      qty1: number;
+      confirmReason?: string;
+      note?: string;
+    }[];
+    mode: "all_valid" | "selected" | "fix_first";
+    selectedRowNumbers?: number[];
+    importedBy?: string;
+  }) => {
+    const res = await fetch("/api/bulk-import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{
+      ok: boolean;
+      importId: string;
+      imported: number;
+      skipped: number;
+      errors: string[];
+      auditLogId?: string;
+    }>(res);
+  },
+
+  // Fetch bulk import history (from AuditLog).
+  bulkImportHistory: async (limit = 50) => {
+    const res = await fetch(`/api/bulk-import/history?limit=${limit}`);
+    return jsonOrThrow<{
+      ok: boolean;
+      history: {
+        id: string;
+        importId: string;
+        productType: string | null;
+        user: string | null;
+        importedAt: string;
+        detail: string | null;
+        stats: {
+          imported: number;
+          skipped: number;
+          totalRows: number;
+          mode: string;
+        };
+      }[];
+    }>(res);
+  },
+
   // Bulk delete entries by IDs. Entries that belong to an Output+Pending
   // transaction group will have their paired sibling deleted too.
   bulkDeleteEntries: async (ids: string[]) => {

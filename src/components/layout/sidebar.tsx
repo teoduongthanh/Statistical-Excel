@@ -19,6 +19,7 @@ import {
   Factory,
   GitCompareArrows,
   Truck,
+  ClipboardCheck,
 } from "lucide-react";
 import { useAppStore, PRODUCT_THEME, type ProductType, type ViewKey } from "@/store/app-store";
 import { cn } from "@/lib/utils";
@@ -65,6 +66,7 @@ const PRODUCT_NAV: NavGroup[] = [
       { key: "product-statistics", label: "Statistics", icon: BarChart3 },
       { key: "product-shipment", label: "Daily Shipment", icon: Truck },
       { key: "product-report", label: "Report & Validation", icon: ShieldCheck },
+      { key: "product-bulk-check", label: "Bulk Check", icon: ClipboardCheck },
       { key: "product-import", label: "Import Excel", icon: Upload },
       { key: "product-export", label: "Export Excel", icon: Download },
     ],

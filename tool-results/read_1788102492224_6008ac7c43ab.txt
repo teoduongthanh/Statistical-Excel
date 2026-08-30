@@ -1,0 +1,880 @@
+     1→// BulkValidationService
+     2→// Validates a batch of pasted Excel rows BEFORE any database write.
+     3→//
+     4→// Pipeline:
+     5→//   PASTE → PARSE → MAP COLUMNS → VALIDATE EACH ROW → VALIDATE COMBINED →
+     6→//   SIMULATE FINAL QUANTITY → SHOW ERRORS → USER REVIEW → CONFIRM SAVE
+     7→//
+     8→// Key design principles (spec §39):
+     9→//   1. Rows are NOT validated independently. We GROUP by (poNo + factoryPO + size)
+    10→//      and run a SEQUENTIAL SIMULATION so row N's result depends on rows 1..N-1.
+    11→//   2. Pending is NOT stored — it's calculated as -Output. We never expect to
+    12→//      find Pending rows in the DB; if a user pastes 3.Pending, it's a warning.
+    13→//   3. The validation API NEVER writes to the DB. A separate /bulk-import API
+    14→//      does the actual insert inside a transaction.
+    15→//   4. Batch lookups: all MasterData + EntryData lookups are batched (single
+    16→//      query per batch) for performance with 100-1000 rows.
+    17→//
+    18→// Error types (spec §17): 22 distinct error/warning codes.
+    19→
+    20→import { db } from "./db";
+    21→import { classifyShippingStatus, parseDeadline, computeDeadlineStatus } from "./quantity-service";
+    22→import type { MasterGroup, SharedFlags } from "@/types";
+    23→import type { CanonicalField } from "./fields";
+    24→
+    25→// ===== Types =====
+    26→
+    27→export type BulkSeverity = "CRITICAL" | "ERROR" | "WARNING" | "INFO";
+    28→
+    29→export type BulkErrorCode =
+    30→  // Field-level errors
+    31→  | "MISSING_REQUIRED_FIELD"
+    32→  | "INVALID_SHIPPING_STATUS"
+    33→  | "INVALID_QTY"
+    34→  | "INVALID_PO_NO"
+    35→  | "INVALID_FACTORY_PO"
+    36→  | "INVALID_SIZE"
+    37→  | "INVALID_PO_FACTORY_COMBINATION"
+    38→  // Master data errors
+    39→  | "MISSING_MASTER_DATA"
+    40→  | "INVALID_COLOR_CODE"
+    41→  // Quantity errors (require sequential simulation)
+    42→  | "OUTPUT_EXCEEDS_ORDER"
+    43→  | "INPUT_EXCEEDS_OUTPUT"
+    44→  | "INPUT_EXCEEDS_ORDER"
+    45→  | "INPUT_WITHOUT_OUTPUT"
+    46→  | "OUTPUT_WITHOUT_ORDER"
+    47→  | "PENDING_WITHOUT_OUTPUT"
+    48→  | "PENDING_QTY_INVALID"
+    49→  // State warnings
+    50→  | "PRODUCT_ALREADY_COMPLETED"
+    51→  // Duplicate detection
+    52→  | "POSSIBLE_DUPLICATE_BULK"
+    53→  | "POSSIBLE_DUPLICATE_EXISTING"
+    54→  // Deadline
+    55→  | "DEADLINE_PASSED"
+    56→  // Format / mapping
+    57→  | "DATA_FORMAT_ERROR"
+    58→  | "UNEXPECTED_COLUMN_MAPPING";
+    59→
+    60→export interface BulkValidationError {
+    61→  code: BulkErrorCode;
+    62→  severity: BulkSeverity;
+    63→  title: string;
+    64→  description: string;
+    65→  excess?: number; // for quantity overflows
+    66→  duplicateRowNumbers?: number[]; // for duplicate detection
+    67→}
+    68→
+    69→export interface BulkRowResult {
+    70→  rowNumber: number; // Excel row number (1-based + header = data starts at row 2)
+    71→  shippingStatus: string;
+    72→  poNo: string;
+    73→  factoryPO: string;
+    74→  size: string;
+    75→  qty1: string;
+    76→  qty2?: string;
+    77→  // Parsed/normalized
+    78→  qty1Num: number;
+    79→  statusBucket: "order" | "output" | "pending" | "input" | "other";
+    80→  // Master data lookup
+    81→  masterDataFound: boolean;
+    82→  masterGroup?: MasterGroup | null;
+    83→  model?: string;
+    84→  sku?: string;
+    85→  colorCode?: string;
+    86→  deadline?: string;
+    87→  // Current DB state (per product key)
+    88→  current: {
+    89→    order: number;
+    90→    output: number;
+    91→    input: number;
+    92→    pending: number; // = -output
+    93→  };
+    94→  // Simulated state AFTER this row is added (sequential)
+    95→  afterSave: {
+    96→    order: number;
+    97→    output: number;
+    98→    input: number;
+    99→    pending: number;
+   100→  };
+   101→  // Validation
+   102→  severity: BulkSeverity; // worst severity among errors (INFO = no issues)
+   103→  errors: BulkValidationError[];
+   104→  // Status for UI filtering
+   105→  status: "valid" | "warning" | "error";
+   106→  // Group key for combined display
+   107→  groupKey: string;
+   108→  // Confirmation info (for warning-confirmed imports)
+   109→  needsConfirm: boolean;
+   110→  confirmReason?: string;
+   111→  note?: string;
+   112→}
+   113→
+   114→export interface BulkGroupedError {
+   115→  groupKey: string;
+   116→  poNo: string;
+   117→  factoryPO: string;
+   118→  size: string;
+   119→  model?: string;
+   120→  colorCode?: string;
+   121→  rowNumbers: number[];
+   122→  current: { order: number; output: number; input: number };
+   123→  newTotal: { order: number; output: number; input: number };
+   124→  expected: { order: number; output: number; input: number };
+   125→  excess: number;
+   126→  code: BulkErrorCode;
+   127→  severity: BulkSeverity;
+   128→  title: string;
+   129→  description: string;
+   130→}
+   131→
+   132→export interface BulkSummary {
+   133→  totalRows: number;
+   134→  validRows: number;
+   135→  warningRows: number;
+   136→  errorRows: number;
+   137→  productGroupsAffected: number;
+   138→  duplicatePossible: number;
+   139→  quantityErrors: number;
+   140→  masterDataErrors: number;
+   141→  deadlineErrors: number;
+   142→}
+   143→
+   144→export interface BulkValidationResult {
+   145→  ok: boolean;
+   146→  summary: BulkSummary;
+   147→  rows: BulkRowResult[];
+   148→  groupedErrors: BulkGroupedError[];
+   149→  warnings: BulkValidationError[];
+   150→  // Current DB totals per group key (for combined view)
+   151→  currentGroups: Record<string, { order: number; output: number; input: number; pending: number }>;
+   152→  // Final simulated totals after ALL rows applied (only valid+warning rows counted)
+   153→  finalGroups: Record<string, { order: number; output: number; input: number; pending: number }>;
+   154→}
+   155→
+   156→export interface BulkValidationInput {
+   157→  productType: string;
+   158→  rows: Partial<Record<CanonicalField, string>>[];
+   159→}
+   160→
+   161→// ===== Validation Engine =====
+   162→
+   163→// Required canonical fields for bulk validation.
+   164→const REQUIRED_FIELDS: CanonicalField[] = ["shippingStatus", "poNo", "factoryPO", "size", "qty1"];
+   165→
+   166→// Check required fields per row. Returns array of errors.
+   167→function checkRequiredFields(
+   168→  row: Partial<Record<CanonicalField, string>>,
+   169→  rowNumber: number
+   170→): BulkValidationError[] {
+   171→  const errs: BulkValidationError[] = [];
+   172→  for (const field of REQUIRED_FIELDS) {
+   173→    const v = row[field];
+   174→    if (v === undefined || v === null || String(v).trim() === "") {
+   175→      errs.push({
+   176→        code: "MISSING_REQUIRED_FIELD",
+   177→        severity: "ERROR",
+   178→        title: `Missing ${field}`,
+   179→        description: `Row ${rowNumber}: field "${field}" is required but was not provided.`,
+   180→      });
+   181→    }
+   182→  }
+   183→  return errs;
+   184→}
+   185→
+   186→// Normalize shipping status. Accepts "1.Order", "2.Output", "4.Input", "order", etc.
+   187→// Returns the canonical "N.Name" format, or null if invalid.
+   188→function normalizeShippingStatus(raw: string): string | null {
+   189→  const s = raw.trim();
+   190→  const bucket = classifyShippingStatus(s);
+   191→  switch (bucket) {
+   192→    case "order": return "1.Order";
+   193→    case "output": return "2.Output";
+   194→    case "pending": return "3.Pending";
+   195→    case "input": return "4.Input";
+   196→    default: return null;
+   197→  }
+   198→}
+   199→
+   200→// Batch lookup: fetch all MasterGroup rows matching the (productType + factoryPO) pairs
+   201→// present in the bulk rows. Returns a Map keyed by "factoryPO|poNo|size" → MasterGroup.
+   202→// Also returns a Map keyed by "factoryPO" → MasterGroup[] (for size validation).
+   203→async function batchLookupMasterData(
+   204→  productType: string,
+   205→  rows: { factoryPO: string; poNo: string; size: string }[]
+   206→): Promise<{
+   207→  byFpo: Map<string, MasterGroup[]>;
+   208→  byFpoPoSize: Map<string, MasterGroup>;
+   209→}> {
+   210→  const factoryPOs = [...new Set(rows.map((r) => r.factoryPO).filter(Boolean))];
+   211→  if (factoryPOs.length === 0) {
+   212→    return { byFpo: new Map(), byFpoPoSize: new Map() };
+   213→  }
+   214→
+   215→  // Fetch MasterGroup rows for these factory POs (product-scoped).
+   216→  const dbGroups = await db.masterGroup.findMany({
+   217→    where: { productType, factoryPO: { in: factoryPOs } },
+   218→  });
+   219→
+   220→  // Convert DB rows (with sizes/sharedFlags as JSON strings) to MasterGroup
+   221→  // interface (with sizes: string[], sharedFlags: SharedFlags).
+   222→  const groups: MasterGroup[] = dbGroups.map((g) => ({
+   223→    id: g.id,
+   224→    factoryPO: g.factoryPO,
+   225→    date: g.date,
+   226→    shippingStatus: g.shippingStatus,
+   227→    model: g.model,
+   228→    sku: g.sku,
+   229→    poNo: g.poNo,
+   230→    item: g.item,
+   231→    season: g.season,
+   232→    colorCode: g.colorCode,
+   233→    colorCode2: g.colorCode2,
+   234→    painting: g.painting,
+   235→    printingColor: g.printingColor,
+   236→    deadline: g.deadline,
+   237→    nearestDeadline: g.nearestDeadline,
+   238→    productType: g.productType,
+   239→    sizes: JSON.parse(g.sizes || "[]") as string[],
+   240→    sharedFlags: JSON.parse(g.sharedFlags || "{}") as SharedFlags,
+   241→    rowCount: g.rowCount,
+   242→    sourceFile: g.sourceFile,
+   243→  }));
+   244→
+   245→  const byFpo = new Map<string, MasterGroup[]>();
+   246→  for (const g of groups) {
+   247→    const fpo = g.factoryPO;
+   248→    if (!byFpo.has(fpo)) byFpo.set(fpo, []);
+   249→    byFpo.get(fpo)!.push(g);
+   250→  }
+   251→
+   252→  // Build a finer-grained index: MasterGroup is per-factoryPO, but MasterData
+   253→  // rows have per-row poNo + size. We fetch MasterData rows for these FPOs to
+   254→  // get per-(FPO, poNo, size) lookup.
+   255→  const masterRows = await db.masterData.findMany({
+   256→    where: { productType, factoryPO: { in: factoryPOs } },
+   257→    select: {
+   258→      factoryPO: true,
+   259→      poNo: true,
+   260→      size: true,
+   261→      model: true,
+   262→      sku: true,
+   263→      colorCode: true,
+   264→      colorCode2: true,
+   265→      painting: true,
+   266→      printingColor: true,
+   267→      season: true,
+   268→      item: true,
+   269→      deadline: true,
+   270→      shippingStatus: true,
+   271→      date: true,
+   272→    },
+   273→  });
+   274→
+   275→  // Map: "factoryPO|poNo|size" → representative MasterData row (first match).
+   276→  // Use whitespace-normalized size for matching.
+   277→  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+   278→  const byFpoPoSize = new Map<string, MasterGroup>();
+   279→  // Use the converted MasterGroup[] (with sizes: string[]).
+   280→  const masterGroupByFpo = new Map<string, MasterGroup>();
+   281→  for (const g of groups) {
+   282→    masterGroupByFpo.set(g.factoryPO, g);
+   283→  }
+   284→
+   285→  for (const r of masterRows) {
+   286→    const fpo = (r.factoryPO || "").trim();
+   287→    const po = (r.poNo || "").trim();
+   288→    const sz = norm(r.size || "");
+   289→    if (!fpo || !sz) continue;
+   290→    const key = `${fpo}|${po}|${sz}`;
+   291→    if (!byFpoPoSize.has(key)) {
+   292→      const mg = masterGroupByFpo.get(fpo);
+   293→      byFpoPoSize.set(key, {
+   294→        id: r.factoryPO || "", // not a real MasterGroup id, but sufficient for UI display
+   295→        factoryPO: fpo,
+   296→        date: r.date,
+   297→        shippingStatus: r.shippingStatus,
+   298→        model: r.model,
+   299→        sku: r.sku,
+   300→        poNo: r.poNo,
+   301→        item: r.item,
+   302→        season: r.season,
+   303→        colorCode: r.colorCode,
+   304→        colorCode2: r.colorCode2,
+   305→        painting: r.painting,
+   306→        printingColor: r.printingColor,
+   307→        deadline: r.deadline,
+   308→        nearestDeadline: mg?.nearestDeadline ?? r.deadline,
+   309→        productType,
+   310→        sizes: mg ? mg.sizes : [r.size || ""],
+   311→        sharedFlags: mg ? mg.sharedFlags : {},
+   312→        rowCount: mg?.rowCount ?? 1,
+   313→        sourceFile: mg?.sourceFile ?? null,
+   314→      });
+   315→    }
+   316→  }
+   317→
+   318→  return { byFpo, byFpoPoSize };
+   319→}
+   320→
+   321→// Batch lookup: fetch aggregated Order/Output/Input for all (poNo + factoryPO + size)
+   322→// groups that appear in the bulk rows. Returns a Map keyed by groupKey.
+   323→async function batchLookupCurrentQuantities(
+   324→  productType: string,
+   325→  groupKeys: { poNo: string; factoryPO: string; size: string }[]
+   326→): Promise<Map<string, { order: number; output: number; input: number; pending: number }>> {
+   327→  if (groupKeys.length === 0) return new Map();
+   328→
+   329→  // Build OR conditions for each unique (poNo, factoryPO, size) tuple.
+   330→  const seen = new Set<string>();
+   331→  const conditions: string[] = [];
+   332→  const params: any[] = [productType];
+   333→  let paramIdx = 2; // $1 is productType
+   334→
+   335→  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+   336→
+   337→  for (const g of groupKeys) {
+   338→    const po = g.poNo.trim();
+   339→    const fpo = g.factoryPO.trim();
+   340→    const sz = norm(g.size);
+   341→    const key = `${po}|${fpo}|${sz}`;
+   342→    if (seen.has(key)) continue;
+   343→    seen.add(key);
+   344→    conditions.push(`(poNo = ? AND factoryPO = ? AND size = ?)`);
+   345→    params.push(po, fpo, sz);
+   346→    paramIdx += 3;
+   347→  }
+   348→
+   349→  if (conditions.length === 0) return new Map();
+   350→
+   351→  const sql = `
+   352→    SELECT
+   353→      poNo, factoryPO, size,
+   354→      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order'
+   355→               THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
+   356→      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output'
+   357→               THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
+   358→      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input'
+   359→               THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty
+   360→    FROM MasterData
+   361→    WHERE productType = ? AND (${conditions.join(" OR ")})
+   362→    GROUP BY poNo, factoryPO, size
+   363→  `;
+   364→
+   365→  const rows = await db.$queryRawUnsafe<{ poNo: string; factoryPO: string; size: string; orderQty: number; outputQty: number; inputQty: number }[]>(
+   366→    sql,
+   367→    ...params
+   368→  );
+   369→
+   370→  const result = new Map<string, { order: number; output: number; input: number; pending: number }>();
+   371→  for (const r of rows) {
+   372→    const key = `${r.poNo}|${r.factoryPO}|${norm(r.size)}`;
+   373→    const output = Number(r.outputQty) || 0;
+   374→    result.set(key, {
+   375→      order: Number(r.orderQty) || 0,
+   376→      output,
+   377→      input: Number(r.inputQty) || 0,
+   378→      pending: -output, // Pending = -Output (dynamic, not stored)
+   379→    });
+   380→  }
+   381→  return result;
+   382→}
+   383→
+   384→// Batch lookup: fetch existing EntryData rows matching the bulk (poNo + factoryPO + size)
+   385→// groups. Returns a Map keyed by groupKey → array of entries (for duplicate detection).
+   386→async function batchLookupExistingEntries(
+   387→  productType: string,
+   388→  groupKeys: { poNo: string; factoryPO: string; size: string }[]
+   389→): Promise<Map<string, Array<{ id: string; date: string | null; shippingStatus: string | null; qty1: number; createdAt: Date }>>> {
+   390→  if (groupKeys.length === 0) return new Map();
+   391→
+   392→  const factoryPOs = [...new Set(groupKeys.map((g) => g.factoryPO.trim()).filter(Boolean))];
+   393→  if (factoryPOs.length === 0) return new Map();
+   394→
+   395→  const entries = await db.entryData.findMany({
+   396→    where: { productType, factoryPO: { in: factoryPOs } },
+   397→    select: { id: true, date: true, shippingStatus: true, qty1: true, poNo: true, factoryPO: true, size: true, createdAt: true },
+   398→  });
+   399→
+   400→  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+   401→  const result = new Map<string, Array<{ id: string; date: string | null; shippingStatus: string | null; qty1: number; createdAt: Date }>>();
+   402→  for (const e of entries) {
+   403→    const po = (e.poNo || "").trim();
+   404→    const fpo = (e.factoryPO || "").trim();
+   405→    const sz = norm(e.size || "");
+   406→    const key = `${po}|${fpo}|${sz}`;
+   407→    if (!result.has(key)) result.set(key, []);
+   408→    result.get(key)!.push({
+   409→      id: e.id,
+   410→      date: e.date,
+   411→      shippingStatus: e.shippingStatus,
+   412→      qty1: Number(e.qty1) || 0,
+   413→      createdAt: e.createdAt,
+   414→    });
+   415→  }
+   416→  return result;
+   417→}
+   418→
+   419→// ===== Main validation function =====
+   420→
+   421→export async function validateBulkData(
+   422→  input: BulkValidationInput
+   423→): Promise<BulkValidationResult> {
+   424→  const { productType, rows } = input;
+   425→
+   426→  if (!productType) {
+   427→    return {
+   428→      ok: false,
+   429→      summary: {
+   430→        totalRows: 0, validRows: 0, warningRows: 0, errorRows: 0,
+   431→        productGroupsAffected: 0, duplicatePossible: 0, quantityErrors: 0,
+   432→        masterDataErrors: 0, deadlineErrors: 0,
+   433→      },
+   434→      rows: [],
+   435→      groupedErrors: [],
+   436→      warnings: [{
+   437→        code: "DATA_FORMAT_ERROR",
+   438→        severity: "ERROR",
+   439→        title: "Product type is required",
+   440→        description: "Please select a product (MAFATE, ONYX, or MIZUNO) before validating.",
+   441→      }],
+   442→      currentGroups: {},
+   443→      finalGroups: {},
+   444→    };
+   445→  }
+   446→
+   447→  // Step 1: Parse + extract key fields from each row.
+   448→  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+   449→  const parsed = rows.map((row, idx) => {
+   450→    const rowNumber = idx + 2; // Excel row (1-based + header)
+   451→    const rawStatus = String(row.shippingStatus || "").trim();
+   452→    const poNo = String(row.poNo || "").trim();
+   453→    const factoryPO = String(row.factoryPO || "").trim();
+   454→    const size = norm(String(row.size || ""));
+   455→    const rawQty = String(row.qty1 ?? row.qty2 ?? "").trim();
+   456→    const qty1Num = parseInt(rawQty, 10);
+   457→    const qty2 = row.qty2 ? String(row.qty2).trim() : undefined;
+   458→    return {
+   459→      rowNumber,
+   460→      rawStatus,
+   461→      normalizedStatus: normalizeShippingStatus(rawStatus),
+   462→      statusBucket: classifyShippingStatus(rawStatus),
+   463→      poNo,
+   464→      factoryPO,
+   465→      size,
+   466→      rawQty,
+   467→      qty1Num: isNaN(qty1Num) ? 0 : qty1Num,
+   468→      qty2,
+   469→      groupKey: `${poNo}|${factoryPO}|${size}`,
+   470→    };
+   471→  });
+   472→
+   473→  // Step 2: Batch lookup MasterData + existing quantities.
+   474→  const lookupKeys = parsed
+   475→    .filter((p) => p.factoryPO && p.size)
+   476→    .map((p) => ({ poNo: p.poNo, factoryPO: p.factoryPO, size: p.size }));
+   477→
+   478→  const [masterLookup, currentQtyMap, existingEntriesMap] = await Promise.all([
+   479→    batchLookupMasterData(productType, lookupKeys),
+   480→    batchLookupCurrentQuantities(productType, lookupKeys),
+   481→    batchLookupExistingEntries(productType, lookupKeys),
+   482→  ]);
+   483→
+   484→  // Step 3: Sequential simulation.
+   485→  // For each group key, maintain a running total that starts from the DB state
+   486→  // and accumulates as we process rows in order.
+   487→  const runningTotals = new Map<string, { order: number; output: number; input: number; pending: number }>();
+   488→  for (const [key, val] of currentQtyMap.entries()) {
+   489→    runningTotals.set(key, { ...val });
+   490→  }
+   491→
+   492→  // Also track per-group rows for duplicate detection inside the bulk.
+   493→  const bulkRowsByGroup = new Map<string, number[]>();
+   494→
+   495→  const results: BulkRowResult[] = [];
+   496→
+   497→  for (const p of parsed) {
+   498→    const errors: BulkValidationError[] = [];
+   499→    const warnings: BulkValidationError[] = [];
+   500→
+   501→    // Step 3a: Required field checks.
+   502→    errors.push(...checkRequiredFields(
+   503→      {
+   504→        shippingStatus: p.rawStatus,
+   505→        poNo: p.poNo,
+   506→        factoryPO: p.factoryPO,
+   507→        size: p.size,
+   508→        qty1: p.rawQty,
+   509→      },
+   510→      p.rowNumber
+   511→    ));
+   512→
+   513→    // Step 3b: Shipping status validation.
+   514→    if (p.rawStatus && !p.normalizedStatus) {
+   515→      errors.push({
+   516→        code: "INVALID_SHIPPING_STATUS",
+   517→        severity: "ERROR",
+   518→        title: "Invalid shipping status",
+   519→        description: `Row ${p.rowNumber}: "${p.rawStatus}" is not a valid status. Must be one of: 1.Order, 2.Output, 3.Pending, 4.Input.`,
+   520→      });
+   521→    }
+   522→
+   523→    // Step 3c: Qty validation.
+   524→    if (p.rawQty && (isNaN(parseInt(p.rawQty, 10)))) {
+   525→      errors.push({
+   526→        code: "INVALID_QTY",
+   527→        severity: "ERROR",
+   528→        title: "Invalid quantity",
+   529→        description: `Row ${p.rowNumber}: Qty "${p.rawQty}" is not a number.`,
+   530→      });
+   531→    }
+   532→    if (!isNaN(p.qty1Num) && p.qty1Num === 0 && p.rawQty) {
+   533→      errors.push({
+   534→        code: "INVALID_QTY",
+   535→        severity: "ERROR",
+   536→        title: "Quantity must be greater than 0",
+   537→        description: `Row ${p.rowNumber}: Qty = 0 is not allowed.`,
+   538→      });
+   539→    }
+   540→    if (!isNaN(p.qty1Num) && p.qty1Num < 0 && p.rawQty) {
+   541→      errors.push({
+   542→        code: "INVALID_QTY",
+   543→        severity: "ERROR",
+   544→        title: "Quantity cannot be negative",
+   545→        description: `Row ${p.rowNumber}: Qty = ${p.qty1Num} is negative.`,
+   546→      });
+   547→    }
+   548→
+   549→    // Step 3d: Master data lookup.
+   550→    let masterFound = false;
+   551→    let masterGroup: MasterGroup | null = null;
+   552→    let model = "";
+   553→    let sku = "";
+   554→    let colorCode = "";
+   555→    let deadline = "";
+   556→
+   557→    if (p.factoryPO && p.poNo && p.size) {
+   558→      const key = `${p.factoryPO}|${p.poNo}|${p.size}`;
+   559→      masterGroup = masterLookup.byFpoPoSize.get(key) || null;
+   560→      if (masterGroup) {
+   561→        masterFound = true;
+   562→        model = masterGroup.model || "";
+   563→        sku = masterGroup.sku || "";
+   564→        colorCode = masterGroup.colorCode || "";
+   565→        deadline = masterGroup.nearestDeadline || masterGroup.deadline || "";
+   566→      } else {
+   567→        // Check if factory PO exists at all (maybe size mismatch).
+   568→        const fpoGroups = masterLookup.byFpo.get(p.factoryPO);
+   569→        if (!fpoGroups || fpoGroups.length === 0) {
+   570→          errors.push({
+   571→            code: "MISSING_MASTER_DATA",
+   572→            severity: "ERROR",
+   573→            title: "Factory PO not in Master Data",
+   574→            description: `Row ${p.rowNumber}: Factory PO "${p.factoryPO}" does not exist in ${productType} Master Data.`,
+   575→          });
+   576→        } else {
+   577→          // Factory PO exists but size doesn't match.
+   578→          const allSizes = new Set<string>();
+   579→          for (const g of fpoGroups) {
+   580→            for (const s of g.sizes) allSizes.add(norm(s));
+   581→          }
+   582→          if (!allSizes.has(p.size)) {
+   583→            errors.push({
+   584→              code: "INVALID_SIZE",
+   585→              severity: "ERROR",
+   586→              title: "Size not valid for this Factory PO",
+   587→              description: `Row ${p.rowNumber}: Size "${p.size}" is not in the size list for Factory PO ${p.factoryPO}. Valid sizes: ${[...allSizes].slice(0, 5).join(", ")}${allSizes.size > 5 ? "..." : ""}.`,
+   588→            });
+   589→          }
+   590→        }
+   591→      }
+   592→    }
+   593→
+   594→    // Step 3e: Sequential quantity simulation.
+   595→    // Get the current running total for this group (starts from DB state).
+   596→    const current = runningTotals.get(p.groupKey) || { order: 0, output: 0, input: 0, pending: 0 };
+   597→
+   598→    // Calculate the after-save total if this row is applied.
+   599→    const afterSave = { ...current };
+   600→    if (p.normalizedStatus) {
+   601→      switch (p.statusBucket) {
+   602→        case "order":
+   603→          afterSave.order += p.qty1Num;
+   604→          break;
+   605→        case "output":
+   606→          afterSave.output += p.qty1Num;
+   607→          afterSave.pending = -afterSave.output; // Pending = -Output
+   608→          break;
+   609→        case "input":
+   610→          afterSave.input += p.qty1Num;
+   611→          break;
+   612→        case "pending":
+   613→          // Manual pending entry — warn (usually auto-created).
+   614→          warnings.push({
+   615→            code: "PENDING_WITHOUT_OUTPUT",
+   616→            severity: "WARNING",
+   617→            title: "Manual Pending entry",
+   618→            description: `Row ${p.rowNumber}: Pending is normally auto-calculated as -Output. Manually entering it is unusual.`,
+   619→          });
+   620→          break;
+   621→      }
+   622→    }
+   623→
+   624→    // Step 3f: Quantity limit checks (sequential — uses afterSave which includes all prior rows).
+   625→    if (p.statusBucket === "output") {
+   626→      // Output must not exceed Order.
+   627→      if (afterSave.order > 0 && afterSave.output > afterSave.order) {
+   628→        const excess = afterSave.output - afterSave.order;
+   629→        errors.push({
+   630→          code: "OUTPUT_EXCEEDS_ORDER",
+   631→          severity: "ERROR",
+   632→          title: "Output exceeds Order",
+   633→          description: `Row ${p.rowNumber}: After this row, Output (${afterSave.output}) will exceed Order (${afterSave.order}) by ${excess}.`,
+   634→          excess,
+   635→        });
+   636→      }
+   637→      // Warn if no order yet.
+   638→      if (current.order === 0 && afterSave.order === 0) {
+   639→        warnings.push({
+   640→          code: "OUTPUT_WITHOUT_ORDER",
+   641→          severity: "WARNING",
+   642→          title: "Output without Order",
+   643→          description: `Row ${p.rowNumber}: Adding Output but no Order exists for this product key.`,
+   644→        });
+   645→      }
+   646→    }
+   647→
+   648→    if (p.statusBucket === "input") {
+   649→      // Input must not exceed Output.
+   650→      if (afterSave.output > 0 && afterSave.input > afterSave.output) {
+   651→        const excess = afterSave.input - afterSave.output;
+   652→        errors.push({
+   653→          code: "INPUT_EXCEEDS_OUTPUT",
+   654→          severity: "ERROR",
+   655→          title: "Input exceeds Output",
+   656→          description: `Row ${p.rowNumber}: After this row, Input (${afterSave.input}) will exceed Output (${afterSave.output}) by ${excess}.`,
+   657→          excess,
+   658→        });
+   659→      }
+   660→      // Input must not exceed Order.
+   661→      if (afterSave.order > 0 && afterSave.input > afterSave.order) {
+   662→        const excess = afterSave.input - afterSave.order;
+   663→        errors.push({
+   664→          code: "INPUT_EXCEEDS_ORDER",
+   665→          severity: "ERROR",
+   666→          title: "Input exceeds Order",
+   667→          description: `Row ${p.rowNumber}: After this row, Input (${afterSave.input}) will exceed Order (${afterSave.order}) by ${excess}.`,
+   668→          excess,
+   669→        });
+   670→      }
+   671→      // Warn if no output yet.
+   672→      if (current.output === 0 && afterSave.output === 0) {
+   673→        warnings.push({
+   674→          code: "INPUT_WITHOUT_OUTPUT",
+   675→          severity: "WARNING",
+   676→          title: "Input without Output",
+   677→          description: `Row ${p.rowNumber}: Adding Input but no Output exists for this product key.`,
+   678→        });
+   679→      }
+   680→      // Warn if already completed.
+   681→      if (current.order > 0 && current.input >= current.order && current.output >= current.order) {
+   682→        warnings.push({
+   683→          code: "PRODUCT_ALREADY_COMPLETED",
+   684→          severity: "WARNING",
+   685→          title: "Product already completed",
+   686→          description: `Row ${p.rowNumber}: Order=${current.order}, Output=${current.output}, Input=${current.input}. This product key is already completed.`,
+   687→        });
+   688→      }
+   689→    }
+   690→
+   691→    // Step 3g: Deadline check.
+   692→    if (deadline && p.statusBucket !== "order") {
+   693→      const dStatus = computeDeadlineStatus(deadline, false);
+   694→      if (dStatus === "OVERDUE") {
+   695→        warnings.push({
+   696→          code: "DEADLINE_PASSED",
+   697→          severity: "WARNING",
+   698→          title: "Deadline has passed",
+   699→          description: `Row ${p.rowNumber}: Deadline ${deadline} has already passed.`,
+   700→        });
+   701→      }
+   702→    }
+   703→
+   704→    // Step 3h: Duplicate detection inside bulk (same date + status + qty for same group).
+   705→    const groupRows = bulkRowsByGroup.get(p.groupKey) || [];
+   706→    bulkRowsByGroup.set(p.groupKey, [...groupRows, p.rowNumber]);
+   707→
+   708→    // Check against other rows in this bulk with same (date + status + qty).
+   709→    // We use today's date for pasted rows (no date column in bulk).
+   710→    const today = new Date().toISOString().slice(0, 10);
+   711→    for (const prevRowNum of groupRows) {
+   712→      const prevRow = results[prevRowNum - 2]; // rowNumber = idx+2 → idx = rowNumber-2
+   713→      if (!prevRow) continue;
+   714→      if (prevRow.shippingStatus === p.normalizedStatus &&
+   715→          prevRow.qty1Num === p.qty1Num) {
+   716→        warnings.push({
+   717→          code: "POSSIBLE_DUPLICATE_BULK",
+   718→          severity: "WARNING",
+   719→          title: "Possible duplicate inside bulk data",
+   720→          description: `Row ${p.rowNumber} may duplicate Row ${prevRowNum} (same status "${p.normalizedStatus}" and qty ${p.qty1Num}).`,
+   721→          duplicateRowNumbers: [prevRowNum, p.rowNumber],
+   722→        });
+   723→        break;
+   724→      }
+   725→    }
+   726→
+   727→    // Step 3i: Duplicate detection against existing EntryData.
+   728→    if (p.factoryPO && p.size) {
+   729→      const existingEntries = existingEntriesMap.get(p.groupKey) || [];
+   730→      for (const ex of existingEntries) {
+   731→        if (ex.shippingStatus === p.normalizedStatus && ex.qty1 === p.qty1Num) {
+   732→          warnings.push({
+   733→            code: "POSSIBLE_DUPLICATE_EXISTING",
+   734→            severity: "WARNING",
+   735→            title: "Possible duplicate transaction",
+   736→            description: `Row ${p.rowNumber} may duplicate existing entry ${ex.id} (date ${ex.date || "?"}, status "${ex.shippingStatus}", qty ${ex.qty1}).`,
+   737→          });
+   738→          break;
+   739→        }
+   740→      }
+   741→    }
+   742→
+   743→    // Step 3j: Commit this row's qty to the running total (so next row sees it).
+   744→    if (p.normalizedStatus && errors.filter((e) => e.severity === "ERROR").length === 0) {
+   745→      runningTotals.set(p.groupKey, afterSave);
+   746→    }
+   747→
+   748→    // Step 3k: Determine overall severity for this row.
+   749→    const allIssues = [...errors, ...warnings];
+   750→    let severity: BulkSeverity = "INFO";
+   751→    if (errors.some((e) => e.severity === "CRITICAL")) severity = "CRITICAL";
+   752→    else if (errors.some((e) => e.severity === "ERROR")) severity = "ERROR";
+   753→    else if (warnings.some((w) => w.severity === "WARNING")) severity = "WARNING";
+   754→
+   755→    const status: "valid" | "warning" | "error" =
+   756→      severity === "ERROR" || severity === "CRITICAL" ? "error" :
+   757→      severity === "WARNING" ? "warning" : "valid";
+   758→
+   759→    const needsConfirm = warnings.length > 0 && errors.length === 0;
+   760→
+   761→    results.push({
+   762→      rowNumber: p.rowNumber,
+   763→      shippingStatus: p.normalizedStatus || p.rawStatus,
+   764→      poNo: p.poNo,
+   765→      factoryPO: p.factoryPO,
+   766→      size: p.size,
+   767→      qty1: p.rawQty,
+   768→      qty2: p.qty2,
+   769→      qty1Num: p.qty1Num,
+   770→      statusBucket: p.statusBucket,
+   771→      masterDataFound: masterFound,
+   772→      masterGroup,
+   773→      model,
+   774→      sku,
+   775→      colorCode,
+   776→      deadline,
+   777→      current,
+   778→      afterSave,
+   779→      severity,
+   780→      errors: allIssues,
+   781→      status,
+   782→      groupKey: p.groupKey,
+   783→      needsConfirm,
+   784→    });
+   785→  }
+   786→
+   787→  // Step 4: Build grouped errors (for the "GROUP ERROR SUMMARY" view).
+   788→  const groupedMap = new Map<string, BulkGroupedError>();
+   789→  for (const r of results) {
+   790→    if (r.status !== "error") continue;
+   791→    for (const err of r.errors) {
+   792→      if (err.severity !== "ERROR" && err.severity !== "CRITICAL") continue;
+   793→      // Group by (groupKey + error code) so same-type errors aggregate.
+   794→      const gKey = `${r.groupKey}|${err.code}`;
+   795→      if (!groupedMap.has(gKey)) {
+   796→        const finalGroup = runningTotals.get(r.groupKey) || { order: 0, output: 0, input: 0, pending: 0 };
+   797→        groupedMap.set(gKey, {
+   798→          groupKey: r.groupKey,
+   799→          poNo: r.poNo,
+   800→          factoryPO: r.factoryPO,
+   801→          size: r.size,
+   802→          model: r.model,
+   803→          colorCode: r.colorCode,
+   804→          rowNumbers: [r.rowNumber],
+   805→          current: { ...r.current },
+   806→          newTotal: { ...r.afterSave },
+   807→          expected: {
+   808→            order: finalGroup.order,
+   809→            output: finalGroup.output,
+   810→            input: finalGroup.input,
+   811→          },
+   812→          excess: err.excess || 0,
+   813→          code: err.code,
+   814→          severity: err.severity,
+   815→          title: err.title,
+   816→          description: err.description,
+   817→        });
+   818→      } else {
+   819→        const g = groupedMap.get(gKey)!;
+   820→        if (!g.rowNumbers.includes(r.rowNumber)) {
+   821→          g.rowNumbers.push(r.rowNumber);
+   822→        }
+   823→      }
+   824→    }
+   825→  }
+   826→  const groupedErrors = [...groupedMap.values()];
+   827→
+   828→  // Step 5: Build summary.
+   829→  const validRows = results.filter((r) => r.status === "valid").length;
+   830→  const warningRows = results.filter((r) => r.status === "warning").length;
+   831→  const errorRows = results.filter((r) => r.status === "error").length;
+   832→  const productGroupsAffected = new Set(results.map((r) => r.groupKey)).size;
+   833→  const duplicatePossible = results.filter((r) =>
+   834→    r.errors.some((e) => e.code === "POSSIBLE_DUPLICATE_BULK" || e.code === "POSSIBLE_DUPLICATE_EXISTING")
+   835→  ).length;
+   836→  const quantityErrors = results.filter((r) =>
+   837→    r.errors.some((e) =>
+   838→      e.code === "OUTPUT_EXCEEDS_ORDER" || e.code === "INPUT_EXCEEDS_OUTPUT" ||
+   839→      e.code === "INPUT_EXCEEDS_ORDER" || e.code === "INPUT_WITHOUT_OUTPUT" ||
+   840→      e.code === "OUTPUT_WITHOUT_ORDER"
+   841→    )
+   842→  ).length;
+   843→  const masterDataErrors = results.filter((r) =>
+   844→    r.errors.some((e) => e.code === "MISSING_MASTER_DATA" || e.code === "INVALID_SIZE")
+   845→  ).length;
+   846→  const deadlineErrors = results.filter((r) =>
+   847→    r.errors.some((e) => e.code === "DEADLINE_PASSED")
+   848→  ).length;
+   849→
+   850→  // Step 6: Build currentGroups + finalGroups (for the combined simulation view).
+   851→  const currentGroups: Record<string, { order: number; output: number; input: number; pending: number }> = {};
+   852→  const finalGroups: Record<string, { order: number; output: number; input: number; pending: number }> = {};
+   853→  for (const [key, val] of currentQtyMap.entries()) {
+   854→    currentGroups[key] = { ...val };
+   855→  }
+   856→  for (const [key, val] of runningTotals.entries()) {
+   857→    finalGroups[key] = { ...val };
+   858→  }
+   859→
+   860→  return {
+   861→    ok: true,
+   862→    summary: {
+   863→      totalRows: results.length,
+   864→      validRows,
+   865→      warningRows,
+   866→      errorRows,
+   867→      productGroupsAffected,
+   868→      duplicatePossible,
+   869→      quantityErrors,
+   870→      masterDataErrors,
+   871→      deadlineErrors,
+   872→    },
+   873→    rows: results,
+   874→    groupedErrors,
+   875→    warnings: [],
+   876→    currentGroups,
+   877→    finalGroups,
+   878→  };
+   879→}
+   880→
