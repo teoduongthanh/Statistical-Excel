@@ -852,3 +852,34 @@ Stage Summary:
 - Files created: `src/app/api/entries/bulk-validate/route.ts`
 - Files modified: `src/lib/shipment-service.ts` (generateShipmentExcel accepts shipmentGroups + enriches summary), `src/app/api/shipment/export/route.ts` (fetches groups + passes to service), `src/lib/api-client.ts` (added bulkValidateEntries + bulkImportEntries methods), `src/components/views/product-data-entry-view.tsx` (added bulk entry mode toggle + panel).
 - Agent Browser verified: Data Entry view shows Single/Bulk Entry tabs, Bulk Entry panel renders with paste area + Check Data button, no errors.
+
+---
+Task ID: SHIPMENT-PO-FPO-1
+Agent: main (Z.ai Code)
+Task: Remove color selection from Daily Shipment. Update generation: group by PO NO# + Factory PO — one PO NO# can have many Factory POs, export all of them at once.
+
+Work Log:
+- **Shipment service** (`src/lib/shipment-service.ts`):
+  * `generateShipmentExcel()`: renamed `selectedColors` param → `selectedPoNos`. Changed sheet creation logic: instead of one sheet per color, now creates ONE sheet per PO NO#. Each sheet contains ALL Factory POs for that PO NO# as rows (grouped by model + colorCode + factoryPO). Rows sorted by Factory PO for readability.
+  * Size columns: now collects the UNION of all sizes present in plannedOutputs + default sizes (so the sheet has a column for every size across all Factory POs).
+  * Summary sheet: reordered columns to put "PO NO#" and "Factory PO" first, then "Color" (color is now just informational, not a grouping key).
+  * Sheet naming: `IN PO ${poNo}` (was `IN PO ${colorShort}`).
+- **Export route** (`src/app/api/shipment/export/route.ts`):
+  * Changed `ExportBody` interface: `selectedColors` → `selectedPoNos`.
+  * Validation: requires `productType, selectedPoNos, plannedOutputs`.
+- **API client** (`src/lib/api-client.ts`):
+  * `exportShipment()`: changed param `selectedColors` → `selectedPoNos`.
+- **Shipment view** (`src/components/views/product-shipment-view.tsx`):
+  * Removed `colorsQuery` (the `useQuery` fetching distinct colors for the dropdown).
+  * Removed `colorCode` field from `ShipmentFilters` interface + `EMPTY_FILTERS`.
+  * Removed `colorCode` from `filterParams` composition + `hasActiveFilters` check.
+  * Removed the Color Code dropdown from the filter bar Card.
+  * `generateShipment()`: changed to collect `selectedPoNos` (distinct PO NO#s from selected groups) instead of `selectedColors`. Calls `api.exportShipment({ selectedPoNos, ... })`.
+  * Toast message: now reports "X PO NO#s, Y Factory POs" instead of "X colors".
+
+Stage Summary:
+- **Color selection removed** from Daily Shipment view. The filter bar now has: Factory PO, PO NO#, Size, Model, Date, Deadline (no Color Code dropdown).
+- **Generation changed to PO NO#-based**: each selected PO NO# becomes its own Excel sheet. Since one PO NO# can have multiple Factory POs, ALL Factory POs for that PO NO# appear as rows in the same sheet — so the user can export multiple Factory POs at once in a single Excel file.
+- **Flow**: User selects rows in the Shipment Groups table → clicks Generate Shipment → the system collects all distinct PO NO#s from selected rows → generates Excel with one sheet per PO NO# (each sheet shows all Factory POs + sizes for that PO NO#) + a DAILY SHIPMENT SUMMARY sheet with enriched Order/Previous Output/Total Output/Remaining quantities.
+- Files modified: `src/lib/shipment-service.ts`, `src/app/api/shipment/export/route.ts`, `src/lib/api-client.ts`, `src/components/views/product-shipment-view.tsx`.
+- Verified: shipment export API returns HTTP 200 + valid Excel binary. Agent Browser confirms Color Code dropdown is gone, filters show Factory PO/PO NO#/Size/Model, no errors.

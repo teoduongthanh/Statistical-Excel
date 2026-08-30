@@ -588,7 +588,7 @@ export const api = {
 
   exportShipment: async (body: {
     productType: string;
-    selectedColors: string[];
+    selectedPoNos: string[];
     plannedOutputs: any[];
     templatePath?: string;
   }): Promise<Blob> => {

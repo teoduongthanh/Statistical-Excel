@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 interface ExportBody {
   productType: string;
-  selectedColors: string[];
+  selectedPoNos: string[];
   plannedOutputs: {
     poNo: string;
     factoryPO: string;
@@ -20,16 +20,17 @@ interface ExportBody {
 }
 
 // POST /api/shipment/export
-// Generates a Daily Shipment Excel file in IN PO [Color] format.
-// Supports multiple Factory POs: each unique (model + poNo + factoryPO) becomes
-// its own row in the per-color sheets. The DAILY SHIPMENT SUMMARY sheet is
-// enriched with Order / Previous Output / Total Output / Remaining quantities.
+// Generates a Daily Shipment Excel file in IN PO format.
+// Each PO NO# becomes its own sheet containing ALL its Factory POs as rows.
+// This lets users export multiple Factory POs at once (one PO NO# can have
+// many Factory POs). The DAILY SHIPMENT SUMMARY sheet is enriched with
+// Order / Previous Output / Total Output / Remaining quantities.
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as ExportBody;
-    if (!body.productType || !body.selectedColors || !body.plannedOutputs) {
+    if (!body.productType || !body.selectedPoNos || !body.plannedOutputs) {
       return NextResponse.json(
-        { error: "productType, selectedColors, and plannedOutputs are required" },
+        { error: "productType, selectedPoNos, and plannedOutputs are required" },
         { status: 400 }
       );
     }
@@ -43,7 +44,7 @@ export async function POST(req: NextRequest) {
 
     const buffer = await generateShipmentExcel(
       body.productType,
-      body.selectedColors,
+      body.selectedPoNos,
       body.plannedOutputs,
       templatePath,
       shipmentGroups

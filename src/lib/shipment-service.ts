@@ -339,21 +339,22 @@ export function readINPoSheetTemplates(templatePath: string): Map<string, {
 }
 
 // Generate the Daily Shipment Excel file in IN PO format.
-// Supports multiple Factory POs: each unique (model + poNo + factoryPO) becomes
-// its own row in the per-color sheets. The summary sheet is enriched with
-// Order / Previous Output / Total Output / Remaining from the shipmentGroups
-// lookup (if provided).
+// Each PO NO# becomes its own sheet containing all its Factory POs as rows.
+// A PO NO# can have multiple Factory POs — they all appear together in the
+// same sheet so the user can export multiple Factory POs at once.
+// The summary sheet is enriched with Order / Previous Output / Total Output /
+// Remaining from the shipmentGroups lookup (if provided).
 export async function generateShipmentExcel(
   productType: string,
-  selectedColors: string[],
+  selectedPoNos: string[],
   plannedOutputs: { poNo: string; factoryPO: string; model: string; colorCode: string; size: string; plannedQty: number; deadline: string | null }[],
   templatePath?: string,
   shipmentGroups?: ShipmentGroup[]
 ): Promise<Buffer> {
   const wb = XLSX.utils.book_new();
 
-  // Try to read template headers for each color. If template read fails,
-  // fall back to default size columns (graceful degradation).
+  // Try to read template headers (by color → size columns). If template read
+  // fails, fall back to default size columns (graceful degradation).
   let templates: Map<string, { sheetName: string; headers: string[]; sizeColumns: { header: string; normalized: string }[] }> = new Map();
   if (templatePath) {
     templates = readINPoSheetTemplates(templatePath);
@@ -367,21 +368,37 @@ export async function generateShipmentExcel(
     "M(10) /W(11)", "M(10T)", "M(11)", "M(11T)", "M(12)", "M(12T)", "M(13)", "M(14)",
   ];
 
-  for (const color of selectedColors) {
-    const tmpl = templates.get(color);
-    const sizeColumns = tmpl?.sizeColumns || defaultSizes.map((s) => ({ header: s, normalized: normalizeSize(s) }));
+  // Collect all sizes present in the planned outputs so the sheet has a column
+  // for every size (union across all colors/Factory POs for this PO NO#).
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+  const allSizes = new Map<string, string>(); // normalized → original header
+  for (const p of plannedOutputs) {
+    const ns = norm(p.size);
+    if (!allSizes.has(ns)) allSizes.set(ns, p.size);
+  }
+  // Merge with default sizes (preserves known sizes even if not in this batch).
+  for (const ds of defaultSizes) {
+    const ns = norm(ds);
+    if (!allSizes.has(ns)) allSizes.set(ns, ds);
+  }
+  const sizeColumns = Array.from(allSizes.entries()).map(([normalized, header]) => ({ header, normalized }));
 
-    // Filter planned outputs for this color.
-    const colorData = plannedOutputs.filter((p) => p.colorCode === color);
+  // Build one sheet PER PO NO# (not per color). Each sheet contains all the
+  // Factory POs for that PO NO# as separate rows.
+  for (const poNo of selectedPoNos) {
+    // Filter planned outputs for this PO NO#.
+    const poData = plannedOutputs.filter((p) => p.poNo === poNo);
+    if (poData.length === 0) continue;
 
-    // Group by (model + poNo + factoryPO) → rows.
+    // Group by (model + colorCode + factoryPO) → rows. All Factory POs for
+    // this PO NO# appear in the same sheet so the user sees them together.
     const rowMap = new Map<string, { model: string; colorCode: string; mw: string; poNo: string; factoryPO: string; sizes: Map<string, number>; grandTotal: number }>();
-    for (const p of colorData) {
-      const rowKey = `${p.model}|${p.poNo}|${p.factoryPO}`;
+    for (const p of poData) {
+      const rowKey = `${p.model}|${p.colorCode}|${p.factoryPO}`;
       if (!rowMap.has(rowKey)) {
         rowMap.set(rowKey, {
           model: p.model || "",
-          colorCode: color,
+          colorCode: p.colorCode || "",
           mw: "", // M/W column (model variant)
           poNo: p.poNo,
           factoryPO: p.factoryPO,
@@ -390,7 +407,7 @@ export async function generateShipmentExcel(
         });
       }
       const row = rowMap.get(rowKey)!;
-      const normSize = normalizeSize(p.size);
+      const normSize = norm(p.size);
       row.sizes.set(normSize, (row.sizes.get(normSize) || 0) + p.plannedQty);
       row.grandTotal += p.plannedQty;
     }
@@ -413,12 +430,12 @@ export async function generateShipmentExcel(
       rows.push(o);
     }
 
-    // Add a header row separator and the data.
+    // Sort rows by Factory PO for readability.
+    rows.sort((a, b) => String(a["FAC PO"]).localeCompare(String(b["FAC PO"])));
+
     const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
-    // Excel sheet names can't contain : \ / ? * [ ] and max 31 chars.
-    // Extract the short color code from parentheses if present (e.g. "NEON FLAME /NEON TANGERINE (NMNN)" → "NMNN").
-    const colorShort = color.match(/\(([A-Z0-9]+)\)/)?.[1] || color.replace(/[^A-Za-z0-9]/g, "");
-    const sheetName = `IN PO ${colorShort}`.slice(0, 31);
+    // Excel sheet names: max 31 chars, no special chars. Use PO NO# as sheet name.
+    const sheetName = `IN PO ${poNo}`.replace(/[\\/:?*\[\]]/g, "").slice(0, 31);
     XLSX.utils.book_append_sheet(wb, ws, sheetName);
   }
 
@@ -426,15 +443,13 @@ export async function generateShipmentExcel(
   // Enrich with Order / Previous Output / Remaining from shipmentGroups.
   const groupMap = new Map<string, ShipmentGroup>();
   if (shipmentGroups) {
-    const norm = (s: string) => s.replace(/\s+/g, " ").trim();
     for (const g of shipmentGroups) {
       groupMap.set(`${g.poNo}|${g.factoryPO}|${norm(g.size)}`, g);
     }
   }
-  const summaryHeaders = ["Date", "Color", "PO NO#", "Factory PO", "Size", "Order", "Previous Output", "Today's Planned Output", "Total Output", "Remaining", "Deadline"];
+  const summaryHeaders = ["Date", "PO NO#", "Factory PO", "Color", "Size", "Order", "Previous Output", "Today's Planned Output", "Total Output", "Remaining", "Deadline"];
   const summaryRows: Record<string, string | number>[] = [];
   for (const p of plannedOutputs) {
-    const norm = (s: string) => s.replace(/\s+/g, " ").trim();
     const g = groupMap.get(`${p.poNo}|${p.factoryPO}|${norm(p.size)}`);
     const orderQty = g?.orderQty ?? 0;
     const previousOutput = g?.outputQty ?? 0;
@@ -442,9 +457,9 @@ export async function generateShipmentExcel(
     const remaining = orderQty - totalOutput;
     summaryRows.push({
       Date: new Date().toISOString().slice(0, 10),
-      Color: p.colorCode,
       "PO NO#": p.poNo,
       "Factory PO": p.factoryPO,
+      Color: p.colorCode,
       Size: p.size,
       Order: orderQty,
       "Previous Output": previousOutput,
@@ -456,6 +471,7 @@ export async function generateShipmentExcel(
   }
   const summaryWs = XLSX.utils.json_to_sheet(summaryRows, { header: summaryHeaders });
   XLSX.utils.book_append_sheet(wb, summaryWs, "DAILY SHIPMENT SUMMARY");
+
 
   const out = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
   return out;

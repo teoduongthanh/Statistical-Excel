@@ -156,7 +156,6 @@ interface SurplusResponse {
 }
 
 interface ShipmentFilters {
-  colorCode: string; // "all" sentinel = no filter
   factoryPO: string;
   poNo: string;
   size: string;
@@ -166,7 +165,6 @@ interface ShipmentFilters {
 }
 
 const EMPTY_FILTERS: ShipmentFilters = {
-  colorCode: "all",
   factoryPO: "",
   poNo: "",
   size: "",
@@ -424,18 +422,9 @@ export function ProductShipmentView() {
     setTab("groups");
   }, [currentProduct]);
 
-  // ---- Query: distinct colors for the dropdown ----
-  const colorsQuery = useQuery({
-    queryKey: ["shipment-colors", currentProduct, refreshKey],
-    queryFn: () => api.getShipmentColors(currentProduct),
-    enabled: Boolean(currentProduct),
-  });
-
   // ---- Compose filter params for /api/shipment/groups ----
   const filterParams = React.useMemo(() => {
     const params: Record<string, string> = {};
-    if (applied.colorCode && applied.colorCode !== "all")
-      params.colorCode = applied.colorCode;
     if (applied.factoryPO) params.factoryPO = applied.factoryPO;
     if (applied.poNo) params.poNo = applied.poNo;
     if (applied.size) params.size = applied.size;
@@ -541,7 +530,6 @@ export function ProductShipmentView() {
 
   const hasActiveFilters = React.useMemo(() => {
     return (
-      (applied.colorCode && applied.colorCode !== "all") ||
       applied.factoryPO ||
       applied.poNo ||
       applied.size ||
@@ -594,10 +582,12 @@ export function ProductShipmentView() {
       return;
     }
 
-    const selectedColors = Array.from(
+    // Collect distinct PO NO#s from the selected groups. Each PO NO# becomes
+    // its own sheet in the Excel, containing ALL its Factory POs as rows.
+    const selectedPoNos = Array.from(
       new Set(
         selectedGroups
-          .map((g) => g.colorCode)
+          .map((g) => g.poNo)
           .filter((c): c is string => Boolean(c) && c.trim().length > 0)
       )
     ).sort();
@@ -616,7 +606,7 @@ export function ProductShipmentView() {
     try {
       const blob = await api.exportShipment({
         productType: currentProduct,
-        selectedColors,
+        selectedPoNos,
         plannedOutputs: plannedBody,
       });
 
@@ -631,12 +621,13 @@ export function ProductShipmentView() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
+      const distinctFpos = new Set(selectedGroups.map((g) => g.factoryPO)).size;
       toast.success(
         `Shipment sheet generated — ${plannedBody.length} row${
           plannedBody.length === 1 ? "" : "s"
-        }, ${selectedColors.length} color${selectedColors.length === 1 ? "" : "s"} (${
-          currentProduct
-        }).`
+        }, ${selectedPoNos.length} PO NO#${
+          selectedPoNos.length === 1 ? "" : "s"
+        }, ${distinctFpos} Factory PO${distinctFpos === 1 ? "" : "s"} (${currentProduct}).`
       );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Shipment export failed.");
@@ -726,42 +717,6 @@ export function ProductShipmentView() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="grid grid-cols-1 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                {/* Color Code dropdown */}
-                <div className="space-y-1.5">
-                  <label
-                    className="text-xs font-medium text-muted-foreground"
-                    htmlFor="ship-color"
-                  >
-                    Color Code
-                  </label>
-                  <Select
-                    value={form.colorCode}
-                    onValueChange={(v) => setForm((f) => ({ ...f, colorCode: v }))}
-                  >
-                    <SelectTrigger id="ship-color" className="h-9">
-                      <SelectValue placeholder="All colors" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All colors</SelectItem>
-                      {colorsQuery.isLoading ? (
-                        <SelectItem value="__loading" disabled>
-                          Loading…
-                        </SelectItem>
-                      ) : colorsQuery.data?.colors?.length ? (
-                        colorsQuery.data.colors.map((c) => (
-                          <SelectItem key={c} value={c}>
-                            {c}
-                          </SelectItem>
-                        ))
-                      ) : (
-                        <SelectItem value="__empty" disabled>
-                          No colors found
-                        </SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
-
                 <FilterInput
                   id="ship-factory-po"
                   label="Factory PO"
