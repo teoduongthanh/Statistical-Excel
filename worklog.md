@@ -732,3 +732,35 @@ Stage Summary:
   2. MasterGroup index rebuilt (autocomplete + factory-po lookup work) ✓
   3. `bumpRefresh()` triggers ALL views to refetch (they all include `refreshKey` in query keys) ✓
   4. Dashboards (KPIs, statistics, shipments, reports, production tracking) all read MasterData directly and reflect new data ✓
+
+---
+Task ID: IMPORT-2FILES-1
+Agent: main (Z.ai Code)
+Task: Import data from 2 Excel files: "FMT shipped out S-TECH mafate -2026 (1).xlsx" (MAFATE) + "FMT shipped out S-TECH Onyx-2026.xlsx" (ONYX). Skip Pending rows.
+
+Work Log:
+- Verified both files exist: mafate (4.3 MB, 19 sheets, DATA sheet 42614 rows), onyx (0.9 MB, 13 sheets, DATA sheet 6262 rows).
+- Wrote memory-efficient import script `scripts/import-2files.ts`:
+  * Uses XLSX dense mode + deletes non-DATA sheets immediately
+  * Skips 3.Pending rows (Pending = -Output, calculated dynamically)
+  * Deduplicates within each file by full row signature
+  * Replaces existing data per productType before inserting
+  * Rebuilds MasterGroup index per product
+  * Records import history
+- Stopped dev server to free memory for the import (file parsing needs ~1.5GB).
+- Ran the import:
+  * MAFATE: 42614 rows parsed → 16435 Pending skipped, 731 invalid, 95 dupes → 25353 unique rows. Deleted 23033 old rows, inserted 25353 new. Rebuilt 496 Factory PO groups.
+  * ONYX: 6262 rows parsed → 2478 Pending skipped, 0 invalid, 14 dupes → 3770 unique rows. Deleted 2898 old rows, inserted 3770 new. Rebuilt 154 Factory PO groups.
+- Restarted dev server. Verified dashboards via API:
+  * MAFATE: orderQty=266823, outputQty=256357, inputQty=236965, totalFactoryPOs=496, totalRows=25353
+  * ONYX: orderQty=73132, outputQty=46785, inputQty=44011, totalFactoryPOs=154, totalRows=3770
+  * Global Dashboard shows all 3 products with correct data
+  * 0 Pending rows in DB for all products ✓
+
+Stage Summary:
+- Imported 29123 total rows from 2 Excel files.
+- MAFATE: 25353 rows (was 23033), 496 groups (was ~464). Source: "FMT shipped out S-TECH mafate -2026 (1).xlsx"
+- ONYX: 3770 rows (was 2898), 154 groups. Source: "FMT shipped out S-TECH Onyx-2026.xlsx"
+- MIZUNO: unchanged (207 rows, 15 groups).
+- 0 Pending rows in DB across all products (Pending = -Output, calculated dynamically).
+- All dashboards verified reflecting the new imported data.
