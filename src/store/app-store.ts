@@ -15,6 +15,7 @@ export type ViewKey =
   | "product-shipment"
   | "product-report"
   | "product-bulk-check"
+  | "product-output-slip"
   | "product-import"
   | "product-export"
   | "product-review"

@@ -11,6 +11,7 @@ import { ProductStatisticsView } from "@/components/views/product-statistics-vie
 import { ProductShipmentView } from "@/components/views/product-shipment-view";
 import { ProductReportView } from "@/components/views/product-report-view";
 import { ProductBulkCheckView } from "@/components/views/product-bulk-check-view";
+import { ProductOutputSlipView } from "@/components/views/product-output-slip-view";
 import { ProductImportView } from "@/components/views/product-import-view";
 import { ProductExportView } from "@/components/views/product-export-view";
 import { ProductReviewView } from "@/components/views/product-review-view";
@@ -49,6 +50,7 @@ export default function Home() {
             {view === "product-shipment" && <ProductShipmentView />}
             {view === "product-report" && <ProductReportView />}
             {view === "product-bulk-check" && <ProductBulkCheckView />}
+            {view === "product-output-slip" && <ProductOutputSlipView />}
             {view === "product-import" && <ProductImportView />}
             {view === "product-export" && <ProductExportView />}
             {view === "product-review" && <ProductReviewView />}

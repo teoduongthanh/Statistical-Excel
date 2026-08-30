@@ -179,3 +179,43 @@ model LookupRule {
   active        Boolean @default(true)
   createdAt     DateTime @default(now())
 }
+
+/// Output Slip — a preparation document for shipping out work to a factory.
+/// Created from BULK OUTPUT SLIP GENERATOR. Status lifecycle:
+///   DRAFT → GENERATED → PRINTED → CONFIRMED_OUTPUT | CANCELLED
+/// IMPORTANT: Generating a slip does NOT add 2.Output entries to EntryData.
+/// Only when the user clicks "Confirm Actual Output" (status → CONFIRMED_OUTPUT)
+/// does the system create the real 2.Output (and 3.Pending if auto-calc) entries.
+model OutputSlip {
+  id            String   @id @default(cuid())
+  slipNumber    String   @unique  // e.g. "OS-20260830-1234"
+  productType   String
+  poNo          String
+  // Slip mode: "combined" (one slip, many Factory POs) | "separate" (one slip per FPO)
+  slipMode      String   @default("combined")
+  // "draft" | "generated" | "printed" | "confirmed_output" | "cancelled"
+  status        String   @default("draft")
+  // JSON array of { factoryPO, model, sku, season, colorCode, colorCode2,
+  // painting, printingColor, size, qtyToOutput, orderQty, outputQty, deadline }
+  items         String   @default("[]")
+  // Summary totals (denormalized for quick list display)
+  totalOrder    Int      @default(0)
+  totalOutput   Int      @default(0)
+  totalRemaining Int     @default(0)
+  totalToOutput Int      @default(0)
+  factoryPOCount Int     @default(0)
+  sizeCount     Int      @default(0)
+  // Audit
+  createdBy     String?
+  confirmedBy   String?
+  confirmedAt   DateTime?
+  note          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([productType])
+  @@index([productType, poNo])
+  @@index([productType, status])
+  @@index([status])
+  @@index([createdAt])
+}

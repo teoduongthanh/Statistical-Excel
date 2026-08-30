@@ -601,6 +601,87 @@ export const api = {
     return res.blob();
   },
 
+  // ===== Bulk Output Slip Generator =====
+  // Fetch all Factory PO groups for a PO NO# with per-size Remaining Output.
+  getOutputSlipFactoryPOs: async (productType: string, poNo: string) => {
+    const params = new URLSearchParams({ productType, poNo });
+    const res = await fetch(`/api/output-slips/factory-pos?${params}`);
+    return jsonOrThrow<{
+      ok: boolean;
+      groups: Array<{
+        factoryPO: string; poNo: string; model: string; sku: string; season: string;
+        colorCode: string; colorCode2: string; painting: string; printingColor: string;
+        deadline: string | null;
+        sizes: Array<{ size: string; orderQty: number; outputQty: number; remainingOutput: number }>;
+        totalOrder: number; totalOutput: number; totalRemaining: number;
+        status: "READY_TO_OUTPUT" | "COMPLETED";
+      }>;
+    }>(res);
+  },
+
+  // Generate an Output Slip (creates a DB record, does NOT write to EntryData).
+  generateOutputSlip: async (body: {
+    productType: string;
+    poNo: string;
+    slipMode: "combined" | "separate" | "group_by_color";
+    items: Array<{
+      factoryPO: string; poNo: string; model: string; sku: string; season: string;
+      colorCode: string; colorCode2: string; painting: string; printingColor: string;
+      size: string; qtyToOutput: number; orderQty: number; outputQty: number;
+      remainingOutput: number; deadline: string | null;
+    }>;
+    createdBy?: string;
+    note?: string;
+  }) => {
+    const res = await fetch("/api/output-slips/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; slip: any; error?: string }>(res);
+  },
+
+  // Export an Output Slip to Excel.
+  exportOutputSlip: async (body: {
+    slipId: string;
+    format?: "multi_sheet" | "combined" | "separate_files";
+  }): Promise<Blob> => {
+    const res = await fetch("/api/output-slips/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error("Slip export failed");
+    return res.blob();
+  },
+
+  // Confirm Actual Output — creates the real 2.Output entries in EntryData.
+  confirmOutputSlip: async (body: { slipId: string; confirmedBy?: string }) => {
+    const res = await fetch("/api/output-slips/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; slip?: any; createdCount?: number; errors?: string[] }>(res);
+  },
+
+  // List output slips (filtered).
+  listOutputSlips: async (params?: { productType?: string; poNo?: string; status?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.productType) q.set("productType", params.productType);
+    if (params?.poNo) q.set("poNo", params.poNo);
+    if (params?.status) q.set("status", params.status);
+    if (params?.limit) q.set("limit", String(params.limit));
+    const res = await fetch(`/api/output-slips?${q}`);
+    return jsonOrThrow<{ ok: boolean; slips: any[] }>(res);
+  },
+
+  // Cancel an output slip.
+  cancelOutputSlip: async (id: string) => {
+    const res = await fetch(`/api/output-slips/${id}`, { method: "DELETE" });
+    return jsonOrThrow<{ ok: boolean; slip?: any; error?: string }>(res);
+  },
+
   // Production Report & Data Validation
   getReportGroups: async (productType: string, filters?: Record<string, string>) => {
     const params = new URLSearchParams({ productType, ...(filters || {}) });

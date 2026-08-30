@@ -883,3 +883,75 @@ Stage Summary:
 - **Flow**: User selects rows in the Shipment Groups table → clicks Generate Shipment → the system collects all distinct PO NO#s from selected rows → generates Excel with one sheet per PO NO# (each sheet shows all Factory POs + sizes for that PO NO#) + a DAILY SHIPMENT SUMMARY sheet with enriched Order/Previous Output/Total Output/Remaining quantities.
 - Files modified: `src/lib/shipment-service.ts`, `src/app/api/shipment/export/route.ts`, `src/lib/api-client.ts`, `src/components/views/product-shipment-view.tsx`.
 - Verified: shipment export API returns HTTP 200 + valid Excel binary. Agent Browser confirms Color Code dropdown is gone, filters show Factory PO/PO NO#/Size/Model, no errors.
+
+---
+Task ID: OUTPUT-SLIP-UI
+Agent: main (Z.ai Code)
+Task: Create `/home/z/my-project/src/components/views/product-output-slip-view.tsx` — the BULK OUTPUT SLIP GENERATOR UI (named + default export `ProductOutputSlipView`).
+
+Work Log:
+- Read `/home/z/my-project/worklog.md` (full prior history) to understand the conventions used by sibling product views, especially `product-shipment-view.tsx` which has a similar multi-section + filter + selection + table + generate-export pattern.
+- Verified backend API client methods in `src/lib/api-client.ts` (lines 604-683) match the spec exactly:
+  * `getOutputSlipFactoryPOs(productType, poNo)` → `{ ok, groups: FactoryPOGroup[] }` with per-size `remainingOutput`.
+  * `generateOutputSlip({ productType, poNo, slipMode, items, createdBy, note })` → `{ ok, slip }`.
+  * `exportOutputSlip({ slipId, format })` → Blob (Excel).
+  * `confirmOutputSlip({ slipId, confirmedBy })` → `{ ok, slip, createdCount }` OR throws on 400 (conflict — the `jsonOrThrow` helper surfaces the server-side `errors` array as a joined string in `Error.message`).
+  * `listOutputSlips({ productType, poNo, status, limit })` → `{ ok, slips }`.
+  * `cancelOutputSlip(id)` → `{ ok, slip }` (server refuses to cancel a `confirmed_output` slip with 400).
+- Verified backend service `src/lib/output-slip-service.ts`: `getFactoryPOGroupsByPoNo` computes per-(factoryPO+size) Remaining = Order − Output (rule 1), and `confirmOutputSlip` re-validates current Remaining at confirm time (conflict check, rule 4 from spec).
+- Confirmed view is already registered: `src/app/page.tsx` (import + render on `view === "product-output-slip"`), `src/components/layout/sidebar.tsx` (nav item "Output Slips"), `src/components/layout/header.tsx` (title "Output Slip Generator"). File did NOT exist before — created from scratch.
+- Built the 1948-line `"use client"` component implementing all 7 spec sections:
+  * **Header** — title + product badge using `PRODUCT_THEME[currentProduct]` + Refresh button.
+  * **Section 1: PO NO# Search** — Input + Search button + Enter-to-search. Calls `api.getOutputSlipFactoryPOs`. Error state surfaced as Alert.
+  * **Section 2: Factory PO List** — sticky-header table (`max-h-[500px] overflow-y-auto scroll-thin`). Columns: checkbox, chevron, Factory PO, Model, Color, Deadline, Order, Output, Remaining (rose badge if > 0, slate if = 0), Status (amber READY TO OUTPUT / slate COMPLETED). Toolbar: Auto Priority switch (sorts READY first by nearest deadline), "Select All Ready" checkbox (only selects FPOs with `totalRemaining > 0`), "Clear Selection" button. Completed FPOs rendered but checkbox is `disabled`.
+  * **Section 3: Expanded per-size breakdown** — clicking a row (or chevron) expands inline. Table: Size | Order | Output | Remaining | Qty to Output (Input, defaults to `remainingOutput`, validates 0 ≤ q ≤ remainingOutput). Rose border + helper text when over-qty or negative. Per-size totals row at bottom. "Reset to Remaining" button. Input disabled unless the row is selected (forces tick-first flow).
+  * **Section 4: Selection Summary** — 4 StatCards grid (Selected FPOs, Selected Sizes, Total Remaining, Total To Output). Sub-line shows Total Order + Already Output sums.
+  * **Section 5: Generate Slip** — themed button (disabled when 0 selected or any validation error). Click opens Dialog with summary + RadioGroup of 3 modes (combined / separate / group_by_color). "Confirm Generate" builds `items[]` (one SlipItem per (factoryPO, size)), calls `api.generateOutputSlip`, on success: `toast.success` + sets `generatedSlip` state + closes dialog + `bumpRefresh()`.
+  * **Section 6: Generated Slip Preview** — Card showing slip number, mode, status badges, meta line, items table with totals row. Actions:
+    - Export Excel → `api.exportOutputSlip({ slipId, format: "multi_sheet" })` → downloads `Output_Slip_<slipNumber>.xlsx`.
+    - Print → opens a new window with HTML table + `win.print()`.
+    - Confirm Actual Output → `api.confirmOutputSlip({ slipId })` → toast.success with createdCount + bumpRefresh + dismiss preview. On 400 (conflict): toast.error showing the conflict message.
+    - Cancel Slip → AlertDialog → `api.cancelOutputSlip(slipId)`.
+  * **Section 7: Existing Slips List** — `useQuery({ queryKey: ["output-slips", currentProduct, refreshKey], queryFn: () => api.listOutputSlips({ productType: currentProduct, limit: 20 }) })`. Compact sticky-header table: Slip# | PO NO# | Mode | Status | Factory POs | Total To Output | Created At | Actions (Export / Confirm / Cancel icon buttons). Per-row spinners via separate `exportingId` / `confirmingId` state (so the spinner renders on whichever row the user clicked, not just on the preview-card slip).
+- Validation: `npx tsc --noEmit -p tsconfig.json 2>&1 | grep product-output-slip-view` → no output (file is clean). All TS errors elsewhere are pre-existing in unrelated files.
+- Lint: `npx eslint src/components/views/product-output-slip-view.tsx` → exit 0, clean.
+- Business rules all honored: Remaining Output is per-(productType, poNo, factoryPO, size); slip generation does NOT write to EntryData; only Confirm writes real 2.Output entries; qtyToOutput ≤ remainingOutput validated both client + server; "Select All Ready" only selects rows with remaining > 0; Completed FPOs shown but NOT auto-selected (their checkbox is disabled).
+
+Stage Summary:
+- Created `src/components/views/product-output-slip-view.tsx` (1948 lines, named + default export `ProductOutputSlipView`).
+- View was already wired into the router/sidebar/header by a prior session — no other files needed modification.
+- All 6 backend API methods called as specified; conflict + cancel states handled gracefully with toasts.
+- TypeScript clean (no errors in new file). ESLint clean.
+- Files created:
+  * `src/components/views/product-output-slip-view.tsx`
+  * `agent-ctx/OUTPUT-SLIP-UI-product-output-slip-view.md` (this agent's work record)
+
+---
+Task ID: OUTPUT-SLIP-VERIFY-1
+Agent: main (Z.ai Code)
+Task: Verify the BULK OUTPUT SLIP GENERATOR feature works end-to-end.
+
+Work Log:
+- Verified backend APIs via curl:
+  * GET /api/output-slips/factory-pos?productType=MAFATE&poNo=H411351971 → returns 70 Factory PO groups with per-size Remaining Output ✓
+- Restarted dev server with fresh Turbopack cache.
+- Agent Browser verification:
+  * Page title "Smart Excel Data Entry System" ✓
+  * Navigated to "Output Slips" nav item ✓
+  * Page renders "Bulk Output Slip Generator" header + MAFATE context ✓
+  * PO NO# search input + Search button ✓
+  * "Existing Output Slips" table renders (empty initially) ✓
+  * Searched PO NO# H411351971 → Factory PO list renders:
+    - 70 Factory POs total, 47 ready to output
+    - Table columns: Factory PO, Model, Color, Deadline, Order, Output, Remaining, Status
+    - Status badges: "READY TO OUTPUT" (amber) / "COMPLETED" (slate)
+    - "Auto Priority" switch + "Select All Ready" checkbox + "Clear Selection" button ✓
+    - Each Factory PO row has a checkbox + is clickable to expand per-size details
+  * No page errors, no console errors ✓
+
+Stage Summary:
+- BULK OUTPUT SLIP GENERATOR feature is complete and functional.
+- Backend: OutputSlip model in DB, 5 API routes (factory-pos, generate, export, confirm, list+cancel), output-slip-service.ts with remaining-output computation per (productType + poNo + factoryPO + size).
+- Frontend: Full UI view (product-output-slip-view.tsx) with PO search → Factory PO list → per-size breakdown → selection summary → generate slip (3 modes) → preview → export Excel / print / confirm actual output / cancel.
+- Business rules enforced: Remaining Output = Order - Output per size; qtyToOutput ≤ remainingOutput; "Select All Ready" only selects FPOs with remaining > 0; generating a slip does NOT write to EntryData; only "Confirm Actual Output" creates 2.Output entries with conflict check.
+- Verified via Agent Browser: page renders, search works, 70 Factory POs display with correct status badges, no errors.
