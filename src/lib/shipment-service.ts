@@ -339,11 +339,16 @@ export function readINPoSheetTemplates(templatePath: string): Map<string, {
 }
 
 // Generate the Daily Shipment Excel file in IN PO format.
+// Supports multiple Factory POs: each unique (model + poNo + factoryPO) becomes
+// its own row in the per-color sheets. The summary sheet is enriched with
+// Order / Previous Output / Total Output / Remaining from the shipmentGroups
+// lookup (if provided).
 export async function generateShipmentExcel(
   productType: string,
   selectedColors: string[],
   plannedOutputs: { poNo: string; factoryPO: string; model: string; colorCode: string; size: string; plannedQty: number; deadline: string | null }[],
-  templatePath?: string
+  templatePath?: string,
+  shipmentGroups?: ShipmentGroup[]
 ): Promise<Buffer> {
   const wb = XLSX.utils.book_new();
 
@@ -418,22 +423,34 @@ export async function generateShipmentExcel(
   }
 
   // Add DAILY SHIPMENT SUMMARY sheet.
+  // Enrich with Order / Previous Output / Remaining from shipmentGroups.
+  const groupMap = new Map<string, ShipmentGroup>();
+  if (shipmentGroups) {
+    const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+    for (const g of shipmentGroups) {
+      groupMap.set(`${g.poNo}|${g.factoryPO}|${norm(g.size)}`, g);
+    }
+  }
   const summaryHeaders = ["Date", "Color", "PO NO#", "Factory PO", "Size", "Order", "Previous Output", "Today's Planned Output", "Total Output", "Remaining", "Deadline"];
   const summaryRows: Record<string, string | number>[] = [];
   for (const p of plannedOutputs) {
-    // We need order + output quantities — but plannedOutputs only has plannedQty.
-    // The API will enrich these before calling. For now, we include what we have.
+    const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+    const g = groupMap.get(`${p.poNo}|${p.factoryPO}|${norm(p.size)}`);
+    const orderQty = g?.orderQty ?? 0;
+    const previousOutput = g?.outputQty ?? 0;
+    const totalOutput = previousOutput + p.plannedQty;
+    const remaining = orderQty - totalOutput;
     summaryRows.push({
       Date: new Date().toISOString().slice(0, 10),
       Color: p.colorCode,
       "PO NO#": p.poNo,
       "Factory PO": p.factoryPO,
       Size: p.size,
-      Order: 0, // Enriched by API caller
-      "Previous Output": 0,
+      Order: orderQty,
+      "Previous Output": previousOutput,
       "Today's Planned Output": p.plannedQty,
-      "Total Output": p.plannedQty,
-      Remaining: 0,
+      "Total Output": totalOutput,
+      Remaining: remaining,
       Deadline: p.deadline || "",
     });
   }

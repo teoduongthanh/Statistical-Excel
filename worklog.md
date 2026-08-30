@@ -764,3 +764,91 @@ Stage Summary:
 - MIZUNO: unchanged (207 rows, 15 groups).
 - 0 Pending rows in DB across all products (Pending = -Output, calculated dynamically).
 - All dashboards verified reflecting the new imported data.
+
+---
+Task ID: BULK-ENTRY-UI
+Agent: bulk-entry-ui (Z.ai Code)
+Task: Add a "Bulk Entry" mode to the existing `product-data-entry-view.tsx` — paste many Excel rows at once, validate all (avoid wrong entries), then confirm import.
+
+Work Log:
+- Read existing `src/components/views/product-data-entry-view.tsx` (1168 lines) to understand the single-entry flow: state, handlers, layout grid (`lg:grid-cols-5`), entries table, and edit/delete dialogs.
+- Read `src/lib/header-normalize.ts` to understand `buildAutoMapping(headers)` (returns `Record<string, CanonicalField | "">`).
+- Read `src/lib/api-client.ts` to verify `api.bulkValidateEntries({ productType, rows })` and `api.bulkImportEntries({ productType, rows, mode, selectedRowNumbers, importedBy })` signatures and return shapes.
+- Verified `Textarea`, `Tabs/TabsList/TabsTrigger` components exist in `src/components/ui/`.
+- Added new imports:
+  - `ClipboardPaste, ClipboardCheck, Upload, RefreshCw, Eye` from `lucide-react`
+  - `Textarea` from `@/components/ui/textarea`
+  - `Tabs, TabsList, TabsTrigger` from `@/components/ui/tabs`
+  - `buildAutoMapping` from `@/lib/header-normalize`
+- Added helper functions outside the component:
+  - `parseBulkText(text, hasHeader)` — splits TSV text into rows of `{ header: value }`. Honors `hasHeader` (else assumes canonical column order).
+  - `mapRowsToCanonical(rawRows, hasHeader)` — uses `buildAutoMapping` to translate raw headers to canonical keys (`shippingStatus`, `poNo`, `factoryPO`, `size`, `qty1`).
+  - `BULK_BUCKET_META` constant — per-bucket tint/badge/icon for `valid`, `warning`, `error`, `unknown` rows.
+- Added new component state:
+  - `entryMode` ("single" | "bulk"), `bulkPastedText`, `bulkHasHeader` (default `true`), `bulkValidating`, `bulkResult`, `bulkFilter` (default `"all"`), `bulkImporting`, `showBulkImportPreview`, `bulkExpandedRow`, `bulkMapping`.
+- Added handlers in the main component:
+  - `handleBulkValidate()` — parse text → canonical rows → call `api.bulkValidateEntries` → store result + detected mapping. Toast reports counts.
+  - `filteredBulkRows` useMemo — filter result rows by active bucket.
+  - `handleBulkConfirmClick()` — opens preview dialog if `errorRows === 0`; otherwise toast error and instruct user to fix errors first.
+  - `handleBulkImport()` — filters result to `valid`+`warning` rows, calls `api.bulkImportEntries({ mode: "all_valid", importedBy: "bulk-entry" })`. On success: toast, reset bulk panel, switch back to single mode, `bumpRefresh()`, `qc.invalidateQueries(["data-entry-entries"])`.
+  - `handleBulkCancel()` — clears all bulk state and returns to single mode.
+  - `handleBulkFix()` — clears the result (but keeps the pasted text) so the user can edit and re-check.
+- Added a `<Tabs>` mode toggle (`Single Entry | Bulk Entry`) above the existing single-entry grid.
+- Wrapped the existing single-entry grid in `{entryMode === "single" && ( ... )}` so the form + auto-fill panel only render in single mode.
+- Added a new `<BulkEntryPanel>` sub-component that takes all bulk state/handlers as props and renders:
+  1. **Paste Area** — `<Textarea>` (`min-h-[200px] font-mono text-sm`) with format example placeholder, a "First row is header" Switch (default on), and a **Check Data** button (tinted with `PRODUCT_THEME[currentProduct].bg`). Also shows the **detected column mapping** as badges (green if mapped, rose if ignored) after validation.
+  2. **Validation Summary Cards** — 4 cards (Total / Valid emerald / Warning amber / Error rose) + secondary stat badges (product groups affected, duplicate possible, quantity errors, master data errors, deadline errors).
+  3. **Filter Tabs** — `All | Valid | Warning | Error` with per-tab counts.
+  4. **Results Table** — `max-h-[500px] overflow-y-auto scroll-thin`. Columns: Row | Status | PO NO# | Factory PO | Size | Qty | Model | Result. Rows tinted by bucket (emerald/amber/rose). Clicking a row expands/collapses inline error details (code, title, description, excess, duplicate row numbers).
+  5. **Grouped Errors** — Card listing `result.groupedErrors` groups, each with PO/Factory PO/Size badge, affected row numbers, current vs expected quantities, and excess (highlighted rose).
+  6. **Action Bar** — `Cancel | Fix Data | Confirm Import`. Confirm Import is disabled when `errorRows > 0` and shows a helper note explaining what to fix.
+- Added a **Bulk Import preview dialog** (`Dialog`) at the bottom of the main component's return — shows total checked, will-import count, skipped (errors), product, and `mode: all_valid`. Calls `handleBulkImport()` on confirm.
+- Two small helper sub-components: `SummaryCard` and `StatBox`.
+- After successful import: clears pastedText/result/mapping/filter/expandedRow, switches back to `entryMode = "single"`, calls `bumpRefresh()` (refreshes ALL views because they include `refreshKey`), and invalidates the entries table query.
+- Validation: ran `npx tsc --noEmit -p tsconfig.json 2>&1 | grep product-data-entry-view` → only the **pre-existing** `needsConfirm` errors at lines 438-439 (originally reported at 414-415, shifted by my added imports). No NEW TypeScript errors.
+- Lint: ran `npx eslint src/components/views/product-data-entry-view.tsx` → clean (no output).
+- Existing single-entry functionality, the entries table, and all dialogs remain unchanged and visible in both modes.
+
+Files modified:
+- `src/components/views/product-data-entry-view.tsx` (1168 → 1992 lines)
+
+External APIs used (already built, just called):
+- `POST /api/entries/bulk-validate` via `api.bulkValidateEntries({ productType, rows })`
+- `POST /api/bulk-import` via `api.bulkImportEntries({ productType, rows, mode: "all_valid", importedBy })`
+
+Return: Bulk entry mode fully implemented and verified — users can paste TSV data from Excel, see validation summary + filterable results table + grouped errors, then confirm import (only when no errors remain). The existing single-entry flow is untouched.
+
+---
+Task ID: BULK-ENTRY-MULTI-FPO-1
+Agent: main (Z.ai Code) + full-stack-developer subagent
+Task: Update 2 features: (1) Entry data bulk entry with validation to prevent wrong inputs; (2) Daily shipment generate multiple Factory POs at once.
+
+Work Log:
+- **Feature 1: Bulk Entry with Validation**
+  - Created `POST /api/entries/bulk-validate` route — read-only validation that reuses the existing `validateBulkData()` engine from `bulk-validation-service.ts`. Runs sequential simulation: required fields, master data lookup, quantity limits (Output vs Order, Input vs Output), duplicate detection, deadline checks — grouped by (poNo + factoryPO + size) and simulated in row order.
+  - Reused existing `POST /api/bulk-import` route for the actual atomic insert (transaction-based).
+  - Added 2 API client methods: `api.bulkValidateEntries({ productType, rows })` and `api.bulkImportEntries({ productType, rows, mode, importedBy })`.
+  - Updated `product-data-entry-view.tsx` with a mode toggle (`<Tabs>`: Single Entry | Bulk Entry):
+    * Bulk Entry panel: Textarea for paste, "First row is header" switch, Check Data button
+    * Auto-column detection via `buildAutoMapping`
+    * Validation summary cards (Total/Valid/Warning/Error + affected products, duplicates, quantity errors, master data errors, deadline errors)
+    * Filter tabs (All/Valid/Warning/Error)
+    * Results table with inline-expandable error details
+    * Grouped errors view
+    * Import preview dialog → Confirm Import (disabled when errorRows > 0)
+    * After import: bumpRefresh() + qc.invalidateQueries + toast.success + reset panel
+  - Verified via API: bulk-validate returns correct sequential simulation results (e.g. Input 10 without existing Output → ERROR INPUT_WITHOUT_OUTPUT)
+
+- **Feature 2: Multi-FPO Shipment Generation**
+  - The existing `generateShipmentExcel()` already supported multiple Factory POs (groups by model+poNo+factoryPO, each unique combo = its own row in the per-color sheet).
+  - **Fixed the summary sheet enrichment gap**: previously Order/Previous Output/Total Output/Remaining were all 0 (placeholders). Now the export route fetches `getShipmentGroups({ productType })` and passes the groups to `generateShipmentExcel()`, which enriches each summary row with real Order/Output/Remaining quantities.
+  - Updated `generateShipmentExcel()` signature to accept optional `shipmentGroups?: ShipmentGroup[]` parameter.
+  - Updated export route to fetch groups and pass them.
+  - Verified: shipment export with 2 plannedOutputs (different sizes) returns HTTP 200 + valid Excel binary.
+
+Stage Summary:
+- **Bulk Entry**: Users can now paste multiple Input rows from Excel, validate them all at once (catching errors before saving), then confirm import. The validation engine runs sequential simulation so row N's result depends on rows 1..N-1 — preventing quantity overflow errors that would only appear when summing multiple rows.
+- **Multi-FPO Shipment**: The Daily Shipment export already supported multiple Factory POs. Fixed the summary sheet to show accurate Order/Previous Output/Total Output/Remaining quantities (was all zeros before).
+- Files created: `src/app/api/entries/bulk-validate/route.ts`
+- Files modified: `src/lib/shipment-service.ts` (generateShipmentExcel accepts shipmentGroups + enriches summary), `src/app/api/shipment/export/route.ts` (fetches groups + passes to service), `src/lib/api-client.ts` (added bulkValidateEntries + bulkImportEntries methods), `src/components/views/product-data-entry-view.tsx` (added bulk entry mode toggle + panel).
+- Agent Browser verified: Data Entry view shows Single/Bulk Entry tabs, Bulk Entry panel renders with paste area + Check Data button, no errors.

@@ -370,6 +370,72 @@ export const api = {
     }>(res);
   },
 
+  // ===== Bulk Entry Validation + Import =====
+  // Validates a batch of entry rows (Shipping Status + PO NO# + Factory PO +
+  // Size + Qty) WITHOUT writing to DB. Runs the full sequential simulation
+  // engine: required fields, master data lookup, quantity limits, duplicates.
+  bulkValidateEntries: async (body: {
+    productType: string;
+    rows: Record<string, string>[];
+  }) => {
+    const res = await fetch("/api/entries/bulk-validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{
+      ok: boolean;
+      summary: {
+        totalRows: number;
+        validRows: number;
+        warningRows: number;
+        errorRows: number;
+        productGroupsAffected: number;
+        duplicatePossible: number;
+        quantityErrors: number;
+        masterDataErrors: number;
+        deadlineErrors: number;
+      };
+      rows: any[];
+      groupedErrors: any[];
+      warnings: any[];
+      currentGroups: Record<string, any>;
+      finalGroups: Record<string, any>;
+    }>(res);
+  },
+
+  // Performs the actual database INSERT for validated bulk entry rows.
+  // Uses a transaction so the import is atomic.
+  bulkImportEntries: async (body: {
+    productType: string;
+    rows: {
+      shippingStatus: string;
+      poNo: string;
+      factoryPO: string;
+      size: string;
+      qty1: number;
+      confirmReason?: string;
+      note?: string;
+    }[];
+    mode: "all_valid" | "selected" | "fix_first";
+    selectedRowNumbers?: number[];
+    importedBy?: string;
+  }) => {
+    const res = await fetch("/api/bulk-import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{
+      ok: boolean;
+      importId: string;
+      imported: number;
+      skipped: number;
+      errors: string[];
+      auditLogId?: string;
+    }>(res);
+  },
+
   updateEntry: async (id: string, body: any) => {
     const res = await fetch(`/api/entries/${id}`, {
       method: "PUT",

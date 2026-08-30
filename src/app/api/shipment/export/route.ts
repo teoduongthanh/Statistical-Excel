@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateShipmentExcel } from "@/lib/shipment-service";
+import { generateShipmentExcel, getShipmentGroups, type ShipmentFilters } from "@/lib/shipment-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +21,9 @@ interface ExportBody {
 
 // POST /api/shipment/export
 // Generates a Daily Shipment Excel file in IN PO [Color] format.
-// Each selected color gets its own sheet; a DAILY SHIPMENT SUMMARY sheet is added.
+// Supports multiple Factory POs: each unique (model + poNo + factoryPO) becomes
+// its own row in the per-color sheets. The DAILY SHIPMENT SUMMARY sheet is
+// enriched with Order / Previous Output / Total Output / Remaining quantities.
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as ExportBody;
@@ -36,11 +38,15 @@ export async function POST(req: NextRequest) {
     const templatePath = body.templatePath ||
       "/home/z/my-project/upload/Copy of Copy of FMT shipped out S-TECH mafate -2026 (1).xlsx";
 
+    // Fetch shipment groups to enrich the summary sheet with Order/Output quantities.
+    const shipmentGroups = await getShipmentGroups({ productType: body.productType });
+
     const buffer = await generateShipmentExcel(
       body.productType,
       body.selectedColors,
       body.plannedOutputs,
-      templatePath
+      templatePath,
+      shipmentGroups
     );
 
     const today = new Date().toISOString().slice(0, 10);

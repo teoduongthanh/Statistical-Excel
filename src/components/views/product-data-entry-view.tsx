@@ -20,18 +20,26 @@ import {
   Table2,
   Calculator,
   Database,
+  ClipboardPaste,
+  ClipboardCheck,
+  Upload,
+  RefreshCw,
+  Eye,
 } from "lucide-react";
 import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
 import { api } from "@/lib/api-client";
 import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
+import { buildAutoMapping } from "@/lib/header-normalize";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -102,6 +110,22 @@ export function ProductDataEntryView() {
   // ===== Add entries to Master Data =====
   const [selectedMasterIds, setSelectedMasterIds] = React.useState<Set<string>>(new Set());
   const [addingToMaster, setAddingToMaster] = React.useState(false);
+
+  // ===== Bulk Entry mode =====
+  // Toggle between "single" (one row at a time with autocomplete lookup) and
+  // "bulk" (paste many rows from Excel, validate, then confirm import).
+  const [entryMode, setEntryMode] = React.useState<"single" | "bulk">("single");
+  const [bulkPastedText, setBulkPastedText] = React.useState("");
+  const [bulkHasHeader, setBulkHasHeader] = React.useState(true);
+  const [bulkValidating, setBulkValidating] = React.useState(false);
+  const [bulkResult, setBulkResult] = React.useState<any>(null);
+  const [bulkFilter, setBulkFilter] = React.useState<"all" | "valid" | "warning" | "error">("all");
+  const [bulkImporting, setBulkImporting] = React.useState(false);
+  const [showBulkImportPreview, setShowBulkImportPreview] = React.useState(false);
+  const [bulkExpandedRow, setBulkExpandedRow] = React.useState<number | null>(null);
+  // Tracks the most recent mapping (header → canonical field) so we can show
+  // the user what we detected, in the UI.
+  const [bulkMapping, setBulkMapping] = React.useState<Record<string, string>>({});
 
   // ===== Entries table pagination (server-side via page/pageSize) =====
   const [entryPage, setEntryPage] = React.useState(1);
@@ -471,6 +495,145 @@ export function ProductDataEntryView() {
     }
   }
 
+  // ===== Bulk Entry handlers =====
+  // Parse the pasted TSV → canonical rows → call bulkValidateEntries.
+  async function handleBulkValidate() {
+    const trimmed = bulkPastedText.trim();
+    if (!trimmed) {
+      toast.error("Nothing to check", { description: "Paste some rows first." });
+      return;
+    }
+    setBulkValidating(true);
+    setBulkResult(null);
+    setBulkExpandedRow(null);
+    setBulkFilter("all");
+    try {
+      const rawRows = parseBulkText(trimmed, bulkHasHeader);
+      if (rawRows.length === 0) {
+        toast.error("No data rows found", { description: "Check that rows are tab-separated." });
+        return;
+      }
+      // Capture the detected header mapping for display.
+      if (bulkHasHeader) {
+        const headers = Object.keys(rawRows[0]);
+        const mapping = buildAutoMapping(headers);
+        setBulkMapping(
+          Object.fromEntries(Object.entries(mapping).map(([k, v]) => [k, v || ""]))
+        );
+      } else {
+        setBulkMapping({
+          shippingStatus: "shippingStatus",
+          poNo: "poNo",
+          factoryPO: "factoryPO",
+          size: "size",
+          qty1: "qty1",
+        });
+      }
+      const canonicalRows = mapRowsToCanonical(rawRows, bulkHasHeader);
+      const result = await api.bulkValidateEntries({
+        productType: currentProduct,
+        rows: canonicalRows,
+      });
+      setBulkResult(result);
+      toast.success(`Checked ${result.summary.totalRows} rows`, {
+        description: `${result.summary.validRows} valid · ${result.summary.warningRows} warnings · ${result.summary.errorRows} errors`,
+      });
+    } catch (e) {
+      toast.error("Bulk validation failed", {
+        description: e instanceof Error ? e.message : "",
+      });
+    } finally {
+      setBulkValidating(false);
+    }
+  }
+
+  // Filtered rows for the results table (by bucket).
+  const filteredBulkRows = React.useMemo<any[]>(() => {
+    if (!bulkResult?.rows) return [];
+    if (bulkFilter === "all") return bulkResult.rows;
+    return bulkResult.rows.filter((r: any) => r.statusBucket === bulkFilter);
+  }, [bulkResult, bulkFilter]);
+
+  // Open the import preview dialog (Confirm Import button).
+  function handleBulkConfirmClick() {
+    if (!bulkResult) return;
+    if (bulkResult.summary.errorRows > 0) {
+      toast.error("Cannot import — fix errors first", {
+        description: `${bulkResult.summary.errorRows} row(s) have errors. Filter to ERROR to review.`,
+      });
+      return;
+    }
+    setShowBulkImportPreview(true);
+  }
+
+  // Actually perform the import (from the preview dialog).
+  async function handleBulkImport() {
+    if (!bulkResult) return;
+    setShowBulkImportPreview(false);
+    setBulkImporting(true);
+    try {
+      const importableRows = (bulkResult.rows as any[])
+        .filter((r) => r.statusBucket === "valid" || r.statusBucket === "warning")
+        .map((r) => ({
+          shippingStatus: r.shippingStatus || "",
+          poNo: r.poNo || "",
+          factoryPO: r.factoryPO || "",
+          size: r.size || "",
+          qty1: Number(r.qty1Num ?? r.qty1) || 0,
+          confirmReason: r.needsConfirm ? "bulk-import-warning" : undefined,
+        }));
+      if (importableRows.length === 0) {
+        toast.error("No importable rows", { description: "Need at least one valid or warning row." });
+        return;
+      }
+      const res = await api.bulkImportEntries({
+        productType: currentProduct,
+        rows: importableRows,
+        mode: "all_valid",
+        importedBy: "bulk-entry",
+      });
+      if (res.ok) {
+        toast.success(`Imported ${res.imported} entries`, {
+          description: res.skipped > 0 ? `${res.skipped} skipped` : "All rows written to DB.",
+        });
+        // Reset bulk panel + switch back to single mode.
+        setBulkPastedText("");
+        setBulkResult(null);
+        setBulkMapping({});
+        setBulkFilter("all");
+        setBulkExpandedRow(null);
+        setEntryMode("single");
+        bumpRefresh();
+        qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+      } else {
+        toast.error("Import failed", { description: res.errors?.join(", ") });
+      }
+    } catch (e) {
+      toast.error("Import failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setBulkImporting(false);
+    }
+  }
+
+  // Cancel: clear everything and return to single-entry mode.
+  function handleBulkCancel() {
+    setBulkPastedText("");
+    setBulkResult(null);
+    setBulkMapping({});
+    setBulkFilter("all");
+    setBulkExpandedRow(null);
+    setEntryMode("single");
+  }
+
+  // "Fix Data": clears the result but keeps the pasted text so the user can
+  // edit it and click Check Data again.
+  function handleBulkFix() {
+    setBulkResult(null);
+    setBulkFilter("all");
+    setBulkExpandedRow(null);
+    toast.info("Edit the pasted data above, then click Check Data again.");
+  }
+
   const shippingDisabled = !shippingStatus;
   const shippingColor = SHIPPING_OPTIONS.find((s) => s.value === shippingStatus)?.color;
 
@@ -513,6 +676,21 @@ export function ProductDataEntryView() {
         </CardContent>
       </Card>
 
+      {/* Entry mode toggle: Single vs Bulk */}
+      <div className="flex items-center justify-center">
+        <Tabs value={entryMode} onValueChange={(v) => setEntryMode(v as "single" | "bulk")}>
+          <TabsList>
+            <TabsTrigger value="single" className="px-4">
+              <PenLine className="h-4 w-4 mr-1.5" /> Single Entry
+            </TabsTrigger>
+            <TabsTrigger value="bulk" className="px-4">
+              <ClipboardPaste className="h-4 w-4 mr-1.5" /> Bulk Entry
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+
+      {entryMode === "single" && (
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         {/* Input form */}
         <div className="lg:col-span-2 space-y-4">
@@ -758,6 +936,32 @@ export function ProductDataEntryView() {
           </Card>
         </div>
       </div>
+      )}
+
+      {/* ===== Bulk Entry panel (when in bulk mode) ===== */}
+      {entryMode === "bulk" && (
+        <BulkEntryPanel
+          pastedText={bulkPastedText}
+          setPastedText={setBulkPastedText}
+          hasHeader={bulkHasHeader}
+          setHasHeader={setBulkHasHeader}
+          validating={bulkValidating}
+          result={bulkResult}
+          filter={bulkFilter}
+          setFilter={setBulkFilter}
+          filteredRows={filteredBulkRows}
+          importing={bulkImporting}
+          onCheck={handleBulkValidate}
+          onConfirmClick={handleBulkConfirmClick}
+          onCancel={handleBulkCancel}
+          onFix={handleBulkFix}
+          expandedRow={bulkExpandedRow}
+          setExpandedRow={setBulkExpandedRow}
+          mapping={bulkMapping}
+          currentProduct={currentProduct}
+          theme={theme}
+        />
+      )}
 
       {/* ===== Entries Table ===== */}
       <Card>
@@ -1040,6 +1244,53 @@ export function ProductDataEntryView() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* ===== Bulk Import preview dialog ===== */}
+      <Dialog open={showBulkImportPreview} onOpenChange={(o) => { if (!bulkImporting) setShowBulkImportPreview(o); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Upload className="h-4 w-4 text-emerald-600" /> Confirm Bulk Import
+            </DialogTitle>
+            <DialogDescription>
+              Review the summary below. Valid + warning rows will be written to the database.
+            </DialogDescription>
+          </DialogHeader>
+          {bulkResult && (
+            <div className="space-y-2 text-sm">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-md border bg-muted/30 p-2">
+                  <div className="text-[10px] uppercase text-muted-foreground">Total checked</div>
+                  <div className="text-lg font-semibold">{bulkResult.summary.totalRows}</div>
+                </div>
+                <div className="rounded-md border border-emerald-300/50 bg-emerald-50 dark:bg-emerald-950/20 p-2">
+                  <div className="text-[10px] uppercase text-emerald-700 dark:text-emerald-300">Will import</div>
+                  <div className="text-lg font-semibold text-emerald-700 dark:text-emerald-300">
+                    {bulkResult.summary.validRows + bulkResult.summary.warningRows}
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-md border border-rose-300/50 bg-rose-50 dark:bg-rose-950/20 p-2 text-rose-700 dark:text-rose-300 text-xs">
+                <AlertCircle className="h-3.5 w-3.5 inline mr-1" />
+                Skipped (errors): <strong>{bulkResult.summary.errorRows}</strong>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                <Database className="h-3 w-3 inline mr-1" />
+                Product: <strong>{currentProduct}</strong> · Mode: <code className="rounded bg-muted px-1">all_valid</code>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBulkImportPreview(false)} disabled={bulkImporting}>
+              <X className="h-4 w-4 mr-1.5" /> Cancel
+            </Button>
+            <Button onClick={handleBulkImport} disabled={bulkImporting} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+              {bulkImporting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Upload className="h-4 w-4 mr-1.5" />}
+              Confirm Import
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1051,6 +1302,83 @@ function computeQty2Preview(shippingStatus: string, qty: string): string {
   if (shippingStatus === "3.Pending") return String(-Math.abs(n));
   return String(n);
 }
+
+// Parse pasted Excel/TSV data into rows of { header: value } objects.
+// If `hasHeader` is true, the first row is treated as headers and used as keys.
+// Otherwise, columns are assumed to be in canonical order:
+//   shippingStatus, poNo, factoryPO, size, qty1.
+function parseBulkText(text: string, hasHeader: boolean): Record<string, string>[] {
+  const lines = text.trim().split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length === 0) return [];
+  let headers: string[];
+  let dataLines: string[];
+  if (hasHeader) {
+    headers = lines[0].split("\t").map((h) => h.trim());
+    dataLines = lines.slice(1);
+  } else {
+    headers = ["shippingStatus", "poNo", "factoryPO", "size", "qty1"];
+    dataLines = lines;
+  }
+  return dataLines.map((line) => {
+    const cells = line.split("\t");
+    const obj: Record<string, string> = {};
+    headers.forEach((h, i) => {
+      obj[h] = (cells[i] || "").trim();
+    });
+    return obj;
+  });
+}
+
+// Convert raw header-keyed rows into canonical-keyed rows
+// (shippingStatus, poNo, factoryPO, size, qty1) using buildAutoMapping.
+function mapRowsToCanonical(rawRows: Record<string, string>[], hasHeader: boolean): Record<string, string>[] {
+  if (!hasHeader) return rawRows; // already canonical keys
+  if (rawRows.length === 0) return [];
+  const headers = Object.keys(rawRows[0]);
+  const mapping = buildAutoMapping(headers);
+  return rawRows.map((r) => {
+    const obj: Record<string, string> = {};
+    for (const [origHeader, value] of Object.entries(r)) {
+      const field = mapping[origHeader];
+      if (field) obj[field] = value;
+    }
+    return {
+      shippingStatus: obj.shippingStatus || "",
+      poNo: obj.poNo || "",
+      factoryPO: obj.factoryPO || "",
+      size: obj.size || "",
+      qty1: obj.qty1 || "",
+    };
+  });
+}
+
+// Bucket label/colors for the bulk results table.
+const BULK_BUCKET_META: Record<string, { label: string; tint: string; badge: string; icon: typeof CheckCircle2 }> = {
+  valid: {
+    label: "Valid",
+    tint: "bg-emerald-50/60 dark:bg-emerald-950/15",
+    badge: "bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800",
+    icon: CheckCircle2,
+  },
+  warning: {
+    label: "Warning",
+    tint: "bg-amber-50/60 dark:bg-amber-950/15",
+    badge: "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800",
+    icon: AlertTriangle,
+  },
+  error: {
+    label: "Error",
+    tint: "bg-rose-50/60 dark:bg-rose-950/15",
+    badge: "bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800",
+    icon: AlertCircle,
+  },
+  unknown: {
+    label: "Pending",
+    tint: "bg-muted/40",
+    badge: "bg-muted text-muted-foreground",
+    icon: Info,
+  },
+};
 
 // Shipping status badge color helper.
 function shippingBadgeClass(status: string | null | undefined): string {
@@ -1162,6 +1490,502 @@ function AutoFillGrid({ group, factoryPO, size, qty, shippingStatus }: { group: 
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ===== Bulk Entry panel =====
+// Renders the paste area, validation summary, filter tabs, results table,
+// grouped errors, and action bar. State lives in the parent so it can interact
+// with the entries table query client + bumpRefresh on successful import.
+type BulkEntryPanelProps = {
+  pastedText: string;
+  setPastedText: (v: string) => void;
+  hasHeader: boolean;
+  setHasHeader: (v: boolean) => void;
+  validating: boolean;
+  result: any;
+  filter: "all" | "valid" | "warning" | "error";
+  setFilter: (v: "all" | "valid" | "warning" | "error") => void;
+  filteredRows: any[];
+  importing: boolean;
+  onCheck: () => void;
+  onConfirmClick: () => void;
+  onCancel: () => void;
+  onFix: () => void;
+  expandedRow: number | null;
+  setExpandedRow: (n: number | null) => void;
+  mapping: Record<string, string>;
+  currentProduct: string;
+  theme: { bg: string; text: string; border: string; gradient: string };
+};
+
+function BulkEntryPanel(props: BulkEntryPanelProps) {
+  const {
+    pastedText,
+    setPastedText,
+    hasHeader,
+    setHasHeader,
+    validating,
+    result,
+    filter,
+    setFilter,
+    filteredRows,
+    importing,
+    onCheck,
+    onConfirmClick,
+    onCancel,
+    onFix,
+    expandedRow,
+    setExpandedRow,
+    mapping,
+    currentProduct,
+    theme,
+  } = props;
+
+  const summary = result?.summary;
+  const hasErrors = (summary?.errorRows ?? 0) > 0;
+  const canImport = !!result && !hasErrors && !importing;
+
+  return (
+    <div className="space-y-4">
+      {/* Paste area */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <ClipboardPaste className="h-4 w-4 text-primary" /> Paste Bulk Data
+            <Badge variant="outline" className="ml-auto text-[10px]">{currentProduct}</Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">
+              Paste rows from Excel <span className="text-muted-foreground">(tab-separated columns)</span>
+            </Label>
+            <Textarea
+              value={pastedText}
+              onChange={(e) => setPastedText(e.target.value)}
+              placeholder={
+                "Shipping Status\tPO NO#\tFactory PO\tSize\tQty\n" +
+                "1.Order\tPO123\tMH271001\t13\t100\n" +
+                "4.Input\tPO456\tMH271002\t08\t250"
+              }
+              className="min-h-[200px] font-mono text-sm"
+              spellCheck={false}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Columns: Shipping Status · PO NO# · Factory PO · Size · Qty. Order does not matter if header is on.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
+              <Switch checked={hasHeader} onCheckedChange={setHasHeader} />
+              First row is header
+              <span className="text-muted-foreground">
+                {hasHeader ? "(auto-detect columns)" : "(columns assumed in order)"}
+              </span>
+            </label>
+            <Button onClick={onCheck} disabled={validating || !pastedText.trim()} className={cn(theme.bg, "hover:opacity-90")}>
+              {validating ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <ClipboardCheck className="mr-1.5 h-4 w-4" />
+              )}
+              Check Data
+            </Button>
+          </div>
+          {/* Show detected mapping */}
+          {result && Object.keys(mapping).length > 0 && (
+            <div className="rounded-md border bg-muted/30 p-2">
+              <div className="text-[10px] font-semibold uppercase text-muted-foreground mb-1 flex items-center gap-1">
+                <Eye className="h-3 w-3" /> Detected column mapping
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {Object.entries(mapping).map(([orig, field]) => (
+                  <Badge
+                    key={orig}
+                    variant="outline"
+                    className={cn(
+                      "text-[10px]",
+                      field
+                        ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300 dark:border-emerald-800"
+                        : "border-rose-300 bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300 dark:border-rose-800"
+                    )}
+                  >
+                    <span className="font-mono">{orig}</span>
+                    <span className="mx-1 opacity-50">→</span>
+                    {field || "(ignored)"}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {result && summary && (
+        <>
+          {/* Validation summary cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <SummaryCard
+              icon={<Table2 className="h-4 w-4" />}
+              label="Total Rows"
+              value={summary.totalRows}
+              tint="bg-muted/40"
+            />
+            <SummaryCard
+              icon={<CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+              label="Valid"
+              value={summary.validRows}
+              tint="bg-emerald-50 dark:bg-emerald-950/20"
+              valueClass="text-emerald-700 dark:text-emerald-300"
+            />
+            <SummaryCard
+              icon={<AlertTriangle className="h-4 w-4 text-amber-600" />}
+              label="Warnings"
+              value={summary.warningRows}
+              tint="bg-amber-50 dark:bg-amber-950/20"
+              valueClass="text-amber-700 dark:text-amber-300"
+            />
+            <SummaryCard
+              icon={<AlertCircle className="h-4 w-4 text-rose-600" />}
+              label="Errors"
+              value={summary.errorRows}
+              tint="bg-rose-50 dark:bg-rose-950/20"
+              valueClass="text-rose-700 dark:text-rose-300"
+            />
+          </div>
+
+          {/* Secondary stats */}
+          <div className="flex flex-wrap gap-2 text-xs">
+            <Badge variant="outline" className="text-[10px]">
+              <Database className="h-3 w-3 mr-1" />
+              {summary.productGroupsAffected} product group(s) affected
+            </Badge>
+            {summary.duplicatePossible > 0 && (
+              <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="h-3 w-3 mr-1" />
+                {summary.duplicatePossible} duplicate(s) possible
+              </Badge>
+            )}
+            {summary.quantityErrors > 0 && (
+              <Badge variant="outline" className="text-[10px] border-rose-300 text-rose-700 dark:text-rose-300">
+                <AlertCircle className="h-3 w-3 mr-1" />
+                {summary.quantityErrors} quantity error(s)
+              </Badge>
+            )}
+            {summary.masterDataErrors > 0 && (
+              <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700 dark:text-amber-300">
+                <Database className="h-3 w-3 mr-1" />
+                {summary.masterDataErrors} master data issue(s)
+              </Badge>
+            )}
+            {summary.deadlineErrors > 0 && (
+              <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700 dark:text-amber-300">
+                <AlertCircle className="h-3 w-3 mr-1" />
+                {summary.deadlineErrors} deadline issue(s)
+              </Badge>
+            )}
+          </div>
+
+          {/* Filter tabs */}
+          <Tabs value={filter} onValueChange={(v) => setFilter(v as any)}>
+            <TabsList>
+              <TabsTrigger value="all" className="text-xs">
+                All <span className="ml-1 rounded bg-muted-foreground/15 px-1.5 py-0.5 text-[10px]">{summary.totalRows}</span>
+              </TabsTrigger>
+              <TabsTrigger value="valid" className="text-xs">
+                <CheckCircle2 className="h-3 w-3 mr-1 text-emerald-600" />
+                Valid <span className="ml-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-300">{summary.validRows}</span>
+              </TabsTrigger>
+              <TabsTrigger value="warning" className="text-xs">
+                <AlertTriangle className="h-3 w-3 mr-1 text-amber-600" />
+                Warning <span className="ml-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-300">{summary.warningRows}</span>
+              </TabsTrigger>
+              <TabsTrigger value="error" className="text-xs">
+                <AlertCircle className="h-3 w-3 mr-1 text-rose-600" />
+                Error <span className="ml-1 rounded bg-rose-500/15 px-1.5 py-0.5 text-[10px] text-rose-700 dark:text-rose-300">{summary.errorRows}</span>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+
+          {/* Results table */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Table2 className="h-4 w-4 text-primary" /> Validation Results
+                <span className="ml-auto text-xs text-muted-foreground">
+                  Showing {filteredRows.length} of {summary.totalRows}
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="max-h-[500px] overflow-y-auto scroll-thin">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/40 sticky top-0 z-10">
+                    <tr>
+                      <th className="px-2 py-2 w-10 text-left text-[10px] font-semibold uppercase text-muted-foreground">Row</th>
+                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Status</th>
+                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">PO NO#</th>
+                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Factory PO</th>
+                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Size</th>
+                      <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Qty</th>
+                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Model</th>
+                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Result</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="px-3 py-10 text-center text-muted-foreground">
+                          No rows in this filter.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredRows.map((r: any) => {
+                        const bucket = r.statusBucket || "unknown";
+                        const meta = BULK_BUCKET_META[bucket] || BULK_BUCKET_META.unknown;
+                        const Icon = meta.icon;
+                        const isExpanded = expandedRow === r.rowNumber;
+                        const hasErrs = (r.errors?.length ?? 0) > 0;
+                        return (
+                          <React.Fragment key={r.rowNumber ?? Math.random()}>
+                            <tr
+                              className={cn(
+                                "border-t cursor-pointer transition-colors",
+                                meta.tint,
+                                hasErrs ? "hover:bg-muted/50" : "hover:bg-muted/30"
+                              )}
+                              onClick={() =>
+                                setExpandedRow(isExpanded ? null : (r.rowNumber ?? null))
+                              }
+                            >
+                              <td className="px-2 py-1.5 text-muted-foreground tabular-nums">{r.rowNumber}</td>
+                              <td className="px-2 py-1.5">
+                                <Badge variant="outline" className={cn("text-[9px]", shippingBadgeClass(r.shippingStatus))}>
+                                  {r.shippingStatus || "—"}
+                                </Badge>
+                              </td>
+                              <td className="px-2 py-1.5 whitespace-nowrap">{r.poNo || "—"}</td>
+                              <td className="px-2 py-1.5 font-medium text-primary whitespace-nowrap">{r.factoryPO || "—"}</td>
+                              <td className="px-2 py-1.5">
+                                <Badge variant="outline" className="text-[9px] font-mono">{r.size || "—"}</Badge>
+                              </td>
+                              <td className="px-2 py-1.5 text-right tabular-nums font-medium">{r.qty1 ?? "—"}</td>
+                              <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground">{r.model || "—"}</td>
+                              <td className="px-2 py-1.5">
+                                <Badge variant="outline" className={cn("text-[9px] gap-1", meta.badge)}>
+                                  <Icon className="h-3 w-3" />
+                                  {meta.label}
+                                  {hasErrs && (
+                                    <span className="ml-1 rounded bg-rose-500/20 px-1 text-[9px]">
+                                      {r.errors.length}
+                                    </span>
+                                  )}
+                                </Badge>
+                              </td>
+                            </tr>
+                            {isExpanded && hasErrs && (
+                              <tr className={cn("border-t", meta.tint)}>
+                                <td colSpan={8} className="px-3 py-2">
+                                  <div className="space-y-1.5">
+                                    {r.errors.map((err: any, i: number) => (
+                                      <div
+                                        key={i}
+                                        className={cn(
+                                          "rounded-md border p-2 text-[11px]",
+                                          err.severity === "error"
+                                            ? "border-rose-300 bg-rose-50 text-rose-800 dark:bg-rose-950/30 dark:text-rose-200 dark:border-rose-800"
+                                            : "border-amber-300 bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200 dark:border-amber-800"
+                                        )}
+                                      >
+                                        <div className="flex items-start gap-1.5">
+                                          {err.severity === "error" ? (
+                                            <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                                          ) : (
+                                            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                                          )}
+                                          <div className="min-w-0 flex-1">
+                                            <div className="font-semibold">{err.title}</div>
+                                            {err.description && (
+                                              <div className="text-[10px] mt-0.5 opacity-90">{err.description}</div>
+                                            )}
+                                            {err.excess != null && (
+                                              <div className="text-[10px] mt-0.5 font-mono">
+                                                Excess: <strong>{err.excess}</strong>
+                                              </div>
+                                            )}
+                                            {err.duplicateRowNumbers?.length > 0 && (
+                                              <div className="text-[10px] mt-0.5">
+                                                Duplicate rows: {err.duplicateRowNumbers.join(", ")}
+                                              </div>
+                                            )}
+                                            <div className="text-[9px] mt-0.5 opacity-70 font-mono">
+                                              code: {err.code}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Grouped errors */}
+          {result.groupedErrors && result.groupedErrors.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <AlertCircle className="h-4 w-4 text-rose-600" /> Grouped Issues
+                  <Badge variant="outline" className="ml-auto text-[10px]">
+                    {result.groupedErrors.length} group(s)
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {result.groupedErrors.map((g: any, i: number) => (
+                  <div
+                    key={i}
+                    className="rounded-md border border-rose-300/50 bg-rose-50/50 dark:bg-rose-950/15 p-2.5"
+                  >
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <Badge variant="outline" className="text-[10px] font-mono">
+                        {g.poNo || "—"} · {g.factoryPO || "—"} · {g.size || "—"}
+                      </Badge>
+                      {g.rowNumbers?.length > 0 && (
+                        <span className="text-muted-foreground">
+                          Rows: <strong className="text-rose-700 dark:text-rose-300">{g.rowNumbers.join(", ")}</strong>
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1.5 grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+                      {g.currentOrder != null && (
+                        <StatBox label="Current Order" value={g.currentOrder} />
+                      )}
+                      {g.currentOutput != null && (
+                        <StatBox label="Current Output" value={g.currentOutput} />
+                      )}
+                      {g.currentInput != null && (
+                        <StatBox label="Current Input" value={g.currentInput} />
+                      )}
+                      {g.expectedQty != null && (
+                        <StatBox label="Expected Qty" value={g.expectedQty} />
+                      )}
+                      {g.excess != null && (
+                        <StatBox
+                          label="Excess"
+                          value={g.excess}
+                          highlight="rose"
+                        />
+                      )}
+                    </div>
+                    {g.message && (
+                      <p className="mt-1.5 text-[11px] text-rose-700 dark:text-rose-300">{g.message}</p>
+                    )}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Action bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 p-3">
+            <Button variant="ghost" size="sm" onClick={onCancel} disabled={importing}>
+              <X className="mr-1.5 h-4 w-4" /> Cancel
+            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={onFix} disabled={validating || importing}>
+                <RefreshCw className="mr-1.5 h-4 w-4" /> Fix Data
+              </Button>
+              <Button
+                size="sm"
+                onClick={onConfirmClick}
+                disabled={!canImport}
+                className={cn("bg-emerald-600 hover:bg-emerald-700 text-white", !canImport && "opacity-50 cursor-not-allowed")}
+              >
+                {importing ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <Upload className="mr-1.5 h-4 w-4" />
+                )}
+                Confirm Import
+              </Button>
+            </div>
+          </div>
+
+          {/* Helper note when errors block import */}
+          {hasErrors && (
+            <div className="rounded-md border border-rose-300/50 bg-rose-50 dark:bg-rose-950/20 p-2.5 text-xs text-rose-700 dark:text-rose-300 flex items-start gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span>
+                <strong>{summary.errorRows} error row(s)</strong> must be fixed before import.
+                Filter to ERROR above, expand rows to see details, edit your pasted data, then click Check Data again.
+              </span>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Small summary card for the bulk validation overview.
+function SummaryCard({
+  icon,
+  label,
+  value,
+  tint,
+  valueClass,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  tint: string;
+  valueClass?: string;
+}) {
+  return (
+    <div className={cn("rounded-lg border p-3", tint)}>
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</span>
+        {icon}
+      </div>
+      <div className={cn("mt-1 text-2xl font-bold tabular-nums", valueClass)}>{value}</div>
+    </div>
+  );
+}
+
+// Small stat box for grouped error details.
+function StatBox({
+  label,
+  value,
+  highlight,
+}: {
+  label: string;
+  value: number | string;
+  highlight?: "rose" | "emerald" | "amber";
+}) {
+  const color =
+    highlight === "rose"
+      ? "text-rose-700 dark:text-rose-300"
+      : highlight === "emerald"
+      ? "text-emerald-700 dark:text-emerald-300"
+      : highlight === "amber"
+      ? "text-amber-700 dark:text-amber-300"
+      : "text-foreground";
+  return (
+    <div className="rounded-md border bg-background/60 p-1.5">
+      <div className="text-[9px] uppercase text-muted-foreground">{label}</div>
+      <div className={cn("text-sm font-mono font-semibold tabular-nums", color)}>{value}</div>
     </div>
   );
 }
