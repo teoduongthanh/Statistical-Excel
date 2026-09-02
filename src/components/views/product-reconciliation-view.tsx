@@ -23,8 +23,8 @@
 import * as React from "react";
 import {
   GitCompare,
-  Upload,
-  FileSpreadsheet,
+  ClipboardPaste,
+  ClipboardCheck,
   Calendar,
   Search,
   CheckCircle2,
@@ -39,14 +39,12 @@ import {
   RefreshCw,
   Trash2,
   Layers,
-  Sheet as SheetIcon,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
 import { buildAutoMapping, mappingOptions } from "@/lib/header-normalize";
 import type { CanonicalField } from "@/lib/fields";
 import { FIELD_LABELS } from "@/lib/fields";
-import { readWorkbook, parseSheet } from "@/lib/excel";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -90,6 +88,20 @@ const REQUIRED_FIELDS: CanonicalField[] = ["date", "poNo", "factoryPO", "size", 
 
 // Sentinel value used for unmapped columns (Radix Select can't use empty string).
 const SKIP_VALUE = "__skip__";
+
+// Sample paste template — users can click "Load Sample" to prefill the paste area.
+// Tab-separated (the format Excel copies to clipboard).
+const SAMPLE_PASTE_TEMPLATE = [
+  "Date\tPO NO#\tFactory PO\tSize\tQty",
+  "26/08/2026\tH411040101\tMH25100234\tM(07)/W(08)\t10",
+  "26/08/2026\tH411040101\tMH25100234\tM(07)/W(08)\t16",
+  "27/08/2026\tH411349637\tMH26110226\tM(07)/W(08)\t8",
+  "28/08/2026\tH411351971\tMH98060122\tM(04T)/W(05T)\t1",
+  "31/08/2026\tH411040101\tMH25100234\tM(08)/W(09)\t20",
+].join("\n");
+
+// Placeholder shown in the empty paste area.
+const SAMPLE_PLACEHOLDER = "Date\tPO NO#\tFactory PO\tSize\tQty\n26/08/2026\tH411040101\tMH25100234\tM(07)/W(08)\t10\n27/08/2026\tH411349637\tMH26110226\tM(07)/W(08)\t8\n...\n\n(Click \"Load Sample\" to prefill this area with example data)";
 
 // Status tone map (row tint + badge color).
 type Tone = "emerald" | "amber" | "rose" | "slate";
@@ -289,7 +301,7 @@ export function ProductReconciliationView() {
   const theme = PRODUCT_THEME[currentProduct];
 
   // Spec-required state.
-  const [file, setFile] = React.useState<File | null>(null);
+  const [pastedText, setPastedText] = React.useState("");
   const [parsing, setParsing] = React.useState(false);
   const [parseResult, setParseResult] = React.useState<any>(null);
   const [allRows, setAllRows] = React.useState<Record<string, string>[]>([]);
@@ -303,11 +315,6 @@ export function ProductReconciliationView() {
   const [showOnlyIssues, setShowOnlyIssues] = React.useState(true);
   const [detailRow, setDetailRow] = React.useState<any>(null);
 
-  // Workbook is a large non-serializable XLSX.WorkBook — store in a ref.
-  const wbRef = React.useRef<any>(null);
-  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
-  const [dragOver, setDragOver] = React.useState(false);
-
   // Initialize date range default (last 7 days).
   React.useEffect(() => {
     const r = last7DaysRange();
@@ -315,73 +322,46 @@ export function ProductReconciliationView() {
     setDateTo(r.to);
   }, []);
 
-  // ===== Handle file upload (drag-drop or input).
-  async function handleFileSelect(selectedFile: File | null | undefined) {
-    if (!selectedFile) return;
-    const name = selectedFile.name.toLowerCase();
-    if (!name.endsWith(".xlsx") && !name.endsWith(".xls")) {
-      toast.error("Please upload an .xlsx or .xls file.");
+  // ===== Parse pasted TSV text into rows + auto-detect column mapping.
+  // Accepts tab-separated values copied from Excel. First row = headers.
+  function handlePaste() {
+    const text = pastedText.trim();
+    if (!text) {
+      toast.error("Please paste some data first.");
       return;
     }
-    setFile(selectedFile);
     setParsing(true);
     setParseResult(null);
     setAllRows([]);
-    setSheet("");
     setMapping({});
     setResult(null);
     setFilter("all");
     try {
-      // 1) Server preview (50 rows + sheets + autoMapping for default sheet).
-      const preview = await api.parseExcel(selectedFile);
-      setParseResult(preview);
-
-      // 2) Client-side full parse — read the workbook once, store in ref.
-      const buf = await selectedFile.arrayBuffer();
-      const { wb, sheets } = readWorkbook(buf);
-      wbRef.current = wb;
-
-      // Auto-select the first sheet (or the api's selectedSheet).
-      const firstSheet =
-        preview.selectedSheet || preview.sheets?.[0]?.name || sheets[0]?.name || "";
-      if (firstSheet) {
-        setSheet(firstSheet);
-        const { headers, rows } = parseSheet(wb, firstSheet);
-        setAllRows(rows);
-        // Initialize mapping via buildAutoMapping (canonical field per excel header).
-        const autoMapping = buildAutoMapping(headers);
-        // Convert Record<string, CanonicalField | ""> to Record<string, string>
-        // using "__skip__" sentinel for empty values.
-        const initMapping: Record<string, string> = {};
-        for (const h of headers) {
-          const f = autoMapping[h] || "";
-          initMapping[h] = f || SKIP_VALUE;
-        }
-        setMapping(initMapping);
-        toast.success(
-          `Parsed ${rows.length.toLocaleString()} rows from sheet "${firstSheet}".`
-        );
+      const lines = text.split(/\r\n|\n|\r/).filter((l) => l.trim() !== "");
+      if (lines.length < 2) {
+        toast.error("Need at least a header row + 1 data row.");
+        setParsing(false);
+        return;
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to parse Excel file";
-      toast.error(msg);
-      setFile(null);
-    } finally {
-      setParsing(false);
-    }
-  }
+      // First line = headers (split by tab).
+      const rawHeaders = lines[0].split("\t").map((h) => h.trim());
+      const headers = rawHeaders.map((h, i) => h || `Column_${i + 1}`);
 
-  // ===== Handle sheet change — re-parse client-side, rebuild mapping.
-  function handleSheetChange(nextSheet: string) {
-    if (!wbRef.current || nextSheet === sheet) return;
-    setSheet(nextSheet);
-    setAllRows([]);
-    setMapping({});
-    setResult(null);
-    setFilter("all");
-    try {
-      const { headers, rows } = parseSheet(wbRef.current, nextSheet);
+      // Remaining lines = data rows.
+      const rows: Record<string, string>[] = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cells = lines[i].split("\t");
+        const row: Record<string, string> = {};
+        headers.forEach((h, idx) => {
+          row[h] = (cells[idx] ?? "").trim();
+        });
+        rows.push(row);
+      }
+
       setAllRows(rows);
+      setParseResult({ headers, preview: rows.slice(0, 50) });
+
+      // Auto-map headers to canonical fields via buildAutoMapping.
       const autoMapping = buildAutoMapping(headers);
       const initMapping: Record<string, string> = {};
       for (const h of headers) {
@@ -389,12 +369,15 @@ export function ProductReconciliationView() {
         initMapping[h] = f || SKIP_VALUE;
       }
       setMapping(initMapping);
-      toast.info(
-        `Switched to sheet "${nextSheet}" — ${rows.length.toLocaleString()} rows parsed.`
+
+      toast.success(
+        `Parsed ${rows.length.toLocaleString()} rows from pasted data (${headers.length} columns detected).`
       );
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to parse sheet";
+      const msg = e instanceof Error ? e.message : "Failed to parse pasted data";
       toast.error(msg);
+    } finally {
+      setParsing(false);
     }
   }
 
@@ -407,7 +390,7 @@ export function ProductReconciliationView() {
   // ===== Compare Excel rows with Website data.
   async function handleCompare() {
     if (!allRows.length) {
-      toast.error("No Excel rows to compare. Upload and select a sheet first.");
+      toast.error("No data to compare. Paste your Excel data first.");
       return;
     }
     // Required-field coverage check.
@@ -464,18 +447,15 @@ export function ProductReconciliationView() {
 
   // ===== Reset everything.
   function resetAll() {
-    setFile(null);
+    setPastedText("");
     setParsing(false);
     setParseResult(null);
     setAllRows([]);
-    setSheet("");
     setMapping({});
     setResult(null);
     setFilter("all");
     setShowOnlyIssues(true);
     setDetailRow(null);
-    wbRef.current = null;
-    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   // ===== Derived values.
@@ -580,29 +560,29 @@ export function ProductReconciliationView() {
                 Reconciliation · {currentProduct}
               </h1>
               <p className="text-xs text-white/80">
-                Upload an Excel file → filter by date → compare with Website MasterData →
+                Paste Excel data → filter by date → compare with Website MasterData →
                 spot mismatches, missing rows, duplicates, and likely typos.
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <Badge className="border-white/30 bg-white/15 text-white">{currentProduct}</Badge>
-            {file && (
+            {allRows.length > 0 && (
               <Badge className="flex items-center gap-1 border-white/30 bg-white/15 text-white">
-                <FileSpreadsheet className="h-3 w-3" /> {file.name}
+                <ClipboardCheck className="h-3 w-3" /> {allRows.length.toLocaleString()} rows
               </Badge>
             )}
           </div>
         </div>
       </div>
 
-      {/* ===== Section 1: File Upload + Sheet Selection ===== */}
+      {/* ===== Section 1: Paste Excel Data ===== */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
-            <Upload className="h-4 w-4 text-primary" />
-            Upload Excel File
-            {file && (
+            <ClipboardPaste className="h-4 w-4 text-primary" />
+            Paste Excel Data
+            {allRows.length > 0 && (
               <Badge variant="outline" className="ml-1 text-[10px]">
                 {allRows.length.toLocaleString()} rows
               </Badge>
@@ -610,133 +590,87 @@ export function ProductReconciliationView() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Drag-drop area or file summary */}
-          {!file ? (
-            <div
-              className={cn(
-                "flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-8 text-center transition-colors",
-                dragOver
-                  ? "border-primary bg-primary/5"
-                  : "border-border hover:border-primary/40 hover:bg-muted/30"
-              )}
-              onDragOver={(e) => {
-                e.preventDefault();
-                setDragOver(true);
-              }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setDragOver(false);
-                const f = e.dataTransfer.files?.[0];
-                if (f) handleFileSelect(f);
-              }}
-            >
-              <FileSpreadsheet className="mb-2 h-10 w-10 text-muted-foreground" />
-              <p className="text-sm font-medium">
-                Drag &amp; drop an Excel file here, or click to browse
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Supports .xlsx and .xls — full row set will be parsed client-side
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-3 gap-1.5"
-                disabled={parsing}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                {parsing ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Upload className="h-3.5 w-3.5" />
-                )}
-                {parsing ? "Parsing…" : "Browse"}
-              </Button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".xlsx,.xls"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) handleFileSelect(f);
-                }}
-              />
-            </div>
-          ) : (
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 dark:bg-emerald-950/40">
-                  <FileSpreadsheet className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
-                </div>
-                <div>
-                  <div className="text-sm font-medium break-all">{file.name}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {allRows.length.toLocaleString()} rows parsed
-                    {parsing && " · loading…"}
-                  </div>
-                </div>
-              </div>
+          {/* Paste area */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs font-medium">
+                Paste tab-separated data from Excel (Ctrl+V)
+              </Label>
               <div className="flex items-center gap-2">
                 <Button
+                  type="button"
                   variant="outline"
                   size="sm"
                   className="gap-1.5"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => setPastedText(SAMPLE_PASTE_TEMPLATE)}
                   disabled={parsing}
                 >
-                  <RefreshCw className="h-3.5 w-3.5" /> Replace
+                  <Info className="h-3.5 w-3.5" /> Load Sample
                 </Button>
                 <Button
+                  type="button"
                   variant="outline"
                   size="sm"
                   className="gap-1.5 text-rose-600 hover:text-rose-700"
                   onClick={resetAll}
-                  disabled={parsing || comparing}
+                  disabled={parsing || comparing || (!pastedText && allRows.length === 0)}
                 >
-                  <Trash2 className="h-3.5 w-3.5" /> Remove
+                  <Trash2 className="h-3.5 w-3.5" /> Clear
                 </Button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".xlsx,.xls"
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) handleFileSelect(f);
-                  }}
-                />
               </div>
             </div>
-          )}
+            <textarea
+              className={cn(
+                "w-full min-h-[180px] rounded-md border border-input bg-background px-3 py-2 font-mono text-xs",
+                "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1",
+                "placeholder:text-muted-foreground"
+              )}
+              placeholder={SAMPLE_PLACEHOLDER}
+              value={pastedText}
+              onChange={(e) => setPastedText(e.target.value)}
+              disabled={parsing}
+              spellCheck={false}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                className={cn("gap-1.5 text-white hover:opacity-90", theme.bg)}
+                onClick={handlePaste}
+                disabled={parsing || !pastedText.trim()}
+              >
+                {parsing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ClipboardCheck className="h-3.5 w-3.5" />
+                )}
+                {parsing ? "Parsing…" : "Parse Pasted Data"}
+              </Button>
+              {allRows.length > 0 && (
+                <Badge variant="outline" className="text-[10px]">
+                  {allRows.length.toLocaleString()} rows parsed · {headers.length} columns
+                </Badge>
+              )}
+            </div>
+          </div>
 
-          {/* Sheet selector */}
-          {sheets.length > 0 && (
-            <div className="flex flex-col gap-2 md:flex-row md:items-end">
-              <div className="flex-1">
-                <Label className="text-xs font-medium">Select Sheet</Label>
-                <Select value={sheet} onValueChange={handleSheetChange} disabled={parsing}>
-                  <SelectTrigger className="mt-1">
-                    <SelectValue placeholder="— select a sheet —" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-72 scroll-thin">
-                    {sheets.map((s: any) => (
-                      <SelectItem key={s.name} value={s.name}>
-                        <span className="flex items-center gap-2">
-                          <SheetIcon className="h-3.5 w-3.5" />
-                          {s.name}
-                          <Badge variant="outline" className="ml-1 text-[9px]">
-                            {(s.totalRows ?? 0).toLocaleString()} rows
-                          </Badge>
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          )}
+          {/* Sample template helper */}
+          <Alert className="border-primary/20 bg-primary/5">
+            <Info className="h-4 w-4 text-primary" />
+            <AlertTitle className="text-xs font-medium">How to copy from Excel</AlertTitle>
+            <AlertDescription className="text-xs">
+              <ol className="ml-4 list-decimal space-y-0.5">
+                <li>Select the cells in Excel (including the header row).</li>
+                <li>Press <kbd className="rounded bg-muted px-1">Ctrl+C</kbd> to copy.</li>
+                <li>Click the paste area above, press <kbd className="rounded bg-muted px-1">Ctrl+V</kbd>.</li>
+                <li>Click <strong>Parse Pasted Data</strong> — columns will be auto-detected.</li>
+              </ol>
+              <p className="mt-1.5 text-muted-foreground">
+                Required columns: <strong>Date, PO NO#, Factory PO, Size, Qty</strong>.
+                Column names can vary (e.g. "PO#" or "PO Number" → PO NO#) — you can remap after parsing.
+              </p>
+            </AlertDescription>
+          </Alert>
         </CardContent>
       </Card>
 
@@ -1085,7 +1019,7 @@ export function ProductReconciliationView() {
                 {/* Excel */}
                 <div className="rounded-md border bg-muted/30 p-3">
                   <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
-                    <FileSpreadsheet className="h-3.5 w-3.5" /> Excel Source
+                    <ClipboardCheck className="h-3.5 w-3.5" /> Excel Source
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-xs">
                     <StatBox
@@ -1146,7 +1080,7 @@ export function ProductReconciliationView() {
           <CardHeader className="pb-2">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <CardTitle className="flex items-center gap-2 text-base">
-                <FileSpreadsheet className="h-4 w-4 text-primary" />
+                <ClipboardCheck className="h-4 w-4 text-primary" />
                 Comparison Results
                 <Badge variant="outline" className="ml-1 text-[10px]">
                   {allResults.length.toLocaleString()} groups

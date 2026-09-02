@@ -1041,3 +1041,46 @@ Stage Summary:
 - **Key business rules enforced**: Date is only a filter (not comparison key); Size normalization preserves T suffix (M(10) ≠ M(10T)); Qty is summed per (poNo+factoryPO+size) group before comparison; EXACT_DUPLICATE detection (same date+poNo+factoryPO+size+qty appears >1 time); READ-ONLY (no auto-fix per spec §24); Date Range Safety shows total/in-range/excluded for both sources.
 - Files created: src/lib/reconciliation-service.ts, src/app/api/reconcile/route.ts, src/components/views/product-reconciliation-view.tsx.
 - Files modified: src/lib/api-client.ts (added reconcileData method), src/store/app-store.ts (ViewKey), src/app/page.tsx (router), src/components/layout/sidebar.tsx (nav item + GitCompare icon), src/components/layout/header.tsx (title).
+
+---
+Task ID: RECONCILE-PASTE-1
+Agent: main (Z.ai Code)
+Task: Change Reconciliation view from file-upload to copy-paste mode (no file handling), with a sample template.
+
+Work Log:
+- Replaced the file-upload Section 1 (drag-drop + sheet selector) with a paste-based UI:
+  * Removed: `file` state, `wbRef` (workbook ref), `dragOver` state, `fileInputRef`, `handleFileSelect()`, `handleSheetChange()`, sheet selector dropdown, drag-drop area, file summary card.
+  * Removed imports: `Upload`, `FileSpreadsheet`, `Sheet as SheetIcon` from lucide-react; `readWorkbook`, `parseSheet` from `@/lib/excel`.
+  * Added imports: `ClipboardPaste`, `ClipboardCheck` from lucide-react.
+  * Added state: `pastedText` (string).
+  * Added handler `handlePaste()`: splits pasted text by newlines, first line = headers (tab-separated), remaining lines = data rows. Auto-maps via `buildAutoMapping`. Sets `allRows` + `parseResult` + `mapping`.
+- Added 2 sample constants:
+  * `SAMPLE_PASTE_TEMPLATE` — 5-row tab-separated sample (Date, PO NO#, Factory PO, Size, Qty with realistic MAFATE data). User clicks "Load Sample" to prefill.
+  * `SAMPLE_PLACEHOLDER` — shown in the empty textarea as a format hint.
+- New Section 1 UI:
+  * Title: "Paste Excel Data" with ClipboardPaste icon + row count badge.
+  * Textarea (min-h-180px, font-mono, text-xs) with placeholder showing the sample format.
+  * Buttons: "Load Sample" (Info icon, fills textarea with SAMPLE_PASTE_TEMPLATE) + "Clear" (Trash2 icon, resets all).
+  * "Parse Pasted Data" button (themed bg, disabled when textarea empty or parsing).
+  * "How to copy from Excel" Alert with 4-step instructions + required columns list.
+- Updated header subtitle: "Paste Excel data → filter by date → compare with Website MasterData → spot mismatches, missing rows, duplicates, and likely typos."
+- Updated header badge: shows row count (was file.name) when data is parsed.
+- Replaced 2 remaining `FileSpreadsheet` icon usages with `ClipboardCheck`.
+- Agent Browser verification:
+  * Page renders "Paste Excel Data" + textarea + "Load Sample" + "Clear" + "Parse Pasted Data" + "How to copy from Excel" alert ✓
+  * Click "Load Sample" → textarea fills with sample TSV data ✓
+  * Click "Parse Pasted Data" → "rows parsed" + "Column Mapping" + "Date Range Filter" + "Compare with Website Data" appear ✓
+  * No page errors, no console errors ✓
+  * TypeScript clean (npx tsc --noEmit → 0 errors in product-reconciliation-view)
+
+Stage Summary:
+- Reconciliation view now uses **copy-paste only** (no file upload). Users:
+  1. Select cells in Excel (including header row)
+  2. Ctrl+C to copy
+  3. Click the paste area, Ctrl+V to paste
+  4. Click "Parse Pasted Data" — columns auto-detected
+  5. Adjust column mapping if needed
+  6. Select date range
+  7. Click "Compare with Website Data"
+- A "Load Sample" button pre-fills the paste area with a 5-row template (Date, PO NO#, Factory PO, Size, Qty) so users can see the expected format.
+- File changed: `src/components/views/product-reconciliation-view.tsx` (replaced Section 1 + imports + state + handlers).
