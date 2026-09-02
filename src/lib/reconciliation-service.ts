@@ -1,18 +1,19 @@
 // ReconciliationService
 // Compares imported Excel data with Website (MasterData) data within a selected
-// date range. Only 4 fields are compared: PO NO#, Factory PO, Size, Qty.
+// date range. Only 3 fields are compared: Factory PO, Size, Qty.
 //
 // Flow (spec §27):
-//   Excel Data → Filter By Date → Normalize → Group By (PO+FactoryPO+Size) → SUM Qty
+//   Excel Data → Filter By Date → Normalize → Group By (FactoryPO+Size) → SUM Qty
 //   Website Data → Filter Same Date Range → Normalize → Group → SUM Qty
 //   FULL OUTER COMPARISON → MATCH / MISMATCH / MISSING / DUPLICATE
 //
 // Key rules:
 //   - Date is only a FILTER — not part of the comparison key.
+//   - Comparison key: Factory PO + Size (PO NO# is NOT compared).
 //   - Size normalization: trim, collapse spaces, remove line breaks. M(10) ≠ M(10T).
 //   - Qty is summed per group before comparison (so 10+16=26 matches a single 26).
 //   - READ-ONLY: this service never writes data. Only detects + reports.
-//   - EXACT DUPLICATE detection: same (date + poNo + factoryPO + size + qty) appears >1 time.
+//   - EXACT DUPLICATE detection: same (date + factoryPO + size + qty) appears >1 time.
 
 import { db } from "./db";
 
@@ -24,7 +25,6 @@ export interface ReconciliationInput {
   dateTo: string;   // yyyy-MM-dd
   excelRows: Array<{
     date?: string;
-    poNo?: string;
     factoryPO?: string;
     size?: string;
     qty?: string | number;
@@ -44,7 +44,6 @@ export type ComparisonStatus =
 
 export interface ComparisonResult {
   status: ComparisonStatus;
-  poNo: string;
   factoryPO: string;
   size: string;
   excelQty: number;
@@ -141,19 +140,18 @@ function normalizeQty(q: string | number | null | undefined): number {
 // ===== Group + Sum =====
 
 interface GroupedRow {
-  poNo: string;
   factoryPO: string;
   size: string;
   qty: number;
   rowCount: number;
 }
 
-function groupAndSum(rows: Array<{ poNo: string; factoryPO: string; size: string; qty: number }>): Map<string, GroupedRow> {
+function groupAndSum(rows: Array<{ factoryPO: string; size: string; qty: number }>): Map<string, GroupedRow> {
   const map = new Map<string, GroupedRow>();
   for (const r of rows) {
-    const key = `${r.poNo}|${r.factoryPO}|${r.size}`;
+    const key = `${r.factoryPO}|${r.size}`;
     if (!map.has(key)) {
-      map.set(key, { poNo: r.poNo, factoryPO: r.factoryPO, size: r.size, qty: 0, rowCount: 0 });
+      map.set(key, { factoryPO: r.factoryPO, size: r.size, qty: 0, rowCount: 0 });
     }
     const g = map.get(key)!;
     g.qty += r.qty;
@@ -163,10 +161,9 @@ function groupAndSum(rows: Array<{ poNo: string; factoryPO: string; size: string
 }
 
 // ===== Exact duplicate detection (spec §17) =====
-// Checks if the same (date + poNo + factoryPO + size + qty) appears more than once
+// Checks if the same (date + factoryPO + size + qty) appears more than once
 // within the same source (Excel or Website).
 interface ExactDuplicate {
-  poNo: string;
   factoryPO: string;
   size: string;
   qty: number;
@@ -174,10 +171,10 @@ interface ExactDuplicate {
   source: "excel" | "website";
 }
 
-function findExactDuplicates(rows: Array<{ date: string; poNo: string; factoryPO: string; size: string; qty: number }>, source: "excel" | "website"): ExactDuplicate[] {
-  const seen = new Map<string, { count: number; sample: { date: string; poNo: string; factoryPO: string; size: string; qty: number } }>();
+function findExactDuplicates(rows: Array<{ date: string; factoryPO: string; size: string; qty: number }>, source: "excel" | "website"): ExactDuplicate[] {
+  const seen = new Map<string, { count: number; sample: { date: string; factoryPO: string; size: string; qty: number } }>();
   for (const r of rows) {
-    const key = `${r.date}|${r.poNo}|${r.factoryPO}|${r.size}|${r.qty}`;
+    const key = `${r.date}|${r.factoryPO}|${r.size}|${r.qty}`;
     if (!seen.has(key)) {
       seen.set(key, { count: 0, sample: r });
     }
@@ -187,7 +184,6 @@ function findExactDuplicates(rows: Array<{ date: string; poNo: string; factoryPO
   for (const [, v] of seen) {
     if (v.count > 1) {
       duplicates.push({
-        poNo: v.sample.poNo,
         factoryPO: v.sample.factoryPO,
         size: v.sample.size,
         qty: v.sample.qty,
@@ -207,7 +203,7 @@ export async function reconcileData(input: ReconciliationInput): Promise<Reconci
   // Step 1: Parse + filter Excel rows by date range.
   const excelTotalRecords = excelRows.length;
   let excelRecordsInDateRange = 0;
-  const excelNormalized: Array<{ date: string; poNo: string; factoryPO: string; size: string; qty: number }> = [];
+  const excelNormalized: Array<{ date: string; factoryPO: string; size: string; qty: number }> = [];
   let excelInvalidCount = 0;
 
   for (const row of excelRows) {
@@ -218,25 +214,24 @@ export async function reconcileData(input: ReconciliationInput): Promise<Reconci
       continue; // no date → excluded (spec §4)
     }
     excelRecordsInDateRange++;
-    const poNo = normalizeStr(row.poNo);
     const factoryPO = normalizeStr(row.factoryPO);
     const size = normalizeSize(row.size);
     const qty = normalizeQty(row.qty);
-    if (!poNo || !factoryPO || !size) {
+    if (!factoryPO || !size) {
       excelInvalidCount++;
       continue; // invalid data
     }
-    excelNormalized.push({ date: dateStr, poNo, factoryPO, size, qty });
+    excelNormalized.push({ date: dateStr, factoryPO, size, qty });
   }
 
   // Step 2: Fetch Website (MasterData) rows in the date range.
   const websiteRows = await db.masterData.findMany({
     where: { productType },
-    select: { date: true, poNo: true, factoryPO: true, size: true, qty1: true, shippingStatus: true },
+    select: { date: true, factoryPO: true, size: true, qty1: true, shippingStatus: true },
   });
   const websiteTotalRecords = websiteRows.length;
   let websiteRecordsInDateRange = 0;
-  const websiteNormalized: Array<{ date: string; poNo: string; factoryPO: string; size: string; qty: number }> = [];
+  const websiteNormalized: Array<{ date: string; factoryPO: string; size: string; qty: number }> = [];
 
   for (const row of websiteRows) {
     const dateStr = parseDate(row.date);
@@ -246,15 +241,14 @@ export async function reconcileData(input: ReconciliationInput): Promise<Reconci
       continue;
     }
     websiteRecordsInDateRange++;
-    const poNo = normalizeStr(row.poNo);
     const factoryPO = normalizeStr(row.factoryPO);
     const size = normalizeSize(row.size);
     const qty = normalizeQty(row.qty1);
-    if (!poNo || !factoryPO || !size) continue;
-    websiteNormalized.push({ date: dateStr, poNo, factoryPO, size, qty });
+    if (!factoryPO || !size) continue;
+    websiteNormalized.push({ date: dateStr, factoryPO, size, qty });
   }
 
-  // Step 3: Detect exact duplicates (spec §17) — same (date+poNo+factoryPO+size+qty) appears >1 time.
+  // Step 3: Detect exact duplicates (spec §17) — same (date+factoryPO+size+qty) appears >1 time.
   const excelDuplicates = findExactDuplicates(excelNormalized, "excel");
   const websiteDuplicates = findExactDuplicates(websiteNormalized, "website");
 
@@ -267,15 +261,21 @@ export async function reconcileData(input: ReconciliationInput): Promise<Reconci
   const results: ComparisonResult[] = [];
 
   // Build lookup indexes for "possible wrong" detection.
-  const websiteByPoSize = new Map<string, string[]>();
-  const websiteByPoFpo = new Map<string, string[]>();
+  // - websiteBySize: size → list of distinct factoryPOs (used to suggest a likely
+  //   correct Factory PO when the Excel Factory PO looks wrong).
+  // - websiteByFpo: factoryPO → list of distinct sizes (used to suggest a likely
+  //   correct Size when the Excel Size looks wrong).
+  const websiteBySize = new Map<string, string[]>();
+  const websiteByFpo = new Map<string, string[]>();
   for (const [, g] of websiteGroups) {
-    const ks = `${g.poNo}|${g.size}`;
-    if (!websiteByPoSize.has(ks)) websiteByPoSize.set(ks, []);
-    websiteByPoSize.get(ks)!.push(g.factoryPO);
-    const kf = `${g.poNo}|${g.factoryPO}`;
-    if (!websiteByPoFpo.has(kf)) websiteByPoFpo.set(kf, []);
-    websiteByPoFpo.get(kf)!.push(g.size);
+    if (!websiteBySize.has(g.size)) websiteBySize.set(g.size, []);
+    if (!websiteBySize.get(g.size)!.includes(g.factoryPO)) {
+      websiteBySize.get(g.size)!.push(g.factoryPO);
+    }
+    if (!websiteByFpo.has(g.factoryPO)) websiteByFpo.set(g.factoryPO, []);
+    if (!websiteByFpo.get(g.factoryPO)!.includes(g.size)) {
+      websiteByFpo.get(g.factoryPO)!.push(g.size);
+    }
   }
 
   for (const key of allKeys) {
@@ -288,14 +288,14 @@ export async function reconcileData(input: ReconciliationInput): Promise<Reconci
         if (excel.rowCount > 1 || website.rowCount > 1) {
           results.push({
             status: "POSSIBLE_DUPLICATE",
-            poNo: excel.poNo, factoryPO: excel.factoryPO, size: excel.size,
+            factoryPO: excel.factoryPO, size: excel.size,
             excelQty: excel.qty, websiteQty: website.qty, difference: 0,
             excelRowCount: excel.rowCount, websiteRowCount: website.rowCount,
           });
         } else {
           results.push({
             status: "MATCHED",
-            poNo: excel.poNo, factoryPO: excel.factoryPO, size: excel.size,
+            factoryPO: excel.factoryPO, size: excel.size,
             excelQty: excel.qty, websiteQty: website.qty, difference: 0,
             excelRowCount: excel.rowCount, websiteRowCount: website.rowCount,
           });
@@ -303,37 +303,44 @@ export async function reconcileData(input: ReconciliationInput): Promise<Reconci
       } else {
         results.push({
           status: "QTY_MISMATCH",
-          poNo: excel.poNo, factoryPO: excel.factoryPO, size: excel.size,
+          factoryPO: excel.factoryPO, size: excel.size,
           excelQty: excel.qty, websiteQty: website.qty, difference: diff,
           excelRowCount: excel.rowCount, websiteRowCount: website.rowCount,
         });
       }
     } else if (excel && !website) {
-      const poSizeKey = `${excel.poNo}|${excel.size}`;
-      const possibleFpos = websiteByPoSize.get(poSizeKey) || [];
-      const poFpoKey = `${excel.poNo}|${excel.factoryPO}`;
-      const possibleSizes = websiteByPoFpo.get(poFpoKey) || [];
+      // Excel row's (factoryPO + size) is missing on the website.
+      // Heuristic: is there a different Factory PO on the website that has the
+      // same Size (and same Qty)? → likely a typo in the Factory PO column.
+      // Else, is there a different Size on the website for the same Factory PO
+      // (and same Qty)? → likely a typo in the Size column.
+      const sizeCandidates = (websiteBySize.get(excel.size) || []).filter(
+        (fpo) => fpo !== excel.factoryPO
+      );
+      const fpoCandidates = (websiteByFpo.get(excel.factoryPO) || []).filter(
+        (sz) => sz !== excel.size
+      );
 
-      if (possibleFpos.length > 0) {
+      if (sizeCandidates.length > 0) {
         results.push({
           status: "POSSIBLE_WRONG_FACTORY_PO",
-          poNo: excel.poNo, factoryPO: excel.factoryPO, size: excel.size,
+          factoryPO: excel.factoryPO, size: excel.size,
           excelQty: excel.qty, websiteQty: 0, difference: excel.qty,
-          suggestedFactoryPO: possibleFpos[0],
+          suggestedFactoryPO: sizeCandidates[0],
           excelRowCount: excel.rowCount, websiteRowCount: 0,
         });
-      } else if (possibleSizes.length > 0) {
+      } else if (fpoCandidates.length > 0) {
         results.push({
           status: "POSSIBLE_WRONG_SIZE",
-          poNo: excel.poNo, factoryPO: excel.factoryPO, size: excel.size,
+          factoryPO: excel.factoryPO, size: excel.size,
           excelQty: excel.qty, websiteQty: 0, difference: excel.qty,
-          suggestedSize: possibleSizes[0],
+          suggestedSize: fpoCandidates[0],
           excelRowCount: excel.rowCount, websiteRowCount: 0,
         });
       } else {
         results.push({
           status: "MISSING_ON_WEBSITE",
-          poNo: excel.poNo, factoryPO: excel.factoryPO, size: excel.size,
+          factoryPO: excel.factoryPO, size: excel.size,
           excelQty: excel.qty, websiteQty: 0, difference: excel.qty,
           excelRowCount: excel.rowCount, websiteRowCount: 0,
         });
@@ -341,7 +348,7 @@ export async function reconcileData(input: ReconciliationInput): Promise<Reconci
     } else if (!excel && website) {
       results.push({
         status: "MISSING_IN_EXCEL",
-        poNo: website.poNo, factoryPO: website.factoryPO, size: website.size,
+        factoryPO: website.factoryPO, size: website.size,
         excelQty: 0, websiteQty: website.qty, difference: -website.qty,
         excelRowCount: 0, websiteRowCount: website.rowCount,
       });
@@ -352,7 +359,7 @@ export async function reconcileData(input: ReconciliationInput): Promise<Reconci
   for (const dup of [...excelDuplicates, ...websiteDuplicates]) {
     results.push({
       status: "EXACT_DUPLICATE",
-      poNo: dup.poNo, factoryPO: dup.factoryPO, size: dup.size,
+      factoryPO: dup.factoryPO, size: dup.size,
       excelQty: dup.qty, websiteQty: dup.qty, difference: 0,
       excelRowCount: dup.source === "excel" ? dup.count : 0,
       websiteRowCount: dup.source === "website" ? dup.count : 0,

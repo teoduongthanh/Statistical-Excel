@@ -1084,3 +1084,85 @@ Stage Summary:
   7. Click "Compare with Website Data"
 - A "Load Sample" button pre-fills the paste area with a 5-row template (Date, PO NO#, Factory PO, Size, Qty) so users can see the expected format.
 - File changed: `src/components/views/product-reconciliation-view.tsx` (replaced Section 1 + imports + state + handlers).
+
+---
+Task ID: RECONCILE-REMOVE-PONO
+Agent: Z.ai Code (subagent)
+Task: Remove the PO NO# column entirely from the DATA RECONCILIATION & DUPLICATE CHECK feature. Comparison key becomes Factory PO + Size (no PO NO#).
+
+Work Log:
+- Modified 3 files: `src/lib/reconciliation-service.ts`, `src/components/views/product-reconciliation-view.tsx`, `src/lib/api-client.ts`. (The `src/app/api/reconcile/route.ts` passes through to the service unchanged.)
+
+- `src/lib/reconciliation-service.ts`:
+  * Top-of-file comments updated: "Only 3 fields are compared: Factory PO, Size, Qty"; pipeline key changed from "PO+FactoryPO+Size" to "FactoryPO+Size"; comparison key note added.
+  * Removed `poNo?` field from `ReconciliationInput.excelRows` array element type.
+  * Removed `poNo` from `ComparisonResult` interface.
+  * Removed `poNo` from internal `GroupedRow` interface.
+  * Removed `poNo` from internal `ExactDuplicate` interface.
+  * `groupAndSum()`: grouping key is now `${factoryPO}|${size}` (was `${poNo}|${factoryPO}|${size}`); the input array type drops poNo.
+  * `findExactDuplicates()`: dedup key is now `${date}|${factoryPO}|${r.size}|${r.qty}` (was `${date}|${poNo}|${factoryPO}|${size}|${qty}`); the input array type and the sample shape drop poNo; the returned `ExactDuplicate` objects no longer carry poNo.
+  * `reconcileData()`:
+    - Excel normalization: no longer reads/normalizes `row.poNo`; the `excelNormalized` array element type is `{ date, factoryPO, size, qty }`. Invalid-data check now requires only `factoryPO && size` (no poNo).
+    - Website fetch: `db.masterData.findMany` `select` no longer includes `poNo`; the `websiteNormalized` array element type drops poNo.
+    - Build lookup indexes: replaced `websiteByPoSize` (`poNo|size → factoryPOs`) and `websiteByPoFpo` (`poNo|factoryPO → sizes`) with `websiteBySize` (`size → factoryPOs[]`, distinct) and `websiteByFpo` (`factoryPO → sizes[]`, distinct).
+    - Comparison results: every pushed `ComparisonResult` no longer includes `poNo` (MATCHED, QTY_MISMATCH, POSSIBLE_DUPLICATE, MISSING_ON_WEBSITE, MISSING_IN_EXCEL, POSSIBLE_WRONG_FACTORY_PO, POSSIBLE_WRONG_SIZE, EXACT_DUPLICATE).
+    - "Possible wrong factory PO" trigger: when an Excel group's (factoryPO + size) is missing on website AND `websiteBySize.get(excel.size)` returns at least one different factoryPO → `POSSIBLE_WRONG_FACTORY_PO` with that as `suggestedFactoryPO`. (Previously keyed by poNo+size.)
+    - "Possible wrong size" trigger: when (factoryPO + size) missing AND no candidate factoryPO exists BUT `websiteByFpo.get(excel.factoryPO)` returns at least one different size → `POSSIBLE_WRONG_SIZE` with that as `suggestedSize`. (Previously keyed by poNo+factoryPO.)
+    - Exact-duplicate push: no longer references `dup.poNo`.
+  * `ReconciliationSummary` interface unchanged (counts only, no poNo mention).
+
+- `src/components/views/product-reconciliation-view.tsx`:
+  * Top-of-file pipeline comment updated to "Group By (FactoryPO+Size)" + added comparison-key note.
+  * `REQUIRED_FIELDS`: dropped `"poNo"` → `["date", "factoryPO", "size", "qty1"]`.
+  * `SAMPLE_PASTE_TEMPLATE`: header changed from `Date\tPO NO#\tFactory PO\tSize\tQty` → `Date\tFactory PO\tSize\tQty`; the 5 sample data rows had their PO NO# column (H411040101 / H411349637 / H411351971) removed (4 columns now).
+  * `SAMPLE_PLACEHOLDER`: same change (4 columns).
+  * `buildCanonicalRows()`: output type dropped `poNo?`; removed `const ph = reverse.poNo;` and `if (ph) out.poNo = row[ph] ?? "";`; comment updated.
+  * "How to copy from Excel" alert helper text: "Required columns: Date, Factory PO, Size, Qty" (was Date, PO NO#, Factory PO, Size, Qty); the alias hint "(e.g. PO# → PO NO#)" replaced with "(e.g. PO# or PO Number are no longer required)".
+  * Column Mapping helper text: "Date, Factory PO, Size, Q'ty 1." (was "Date, PO NO#, Factory PO, Size, Q'ty 1.").
+  * Preview Filtered Data table: removed `PO NO#` column header; removed the `r.poNo` TableCell; `colSpan` of the empty-state row reduced from 6 → 5.
+  * Comparison Results table: removed `PO NO#` column header; removed the `r.poNo` TableCell; `colSpan` of the empty-state row reduced from 8 → 7; TableRow `key` changed from `${r.poNo}-${r.factoryPO}-${r.size}-${idx}` → `${r.factoryPO}-${r.size}-${idx}`.
+  * Detail Dialog: subtitle changed from "PO NO# + Factory PO + Size" → "Factory PO + Size"; identity grid changed from `grid-cols-3` with 3 DetailField (PO NO#, Factory PO, Size) → `grid-cols-2` with 2 DetailField (Factory PO, Size).
+  * `statusExplanation()` strings updated to drop all PO NO# mentions:
+    - MATCHED: "…same Qty for this Factory PO + Size combination…" (was "PO NO# + Factory PO + Size")
+    - POSSIBLE_WRONG_FACTORY_PO: "…different Factory PO for the same Size exists…" (was "same PO NO# + Size")
+    - POSSIBLE_WRONG_SIZE: "…different Size for the same Factory PO exists…" (was "same PO NO# + Factory PO")
+    - EXACT_DUPLICATE: "same Date + Factory PO + Size + Qty…" (was "Date + PO + Factory PO + Size + Qty")
+    - INVALID_DATA: "Row is missing required Factory PO or Size…" (was "PO NO#, Factory PO, or Size")
+  * Detail Dialog suggestion panels: "A different Factory PO for the same Size exists…" (was "same PO NO# + Size") and "A different Size for the same Factory PO exists…" (was "same PO NO# + Factory PO"). EXACT_DUPLICATE explanation in dialog: "Date + Factory PO + Size + Qty" (was "Date + PO + Factory PO + Size + Qty").
+
+- `src/lib/api-client.ts`:
+  * `reconcileData()` method: removed `poNo?` from the `excelRows` array element type; removed `poNo: string;` from the `results` array element type. Added comment "Comparison key: Factory PO + Size (PO NO# is NOT compared)."
+
+- Verification:
+  * `npx tsc --noEmit -p tsconfig.json` filtered for the 3 modified files (`reconciliation-service`, `product-reconciliation-view`, `api/reconcile/route`) → 0 errors.
+  * `npx eslint src/components/views/product-reconciliation-view.tsx src/lib/reconciliation-service.ts src/lib/api-client.ts` → 0 warnings, 0 errors.
+  * Note: the broader tsc run shows pre-existing errors in unrelated views (login-dialog, quantity-check-view, shipment-planning-view, statistics-view, users-view) — these reference api-client methods that don't exist in this codebase yet, and are NOT related to this task.
+
+Stage Summary:
+- PO NO# column is fully removed from the reconciliation feature across backend types, frontend UI, and the typed API client.
+- Comparison key is now `Factory PO + Size` (Qty summed per group before comparison; Date stays as a filter only).
+- All 9 status types preserved. POSSIBLE_WRONG_FACTORY_PO now triggers when the same Size exists on the website for a different Factory PO; POSSIBLE_WRONG_SIZE now triggers when the same Factory PO exists on the website for a different Size.
+- Sample paste template (4-column) now matches the new format; required-columns helpers, status explanations, and detail dialog all reflect the change.
+
+---
+Task ID: RECONCILE-REMOVE-PONO-VERIFY
+Agent: main (Z.ai Code)
+Task: Verify PO NO# removal from Reconciliation feature.
+
+Work Log:
+- Restarted dev server with fresh cache.
+- API test (curl): POST /api/reconcile with Excel row {date, factoryPO, size, qty} (no poNo) → HTTP 200, results show QTY_MISMATCH for MH26111046/M(12) (Excel=10, Website=19, diff=-9). Response objects no longer contain `poNo` field ✓
+- Agent Browser verification:
+  * Navigated to Reconciliation view ✓
+  * Searched snapshot for "PO NO#" / "poNo" → NONE found ✓ (completely removed from UI)
+  * Clicked "Load Sample" → textarea fills with 4-column template (Date / Factory PO / Size / Qty) — no PO NO# column ✓
+  * No page errors, no console errors ✓
+- TypeScript: 0 errors in reconciliation files (verified by subagent).
+- ESLint: clean (verified by subagent).
+
+Stage Summary:
+- PO NO# column completely removed from the DATA RECONCILIATION & DUPLICATE CHECK feature.
+- Comparison key is now: **Factory PO + Size** (was PO NO# + Factory PO + Size).
+- Date remains a filter only. Qty is still summed per group.
+- All 9 status types preserved (MATCHED, QTY_MISMATCH, MISSING_ON_WEBSITE, MISSING_IN_EXCEL, POSSIBLE_WRONG_FACTORY_PO, POSSIBLE_WRONG_SIZE, POSSIBLE_DUPLICATE, EXACT_DUPLICATE, INVALID_DATA).
+- Files modified: src/lib/reconciliation-service.ts, src/components/views/product-reconciliation-view.tsx, src/lib/api-client.ts.

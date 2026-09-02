@@ -1,0 +1,800 @@
+     1→// Typed API client wrappers for the Smart Excel Data Entry System.
+     2→import type {
+     3→  AppSettings,
+     4→  AutocompleteSuggestion,
+     5→  DashboardStats,
+     6→  EntryData,
+     7→  ImportHistoryItem,
+     8→  LookupRuleConfig,
+     9→  MasterGroup,
+    10→  OrderNote,
+    11→  ParseResult,
+    12→  ProductionStats,
+    13→  QtyValidationGroup,
+    14→} from "@/types";
+    15→import type { CanonicalField } from "@/lib/fields";
+    16→
+    17→async function jsonOrThrow<T>(res: Response): Promise<T> {
+    18→  if (!res.ok) {
+    19→    let msg = `HTTP ${res.status}`;
+    20→    try {
+    21→      const body = await res.json();
+    22→      msg = body.error || body.errors?.join(", ") || JSON.stringify(body);
+    23→    } catch {
+    24→      /* ignore */
+    25→    }
+    26→    throw new Error(msg);
+    27→  }
+    28→  return res.json() as Promise<T>;
+    29→}
+    30→
+    31→export const api = {
+    32→  // Excel parse
+    33→  parseExcel: async (
+    34→    file: File,
+    35→    sheet?: string
+    36→  ): Promise<ParseResult & { autoMapping: Record<string, CanonicalField | ""> }> => {
+    37→    const fd = new FormData();
+    38→    fd.append("file", file);
+    39→    if (sheet) fd.append("sheet", sheet);
+    40→    const res = await fetch("/api/excel/parse", { method: "POST", body: fd });
+    41→    return jsonOrThrow(res);
+    42→  },
+    43→
+    44→  importExcel: async (body: {
+    45→    fileName: string;
+    46→    sheetName: string;
+    47→    fileBase64: string;
+    48→    mapping: Record<string, CanonicalField | "">;
+    49→    replaceExisting?: boolean;
+    50→    productType?: string;
+    51→  }) => {
+    52→    const res = await fetch("/api/excel/import", {
+    53→      method: "POST",
+    54→      headers: { "Content-Type": "application/json" },
+    55→      body: JSON.stringify(body),
+    56→    });
+    57→    return jsonOrThrow(res);
+    58→  },
+    59→
+    60→  exportExcel: async (body: {
+    61→    source: "entries" | "master";
+    62→    columns?: CanonicalField[];
+    63→    mode?: "all" | "filtered" | "selected";
+    64→    ids?: string[];
+    65→    filters?: Record<string, string>;
+    66→    sortOrder?: "asc" | "desc";
+    67→  }): Promise<Blob> => {
+    68→    const res = await fetch("/api/excel/export", {
+    69→      method: "POST",
+    70→      headers: { "Content-Type": "application/json" },
+    71→      body: JSON.stringify(body),
+    72→    });
+    73→    if (!res.ok) throw new Error("Export failed");
+    74→    return res.blob();
+    75→  },
+    76→
+    77→  // Master data
+    78→  listMaster: async (params: Record<string, string | number>) => {
+    79→    const q = new URLSearchParams(
+    80→      Object.entries(params).map(([k, v]) => [k, String(v)])
+    81→    ).toString();
+    82→    const res = await fetch(`/api/master-data?${q}`);
+    83→    return jsonOrThrow<{
+    84→      total: number;
+    85→      page: number;
+    86→      pageSize: number;
+    87→      totalPages: number;
+    88→      rows: any[];
+    89→    }>(res);
+    90→  },
+    91→
+    92→  updateMasterRow: async (id: string, body: Record<string, any>) => {
+    93→    const res = await fetch(`/api/master-data/${id}`, {
+    94→      method: "PUT",
+    95→      headers: { "Content-Type": "application/json" },
+    96→      body: JSON.stringify(body),
+    97→    });
+    98→    return jsonOrThrow(res);
+    99→  },
+   100→
+   101→  deleteMasterRow: async (id: string) => {
+   102→    const res = await fetch(`/api/master-data/${id}`, { method: "DELETE" });
+   103→    return jsonOrThrow(res);
+   104→  },
+   105→
+   106→  // Add a new row to Master Data from the Data Entry form.
+   107→  // Used when a Factory PO doesn't exist yet and the user wants to create it.
+   108→  addMasterRow: async (body: {
+   109→    productType: string;
+   110→    factoryPO: string;
+   111→    size: string;
+   112→    shippingStatus?: string;
+   113→    model?: string;
+   114→    sku?: string;
+   115→    poNo?: string;
+   116→    item?: string;
+   117→    season?: string;
+   118→    colorCode?: string;
+   119→    colorCode2?: string;
+   120→    painting?: string;
+   121→    printingColor?: string;
+   122→    qty1?: string | number;
+   123→    qty2?: string | number;
+   124→    deadline?: string;
+   125→    date?: string;
+   126→  }) => {
+   127→    const res = await fetch("/api/master-data", {
+   128→      method: "POST",
+   129→      headers: { "Content-Type": "application/json" },
+   130→      body: JSON.stringify(body),
+   131→    });
+   132→    return jsonOrThrow<{ ok: boolean; row?: any; error?: string }>(res);
+   133→  },
+   134→
+   135→  // Bulk add master data rows in a single transaction + single MasterGroup
+   136→  // rebuild (much faster than calling addMasterRow N times).
+   137→  bulkAddMasterRows: async (rows: Array<{
+   138→    productType: string;
+   139→    factoryPO: string;
+   140→    size: string;
+   141→    poNo?: string;
+   142→    shippingStatus?: string;
+   143→    model?: string;
+   144→    sku?: string;
+   145→    item?: string;
+   146→    season?: string;
+   147→    colorCode?: string;
+   148→    colorCode2?: string;
+   149→    painting?: string;
+   150→    printingColor?: string;
+   151→    qty1?: string | number;
+   152→    qty2?: string | number;
+   153→    deadline?: string;
+   154→    date?: string;
+   155→  }>) => {
+   156→    const res = await fetch("/api/master-data/bulk", {
+   157→      method: "POST",
+   158→      headers: { "Content-Type": "application/json" },
+   159→      body: JSON.stringify({ rows }),
+   160→    });
+   161→    return jsonOrThrow<{ ok: boolean; inserted: number; createdIds: string[]; productsAffected: number; error?: string }>(res);
+   162→  },
+   163→
+   164→  searchMaster: async (
+   165→    q: string,
+   166→    field: CanonicalField,
+   167→    limit = 15,
+   168→    prioritizeByDeadline = true,
+   169→    productType?: string,
+   170→    poNo?: string
+   171→  ): Promise<AutocompleteSuggestion[]> => {
+   172→    const params = new URLSearchParams({
+   173→      q, field, limit: String(limit),
+   174→      prioritizeByDeadline: String(prioritizeByDeadline),
+   175→    });
+   176→    if (productType) params.set("productType", productType);
+   177→    if (poNo) params.set("poNo", poNo);
+   178→    const res = await fetch(`/api/master-data/search?${params}`);
+   179→    return jsonOrThrow(res);
+   180→  },
+   181→
+   182→  lookupFactoryPO: async (factoryPO: string, productType?: string): Promise<MasterGroup> => {
+   183→    const params = new URLSearchParams();
+   184→    if (productType) params.set("productType", productType);
+   185→    const qs = params.toString();
+   186→    const res = await fetch(`/api/master-data/factory-po/${encodeURIComponent(factoryPO)}${qs ? `?${qs}` : ""}`);
+   187→    return jsonOrThrow(res);
+   188→  },
+   189→
+   190→  // Entries
+   191→  listEntries: async (params: Record<string, string | number>) => {
+   192→    const q = new URLSearchParams(
+   193→      Object.entries(params).map(([k, v]) => [k, String(v)])
+   194→    ).toString();
+   195→    const res = await fetch(`/api/entries?${q}`);
+   196→    return jsonOrThrow<{
+   197→      total: number;
+   198→      page: number;
+   199→      pageSize: number;
+   200→      totalPages: number;
+   201→      rows: EntryData[];
+   202→    }>(res);
+   203→  },
+   204→
+   205→  createEntry: async (body: {
+   206→    productType: string; // MANDATORY — entry is scoped to one product.
+   207→    factoryPO: string;
+   208→    size: string;
+   209→    qty1: string;
+   210→    autoCalcQty2?: boolean;
+   211→    note?: string;
+   212→  }) => {
+   213→    const res = await fetch("/api/entries", {
+   214→      method: "POST",
+   215→      headers: { "Content-Type": "application/json" },
+   216→      body: JSON.stringify(body),
+   217→    });
+   218→    return jsonOrThrow<{ ok: boolean; entry?: EntryData; errors?: string[] }>(res);
+   219→  },
+   220→
+   221→  // Preview an entry (no DB write) — validates, looks up Master Data, computes qty2.
+   222→  previewEntry: async (body: {
+   223→    productType: string;
+   224→    shippingStatus: string;
+   225→    poNo: string;
+   226→    factoryPO: string;
+   227→    size: string;
+   228→    qty: string;
+   229→  }) => {
+   230→    const res = await fetch("/api/entries/preview", {
+   231→      method: "POST",
+   232→      headers: { "Content-Type": "application/json" },
+   233→      body: JSON.stringify(body),
+   234→    });
+   235→    return jsonOrThrow<any>(res);
+   236→  },
+   237→
+   238→  // Confirm an entry (atomic DB transaction). For Output, creates paired Pending.
+   239→  confirmEntry: async (body: {
+   240→    productType: string;
+   241→    shippingStatus: string;
+   242→    poNo: string;
+   243→    factoryPO: string;
+   244→    size: string;
+   245→    qty: string;
+   246→  }) => {
+   247→    const res = await fetch("/api/entries/confirm", {
+   248→      method: "POST",
+   249→      headers: { "Content-Type": "application/json" },
+   250→      body: JSON.stringify(body),
+   251→    });
+   252→    return jsonOrThrow<{ ok: boolean; created?: any[]; merged?: any[]; preview?: any; errors?: string[] }>(res);
+   253→  },
+   254→
+   255→  bulkEntries: async (
+   256→    items: { factoryPO: string; size: string; qty1: string; productType?: string }[],
+   257→    autoCalcQty2 = true
+   258→  ) => {
+   259→    const res = await fetch("/api/entries/bulk", {
+   260→      method: "POST",
+   261→      headers: { "Content-Type": "application/json" },
+   262→      body: JSON.stringify({ items, autoCalcQty2 }),
+   263→    });
+   264→    return jsonOrThrow(res);
+   265→  },
+   266→
+   267→  // ===== Bulk Data Validation (Copy & Paste from Excel) =====
+   268→  // Validates a batch of pasted Excel rows WITHOUT writing to the database.
+   269→  // Returns the full validation result: summary, per-row results, grouped errors,
+   270→  // current DB totals, and final simulated totals.
+   271→  bulkValidate: async (body: {
+   272→    productType: string;
+   273→    rows: Record<string, string>[];
+   274→  }) => {
+   275→    const res = await fetch("/api/bulk-validation", {
+   276→      method: "POST",
+   277→      headers: { "Content-Type": "application/json" },
+   278→      body: JSON.stringify(body),
+   279→    });
+   280→    return jsonOrThrow<{
+   281→      ok: boolean;
+   282→      summary: {
+   283→        totalRows: number;
+   284→        validRows: number;
+   285→        warningRows: number;
+   286→        errorRows: number;
+   287→        productGroupsAffected: number;
+   288→        duplicatePossible: number;
+   289→        quantityErrors: number;
+   290→        masterDataErrors: number;
+   291→        deadlineErrors: number;
+   292→      };
+   293→      rows: any[];
+   294→      groupedErrors: any[];
+   295→      warnings: any[];
+   296→      currentGroups: Record<string, any>;
+   297→      finalGroups: Record<string, any>;
+   298→    }>(res);
+   299→  },
+   300→
+   301→  // Performs the actual database INSERT for validated bulk rows.
+   302→  // Uses a transaction so the import is atomic.
+   303→  bulkImport: async (body: {
+   304→    productType: string;
+   305→    rows: {
+   306→      shippingStatus: string;
+   307→      poNo: string;
+   308→      factoryPO: string;
+   309→      size: string;
+   310→      qty1: number;
+   311→      confirmReason?: string;
+   312→      note?: string;
+   313→    }[];
+   314→    mode: "all_valid" | "selected" | "fix_first";
+   315→    selectedRowNumbers?: number[];
+   316→    importedBy?: string;
+   317→  }) => {
+   318→    const res = await fetch("/api/bulk-import", {
+   319→      method: "POST",
+   320→      headers: { "Content-Type": "application/json" },
+   321→      body: JSON.stringify(body),
+   322→    });
+   323→    return jsonOrThrow<{
+   324→      ok: boolean;
+   325→      importId: string;
+   326→      imported: number;
+   327→      skipped: number;
+   328→      errors: string[];
+   329→      auditLogId?: string;
+   330→    }>(res);
+   331→  },
+   332→
+   333→  // Fetch bulk import history (from AuditLog).
+   334→  bulkImportHistory: async (limit = 50) => {
+   335→    const res = await fetch(`/api/bulk-import/history?limit=${limit}`);
+   336→    return jsonOrThrow<{
+   337→      ok: boolean;
+   338→      history: {
+   339→        id: string;
+   340→        importId: string;
+   341→        productType: string | null;
+   342→        user: string | null;
+   343→        importedAt: string;
+   344→        detail: string | null;
+   345→        stats: {
+   346→          imported: number;
+   347→          skipped: number;
+   348→          totalRows: number;
+   349→          mode: string;
+   350→        };
+   351→      }[];
+   352→    }>(res);
+   353→  },
+   354→
+   355→  // Bulk delete entries by IDs. Entries that belong to an Output+Pending
+   356→  // transaction group will have their paired sibling deleted too.
+   357→  bulkDeleteEntries: async (ids: string[]) => {
+   358→    const res = await fetch("/api/entries/bulk", {
+   359→      method: "DELETE",
+   360→      headers: { "Content-Type": "application/json" },
+   361→      body: JSON.stringify({ ids }),
+   362→    });
+   363→    return jsonOrThrow<{
+   364→      ok: boolean;
+   365→      requested: number;
+   366→      deleted: number;
+   367→      skipped: number;
+   368→      deletedIds: string[];
+   369→      skippedIds: { id: string; reason: string }[];
+   370→    }>(res);
+   371→  },
+   372→
+   373→  // ===== Bulk Entry Validation + Import =====
+   374→  // Validates a batch of entry rows (Shipping Status + PO NO# + Factory PO +
+   375→  // Size + Qty) WITHOUT writing to DB. Runs the full sequential simulation
+   376→  // engine: required fields, master data lookup, quantity limits, duplicates.
+   377→  bulkValidateEntries: async (body: {
+   378→    productType: string;
+   379→    rows: Record<string, string>[];
+   380→  }) => {
+   381→    const res = await fetch("/api/entries/bulk-validate", {
+   382→      method: "POST",
+   383→      headers: { "Content-Type": "application/json" },
+   384→      body: JSON.stringify(body),
+   385→    });
+   386→    return jsonOrThrow<{
+   387→      ok: boolean;
+   388→      summary: {
+   389→        totalRows: number;
+   390→        validRows: number;
+   391→        warningRows: number;
+   392→        errorRows: number;
+   393→        productGroupsAffected: number;
+   394→        duplicatePossible: number;
+   395→        quantityErrors: number;
+   396→        masterDataErrors: number;
+   397→        deadlineErrors: number;
+   398→      };
+   399→      rows: any[];
+   400→      groupedErrors: any[];
+   401→      warnings: any[];
+   402→      currentGroups: Record<string, any>;
+   403→      finalGroups: Record<string, any>;
+   404→    }>(res);
+   405→  },
+   406→
+   407→  // Performs the actual database INSERT for validated bulk entry rows.
+   408→  // Uses a transaction so the import is atomic.
+   409→  bulkImportEntries: async (body: {
+   410→    productType: string;
+   411→    rows: {
+   412→      shippingStatus: string;
+   413→      poNo: string;
+   414→      factoryPO: string;
+   415→      size: string;
+   416→      qty1: number;
+   417→      confirmReason?: string;
+   418→      note?: string;
+   419→    }[];
+   420→    mode: "all_valid" | "selected" | "fix_first";
+   421→    selectedRowNumbers?: number[];
+   422→    importedBy?: string;
+   423→  }) => {
+   424→    const res = await fetch("/api/bulk-import", {
+   425→      method: "POST",
+   426→      headers: { "Content-Type": "application/json" },
+   427→      body: JSON.stringify(body),
+   428→    });
+   429→    return jsonOrThrow<{
+   430→      ok: boolean;
+   431→      importId: string;
+   432→      imported: number;
+   433→      skipped: number;
+   434→      errors: string[];
+   435→      auditLogId?: string;
+   436→    }>(res);
+   437→  },
+   438→
+   439→  updateEntry: async (id: string, body: any) => {
+   440→    const res = await fetch(`/api/entries/${id}`, {
+   441→      method: "PUT",
+   442→      headers: { "Content-Type": "application/json" },
+   443→      body: JSON.stringify(body),
+   444→    });
+   445→    return jsonOrThrow(res);
+   446→  },
+   447→
+   448→  deleteEntry: async (id: string, forceGroup = false) => {
+   449→    const res = await fetch(`/api/entries/${id}${forceGroup ? "?forceGroup=true" : ""}`, { method: "DELETE" });
+   450→    const body = await res.json().catch(() => ({}));
+   451→    if (res.ok) return body as { ok: boolean; deleted?: string[] };
+   452→    // 409 = needsConfirm (transaction group delete) — return as data, not throw.
+   453→    if (res.status === 409 && body.needsConfirm) {
+   454→      return body as { ok: false; needsConfirm: { pairedId: string; message: string } };
+   455→    }
+   456→    throw new Error(body.error || `HTTP ${res.status}`);
+   457→  },
+   458→
+   459→  checkDuplicate: async (factoryPO: string, size: string) => {
+   460→    const res = await fetch("/api/entries/check-duplicate", {
+   461→      method: "POST",
+   462→      headers: { "Content-Type": "application/json" },
+   463→      body: JSON.stringify({ factoryPO, size }),
+   464→    });
+   465→    return jsonOrThrow<{ duplicate: boolean; existing: any }>(res);
+   466→  },
+   467→
+   468→  // Order notes
+   469→  listNotes: async (params: { factoryPO?: string; size?: string; noteDate?: string }): Promise<OrderNote[]> => {
+   470→    const q = new URLSearchParams(
+   471→      Object.entries(params).filter(([, v]) => v).map(([k, v]) => [k, String(v)])
+   472→    ).toString();
+   473→    const res = await fetch(`/api/order-notes?${q}`);
+   474→    return jsonOrThrow(res);
+   475→  },
+   476→
+   477→  createNote: async (body: {
+   478→    factoryPO: string;
+   479→    size: string;
+   480→    poNo?: string;
+   481→    noteDate: string;
+   482→    content: string;
+   483→    author?: string;
+   484→  }): Promise<OrderNote> => {
+   485→    const res = await fetch("/api/order-notes", {
+   486→      method: "POST",
+   487→      headers: { "Content-Type": "application/json" },
+   488→      body: JSON.stringify(body),
+   489→    });
+   490→    return jsonOrThrow(res);
+   491→  },
+   492→
+   493→  updateNote: async (id: string, body: any) => {
+   494→    const res = await fetch(`/api/order-notes/${id}`, {
+   495→      method: "PUT",
+   496→      headers: { "Content-Type": "application/json" },
+   497→      body: JSON.stringify(body),
+   498→    });
+   499→    return jsonOrThrow(res);
+   500→  },
+   501→
+   502→  deleteNote: async (id: string) => {
+   503→    const res = await fetch(`/api/order-notes/${id}`, { method: "DELETE" });
+   504→    return jsonOrThrow(res);
+   505→  },
+   506→
+   507→  // Quantity validation
+   508→  validateQuantities: async (filters?: {
+   509→    factoryPO?: string;
+   510→    poNo?: string;
+   511→    productType?: string;
+   512→  }): Promise<{
+   513→    total: number;
+   514→    inconsistent: number;
+   515→    consistent: number;
+   516→    totalMissing: number;
+   517→    groups: QtyValidationGroup[];
+   518→  }> => {
+   519→    const q = new URLSearchParams(
+   520→      Object.entries(filters || {}).filter(([, v]) => v).map(([k, v]) => [k, String(v)])
+   521→    ).toString();
+   522→    const res = await fetch(`/api/quantity-validation?${q}`);
+   523→    return jsonOrThrow(res);
+   524→  },
+   525→
+   526→  // Production stats
+   527→  getProductionStats: async (filters?: {
+   528→    productType?: string;
+   529→    factoryPO?: string;
+   530→  }): Promise<ProductionStats> => {
+   531→    const q = new URLSearchParams(
+   532→      Object.entries(filters || {}).filter(([, v]) => v).map(([k, v]) => [k, String(v)])
+   533→    ).toString();
+   534→    const res = await fetch(`/api/production-stats?${q}`);
+   535→    return jsonOrThrow(res);
+   536→  },
+   537→
+   538→  // Production aggregation (product-scoped)
+   539→  getKPIs: async (productType: string, filters?: Record<string, string>) => {
+   540→    const params = new URLSearchParams({ productType, ...(filters || {}) });
+   541→    const res = await fetch(`/api/production/kpis?${params}`);
+   542→    return jsonOrThrow<any>(res);
+   543→  },
+   544→
+   545→  getProductionGroups: async (productType: string, filters?: Record<string, string>) => {
+   546→    const params = new URLSearchParams({ productType, ...(filters || {}) });
+   547→    const res = await fetch(`/api/production/groups?${params}`);
+   548→    return jsonOrThrow<{ total: number; groups: any[] }>(res);
+   549→  },
+   550→
+   551→  getByDimension: async (productType: string, dimension: string, filters?: Record<string, string>) => {
+   552→    const params = new URLSearchParams({ productType, dimension, ...(filters || {}) });
+   553→    const res = await fetch(`/api/production/by-dimension?${params}`);
+   554→    return jsonOrThrow<{ dimension: string; rows: any[] }>(res);
+   555→  },
+   556→
+   557→  getAlerts: async (productType: string, limit = 20) => {
+   558→    const res = await fetch(`/api/production/alerts?productType=${productType}&limit=${limit}`);
+   559→    return jsonOrThrow<{ total: number; high: number; medium: number; low: number; alerts: any[] }>(res);
+   560→  },
+   561→
+   562→  getTimeline: async (productType: string, statusBucket: "order" | "output" | "input") => {
+   563→    const res = await fetch(`/api/production/timeline?productType=${productType}&statusBucket=${statusBucket}`);
+   564→    return jsonOrThrow<{ statusBucket: string; series: any[] }>(res);
+   565→  },
+   566→
+   567→  getGlobalDashboard: async () => {
+   568→    const res = await fetch("/api/global-dashboard");
+   569→    return jsonOrThrow<{ products: any[] }>(res);
+   570→  },
+   571→
+   572→  // Shipment planning (Daily Shipment Planning module)
+   573→  getShipmentGroups: async (productType: string, filters?: Record<string, string>) => {
+   574→    const params = new URLSearchParams({ productType, ...(filters || {}) });
+   575→    const res = await fetch(`/api/shipment/groups?${params}`);
+   576→    return jsonOrThrow<{ total: number; shortOutput: number; surplus: number; complete: number; groups: any[] }>(res);
+   577→  },
+   578→
+   579→  getShipmentColors: async (productType: string) => {
+   580→    const res = await fetch(`/api/shipment/colors?productType=${productType}`);
+   581→    return jsonOrThrow<{ colors: string[] }>(res);
+   582→  },
+   583→
+   584→  getSurplusTransfers: async (productType: string) => {
+   585→    const res = await fetch(`/api/shipment/surplus?productType=${productType}`);
+   586→    return jsonOrThrow<{ total: number; totalTransferable: number; proposals: any[] }>(res);
+   587→  },
+   588→
+   589→  exportShipment: async (body: {
+   590→    productType: string;
+   591→    selectedPoNos: string[];
+   592→    plannedOutputs: any[];
+   593→    templatePath?: string;
+   594→  }): Promise<Blob> => {
+   595→    const res = await fetch("/api/shipment/export", {
+   596→      method: "POST",
+   597→      headers: { "Content-Type": "application/json" },
+   598→      body: JSON.stringify(body),
+   599→    });
+   600→    if (!res.ok) throw new Error("Shipment export failed");
+   601→    return res.blob();
+   602→  },
+   603→
+   604→  // ===== Bulk Output Slip Generator =====
+   605→  // Fetch all Factory PO groups for a PO NO# with per-size Remaining Output.
+   606→  getOutputSlipFactoryPOs: async (productType: string, poNo: string) => {
+   607→    const params = new URLSearchParams({ productType, poNo });
+   608→    const res = await fetch(`/api/output-slips/factory-pos?${params}`);
+   609→    return jsonOrThrow<{
+   610→      ok: boolean;
+   611→      groups: Array<{
+   612→        factoryPO: string; poNo: string; model: string; sku: string; season: string;
+   613→        colorCode: string; colorCode2: string; painting: string; printingColor: string;
+   614→        deadline: string | null;
+   615→        sizes: Array<{ size: string; orderQty: number; outputQty: number; remainingOutput: number }>;
+   616→        totalOrder: number; totalOutput: number; totalRemaining: number;
+   617→        status: "READY_TO_OUTPUT" | "COMPLETED";
+   618→      }>;
+   619→    }>(res);
+   620→  },
+   621→
+   622→  // Generate an Output Slip (creates a DB record, does NOT write to EntryData).
+   623→  generateOutputSlip: async (body: {
+   624→    productType: string;
+   625→    poNo: string;
+   626→    slipMode: "combined" | "separate" | "group_by_color";
+   627→    items: Array<{
+   628→      factoryPO: string; poNo: string; model: string; sku: string; season: string;
+   629→      colorCode: string; colorCode2: string; painting: string; printingColor: string;
+   630→      size: string; qtyToOutput: number; orderQty: number; outputQty: number;
+   631→      remainingOutput: number; deadline: string | null;
+   632→    }>;
+   633→    createdBy?: string;
+   634→    note?: string;
+   635→  }) => {
+   636→    const res = await fetch("/api/output-slips/generate", {
+   637→      method: "POST",
+   638→      headers: { "Content-Type": "application/json" },
+   639→      body: JSON.stringify(body),
+   640→    });
+   641→    return jsonOrThrow<{ ok: boolean; slip: any; error?: string }>(res);
+   642→  },
+   643→
+   644→  // Export an Output Slip to Excel.
+   645→  exportOutputSlip: async (body: {
+   646→    slipId: string;
+   647→    format?: "multi_sheet" | "combined" | "separate_files";
+   648→  }): Promise<Blob> => {
+   649→    const res = await fetch("/api/output-slips/export", {
+   650→      method: "POST",
+   651→      headers: { "Content-Type": "application/json" },
+   652→      body: JSON.stringify(body),
+   653→    });
+   654→    if (!res.ok) throw new Error("Slip export failed");
+   655→    return res.blob();
+   656→  },
+   657→
+   658→  // Confirm Actual Output — creates the real 2.Output entries in EntryData.
+   659→  confirmOutputSlip: async (body: { slipId: string; confirmedBy?: string }) => {
+   660→    const res = await fetch("/api/output-slips/confirm", {
+   661→      method: "POST",
+   662→      headers: { "Content-Type": "application/json" },
+   663→      body: JSON.stringify(body),
+   664→    });
+   665→    return jsonOrThrow<{ ok: boolean; slip?: any; createdCount?: number; errors?: string[] }>(res);
+   666→  },
+   667→
+   668→  // List output slips (filtered).
+   669→  listOutputSlips: async (params?: { productType?: string; poNo?: string; status?: string; limit?: number }) => {
+   670→    const q = new URLSearchParams();
+   671→    if (params?.productType) q.set("productType", params.productType);
+   672→    if (params?.poNo) q.set("poNo", params.poNo);
+   673→    if (params?.status) q.set("status", params.status);
+   674→    if (params?.limit) q.set("limit", String(params.limit));
+   675→    const res = await fetch(`/api/output-slips?${q}`);
+   676→    return jsonOrThrow<{ ok: boolean; slips: any[] }>(res);
+   677→  },
+   678→
+   679→  // Cancel an output slip.
+   680→  cancelOutputSlip: async (id: string) => {
+   681→    const res = await fetch(`/api/output-slips/${id}`, { method: "DELETE" });
+   682→    return jsonOrThrow<{ ok: boolean; slip?: any; error?: string }>(res);
+   683→  },
+   684→
+   685→  // Production Report & Data Validation
+   686→  getReportGroups: async (productType: string, filters?: Record<string, string>) => {
+   687→    const params = new URLSearchParams({ productType, ...(filters || {}) });
+   688→    const res = await fetch(`/api/report/groups?${params}`);
+   689→    return jsonOrThrow<{ groups: any[]; errors: any[]; summary: any }>(res);
+   690→  },
+   691→
+   692→  exportReport: async (body: { productType: string; poNo?: string; factoryPO?: string; colorCode?: string; size?: string }): Promise<Blob> => {
+   693→    const res = await fetch("/api/report/export", {
+   694→      method: "POST",
+   695→      headers: { "Content-Type": "application/json" },
+   696→      body: JSON.stringify(body),
+   697→    });
+   698→    if (!res.ok) throw new Error("Report export failed");
+   699→    return res.blob();
+   700→  },
+   701→
+   702→  // Dashboard & history
+   703→  dashboard: async (): Promise<DashboardStats> => {
+   704→    const res = await fetch("/api/dashboard");
+   705→    return jsonOrThrow(res);
+   706→  },
+   707→
+   708→  importHistory: async (): Promise<ImportHistoryItem[]> => {
+   709→    const res = await fetch("/api/import-history");
+   710→    return jsonOrThrow(res);
+   711→  },
+   712→
+   713→  // Settings
+   714→  getSettings: async (): Promise<AppSettings> => {
+   715→    const res = await fetch("/api/settings");
+   716→    return jsonOrThrow(res);
+   717→  },
+   718→  saveSettings: async (body: Partial<AppSettings>): Promise<AppSettings> => {
+   719→    const res = await fetch("/api/settings", {
+   720→      method: "PUT",
+   721→      headers: { "Content-Type": "application/json" },
+   722→      body: JSON.stringify(body),
+   723→    });
+   724→    return jsonOrThrow(res);
+   725→  },
+   726→
+   727→  // Lookup rules
+   728→  listLookupRules: async (): Promise<LookupRuleConfig[]> => {
+   729→    const res = await fetch("/api/lookup-rules");
+   730→    return jsonOrThrow(res);
+   731→  },
+   732→  saveLookupRule: async (body: LookupRuleConfig & { id?: string }) => {
+   733→    const res = await fetch("/api/lookup-rules", {
+   734→      method: body.id ? "PUT" : "POST",
+   735→      headers: { "Content-Type": "application/json" },
+   736→      body: JSON.stringify(body),
+   737→    });
+   738→    return jsonOrThrow(res);
+   739→  },
+   740→  deleteLookupRule: async (id: string) => {
+   741→    const res = await fetch(`/api/lookup-rules?id=${id}`, { method: "DELETE" });
+   742→    return jsonOrThrow(res);
+   743→  },
+   744→
+   745→  // ===== Data Reconciliation & Duplicate Check =====
+   746→  // Compares imported Excel data with Website MasterData within a date range.
+   747→  // READ-ONLY — never writes data. Returns comparison results + summary.
+   748→  reconcileData: async (body: {
+   749→    productType: string;
+   750→    dateFrom: string;
+   751→    dateTo: string;
+   752→    excelRows: Array<{ date?: string; poNo?: string; factoryPO?: string; size?: string; qty?: string | number }>;
+   753→  }) => {
+   754→    const res = await fetch("/api/reconcile", {
+   755→      method: "POST",
+   756→      headers: { "Content-Type": "application/json" },
+   757→      body: JSON.stringify(body),
+   758→    });
+   759→    return jsonOrThrow<{
+   760→      ok: boolean;
+   761→      summary: {
+   762→        dateRange: { from: string; to: string };
+   763→        excelTotalRecords: number;
+   764→        excelRecordsInDateRange: number;
+   765→        excelExcluded: number;
+   766→        websiteTotalRecords: number;
+   767→        websiteRecordsInDateRange: number;
+   768→        websiteExcluded: number;
+   769→        matched: number;
+   770→        qtyMismatch: number;
+   771→        missingOnWebsite: number;
+   772→        missingInExcel: number;
+   773→        possibleWrongFactoryPO: number;
+   774→        possibleWrongSize: number;
+   775→        possibleDuplicate: number;
+   776→        exactDuplicate: number;
+   777→        invalidData: number;
+   778→        totalIssues: number;
+   779→        totalGroups: number;
+   780→      };
+   781→      results: Array<{
+   782→        status: string;
+   783→        poNo: string;
+   784→        factoryPO: string;
+   785→        size: string;
+   786→        excelQty: number;
+   787→        websiteQty: number;
+   788→        difference: number;
+   789→        suggestedFactoryPO?: string;
+   790→        suggestedSize?: string;
+   791→        excelRowCount: number;
+   792→        websiteRowCount: number;
+   793→        duplicateCount?: number;
+   794→      }>;
+   795→    }>(res);
+   796→  },
+   797→};
+   798→
+   799→export type { CanonicalField };
+   800→

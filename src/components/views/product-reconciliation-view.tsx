@@ -9,9 +9,11 @@
 // EXACT_DUPLICATE / INVALID_DATA.
 //
 // Pipeline (spec §27):
-//   Excel Data → Filter By Date → Normalize → Group By (PO+FactoryPO+Size) → SUM Qty
+//   Excel Data → Filter By Date → Normalize → Group By (FactoryPO+Size) → SUM Qty
 //   Website Data → Filter Same Date Range → Normalize → Group → SUM Qty
 //   FULL OUTER COMPARISON → MATCH / MISMATCH / MISSING / DUPLICATE
+//
+// Comparison key: Factory PO + Size (PO NO# is NOT compared).
 //
 // API contracts (see src/lib/api-client.ts):
 //   - api.parseExcel(file, sheet?) → { headers, preview(50 rows), sheets, autoMapping, ... }
@@ -84,7 +86,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // Required canonical fields for reconciliation. Mapping must cover all of these
 // before the "Compare with Website Data" button is enabled.
-const REQUIRED_FIELDS: CanonicalField[] = ["date", "poNo", "factoryPO", "size", "qty1"];
+// NOTE: PO NO# is NOT a comparison key — only Factory PO + Size + Qty.
+const REQUIRED_FIELDS: CanonicalField[] = ["date", "factoryPO", "size", "qty1"];
 
 // Sentinel value used for unmapped columns (Radix Select can't use empty string).
 const SKIP_VALUE = "__skip__";
@@ -92,16 +95,16 @@ const SKIP_VALUE = "__skip__";
 // Sample paste template — users can click "Load Sample" to prefill the paste area.
 // Tab-separated (the format Excel copies to clipboard).
 const SAMPLE_PASTE_TEMPLATE = [
-  "Date\tPO NO#\tFactory PO\tSize\tQty",
-  "26/08/2026\tH411040101\tMH25100234\tM(07)/W(08)\t10",
-  "26/08/2026\tH411040101\tMH25100234\tM(07)/W(08)\t16",
-  "27/08/2026\tH411349637\tMH26110226\tM(07)/W(08)\t8",
-  "28/08/2026\tH411351971\tMH98060122\tM(04T)/W(05T)\t1",
-  "31/08/2026\tH411040101\tMH25100234\tM(08)/W(09)\t20",
+  "Date\tFactory PO\tSize\tQty",
+  "26/08/2026\tMH25100234\tM(07)/W(08)\t10",
+  "26/08/2026\tMH25100234\tM(07)/W(08)\t16",
+  "27/08/2026\tMH26110226\tM(07)/W(08)\t8",
+  "28/08/2026\tMH98060122\tM(04T)/W(05T)\t1",
+  "31/08/2026\tMH25100234\tM(08)/W(09)\t20",
 ].join("\n");
 
 // Placeholder shown in the empty paste area.
-const SAMPLE_PLACEHOLDER = "Date\tPO NO#\tFactory PO\tSize\tQty\n26/08/2026\tH411040101\tMH25100234\tM(07)/W(08)\t10\n27/08/2026\tH411349637\tMH26110226\tM(07)/W(08)\t8\n...\n\n(Click \"Load Sample\" to prefill this area with example data)";
+const SAMPLE_PLACEHOLDER = "Date\tFactory PO\tSize\tQty\n26/08/2026\tMH25100234\tM(07)/W(08)\t10\n27/08/2026\tMH26110226\tM(07)/W(08)\t8\n...\n\n(Click \"Load Sample\" to prefill this area with example data)";
 
 // Status tone map (row tint + badge color).
 type Tone = "emerald" | "amber" | "rose" | "slate";
@@ -189,12 +192,13 @@ function parseDateToISO(raw: string | number | null | undefined): string | null 
 }
 
 // Convert raw Excel rows (keyed by Excel header) → canonical rows keyed by
-// { date, poNo, factoryPO, size, qty } using the user's column mapping.
+// { date, factoryPO, size, qty } using the user's column mapping.
+// PO NO# is intentionally NOT extracted — it is no longer a comparison key.
 // mapping values can be canonicalField strings or "__skip__".
 function buildCanonicalRows(
   allRows: Record<string, string>[],
   mapping: Record<string, string>
-): Array<{ date?: string; poNo?: string; factoryPO?: string; size?: string; qty?: string }> {
+): Array<{ date?: string; factoryPO?: string; size?: string; qty?: string }> {
   // Build reverse lookup: canonicalField → excelHeader (first match wins).
   const reverse: Partial<Record<CanonicalField, string>> = {};
   for (const [header, field] of Object.entries(mapping)) {
@@ -204,14 +208,12 @@ function buildCanonicalRows(
     }
   }
   const dh = reverse.date;
-  const ph = reverse.poNo;
   const fh = reverse.factoryPO;
   const sh = reverse.size;
   const qh = reverse.qty1;
   return allRows.map((row) => {
-    const out: { date?: string; poNo?: string; factoryPO?: string; size?: string; qty?: string } = {};
+    const out: { date?: string; factoryPO?: string; size?: string; qty?: string } = {};
     if (dh) out.date = row[dh] ?? "";
-    if (ph) out.poNo = row[ph] ?? "";
     if (fh) out.factoryPO = row[fh] ?? "";
     if (sh) out.size = row[sh] ?? "";
     if (qh) out.qty = row[qh] ?? "";
@@ -252,7 +254,7 @@ function fmtDiff(n: number | undefined | null): string {
 function statusExplanation(status: string): string {
   switch (status) {
     case "MATCHED":
-      return "Excel and Website have the same Qty for this PO NO# + Factory PO + Size combination. No action needed.";
+      return "Excel and Website have the same Qty for this Factory PO + Size combination. No action needed.";
     case "QTY_MISMATCH":
       return "Both sources have this combination, but the summed quantities differ. Verify which side is correct, then update.";
     case "MISSING_ON_WEBSITE":
@@ -260,15 +262,15 @@ function statusExplanation(status: string): string {
     case "MISSING_IN_EXCEL":
       return "This combination exists on the Website but is missing in the uploaded Excel file. Possibly not yet shipped, or filtered out by date.";
     case "POSSIBLE_WRONG_FACTORY_PO":
-      return "The Excel Factory PO was not found on the Website, but a different Factory PO for the same PO NO# + Size exists. Likely a typo in the Factory PO column.";
+      return "The Excel Factory PO was not found on the Website, but a different Factory PO for the same Size exists. Likely a typo in the Factory PO column.";
     case "POSSIBLE_WRONG_SIZE":
-      return "The Excel Size was not found on the Website, but a different Size for the same PO NO# + Factory PO exists. Likely a typo or wrong size code.";
+      return "The Excel Size was not found on the Website, but a different Size for the same Factory PO exists. Likely a typo or wrong size code.";
     case "POSSIBLE_DUPLICATE":
       return "Excel and Website totals match, but multiple rows were grouped together — possibly the same record was entered more than once.";
     case "EXACT_DUPLICATE":
-      return "An identical record (same Date + PO + Factory PO + Size + Qty) appears more than once within a single source. Likely a duplicate entry.";
+      return "An identical record (same Date + Factory PO + Size + Qty) appears more than once within a single source. Likely a duplicate entry.";
     case "INVALID_DATA":
-      return "Row is missing required PO NO#, Factory PO, or Size — skipped from comparison. Fix the source data and re-upload.";
+      return "Row is missing required Factory PO or Size — skipped from comparison. Fix the source data and re-upload.";
     default:
       return "Unknown status.";
   }
@@ -666,8 +668,8 @@ export function ProductReconciliationView() {
                 <li>Click <strong>Parse Pasted Data</strong> — columns will be auto-detected.</li>
               </ol>
               <p className="mt-1.5 text-muted-foreground">
-                Required columns: <strong>Date, PO NO#, Factory PO, Size, Qty</strong>.
-                Column names can vary (e.g. "PO#" or "PO Number" → PO NO#) — you can remap after parsing.
+                Required columns: <strong>Date, Factory PO, Size, Qty</strong>.
+                Column names can vary (e.g. "PO#" or "PO Number" are no longer required) — you can remap after parsing.
               </p>
             </AlertDescription>
           </Alert>
@@ -780,7 +782,7 @@ export function ProductReconciliationView() {
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               <Info className="h-3 w-3" />
               Fields marked <strong>*</strong> are required for reconciliation:
-              Date, PO NO#, Factory PO, Size, Q&apos;ty 1.
+              Date, Factory PO, Size, Q&apos;ty 1.
             </div>
           </CardContent>
         </Card>
@@ -859,7 +861,6 @@ export function ProductReconciliationView() {
                   <TableRow>
                     <TableHead className="text-[10px] uppercase">#</TableHead>
                     <TableHead className="text-[10px] uppercase">Date</TableHead>
-                    <TableHead className="text-[10px] uppercase">PO NO#</TableHead>
                     <TableHead className="text-[10px] uppercase">Factory PO</TableHead>
                     <TableHead className="text-[10px] uppercase">Size</TableHead>
                     <TableHead className="text-[10px] uppercase text-right">Qty</TableHead>
@@ -869,7 +870,7 @@ export function ProductReconciliationView() {
                   {inRangeRows.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={6}
+                        colSpan={5}
                         className="py-8 text-center text-xs text-muted-foreground"
                       >
                         No rows in the selected date range.
@@ -883,9 +884,6 @@ export function ProductReconciliationView() {
                         </TableCell>
                         <TableCell className="px-3 py-1.5 text-xs whitespace-nowrap">
                           {r.date || "—"}
-                        </TableCell>
-                        <TableCell className="px-3 py-1.5 text-xs whitespace-nowrap">
-                          {r.poNo || "—"}
                         </TableCell>
                         <TableCell className="px-3 py-1.5 text-xs font-medium whitespace-nowrap">
                           {r.factoryPO || "—"}
@@ -1120,7 +1118,6 @@ export function ProductReconciliationView() {
                 <TableHeader className="sticky top-0 z-10 bg-muted/80 backdrop-blur">
                   <TableRow>
                     <TableHead className="w-[120px] text-[10px] uppercase">Status</TableHead>
-                    <TableHead className="text-[10px] uppercase">PO NO#</TableHead>
                     <TableHead className="text-[10px] uppercase">Factory PO</TableHead>
                     <TableHead className="text-[10px] uppercase">Size</TableHead>
                     <TableHead className="text-[10px] uppercase text-right">Excel Qty</TableHead>
@@ -1135,7 +1132,7 @@ export function ProductReconciliationView() {
                   {filteredResults.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={8}
+                        colSpan={7}
                         className="py-10 text-center text-xs text-muted-foreground"
                       >
                         No rows match this filter.
@@ -1154,7 +1151,7 @@ export function ProductReconciliationView() {
                           : "text-muted-foreground";
                       return (
                         <TableRow
-                          key={`${r.poNo}-${r.factoryPO}-${r.size}-${idx}`}
+                          key={`${r.factoryPO}-${r.size}-${idx}`}
                           className={cn(
                             "cursor-pointer border-t",
                             STATUS_ROW_TINT[tone]
@@ -1169,9 +1166,6 @@ export function ProductReconciliationView() {
                               <Icon className="mr-0.5 h-2.5 w-2.5" />
                               {r.status.replace(/_/g, " ")}
                             </Badge>
-                          </TableCell>
-                          <TableCell className="px-3 py-1.5 text-xs whitespace-nowrap">
-                            {r.poNo || "—"}
                           </TableCell>
                           <TableCell className="px-3 py-1.5 text-xs font-medium whitespace-nowrap">
                             {r.factoryPO || "—"}
@@ -1253,14 +1247,13 @@ export function ProductReconciliationView() {
               )}
             </DialogTitle>
             <DialogDescription>
-              Read-only detail of one comparison group (PO NO# + Factory PO + Size).
+              Read-only detail of one comparison group (Factory PO + Size).
             </DialogDescription>
           </DialogHeader>
           {detailRow && (
             <div className="space-y-4">
               {/* Identity */}
-              <div className="grid grid-cols-3 gap-3">
-                <DetailField label="PO NO#" value={detailRow.poNo} />
+              <div className="grid grid-cols-2 gap-3">
                 <DetailField label="Factory PO" value={detailRow.factoryPO} />
                 <DetailField label="Size" value={detailRow.size} mono />
               </div>
@@ -1335,7 +1328,7 @@ export function ProductReconciliationView() {
                       </Button>
                     </div>
                     <p className="mt-2 text-amber-700/80 dark:text-amber-300/80">
-                      A different Factory PO for the same PO NO# + Size exists on the
+                      A different Factory PO for the same Size exists on the
                       Website — likely a typo in the Excel file.
                     </p>
                   </div>
@@ -1365,7 +1358,7 @@ export function ProductReconciliationView() {
                     </Button>
                   </div>
                   <p className="mt-2 text-amber-700/80 dark:text-amber-300/80">
-                    A different Size for the same PO NO# + Factory PO exists on the
+                    A different Size for the same Factory PO exists on the
                     Website — likely a typo or wrong size code in the Excel file.
                   </p>
                 </div>
@@ -1378,7 +1371,7 @@ export function ProductReconciliationView() {
                       <AlertCircle className="h-3.5 w-3.5" /> Duplicate Count
                     </div>
                     <p>
-                      An identical record (Date + PO + Factory PO + Size + Qty) appears{" "}
+                      An identical record (Date + Factory PO + Size + Qty) appears{" "}
                       <strong>{detailRow.duplicateCount}</strong> time(s) within a single
                       source. Likely a duplicate entry that should be removed.
                     </p>

@@ -745,11 +745,12 @@ export const api = {
   // ===== Data Reconciliation & Duplicate Check =====
   // Compares imported Excel data with Website MasterData within a date range.
   // READ-ONLY — never writes data. Returns comparison results + summary.
+  // Comparison key: Factory PO + Size (PO NO# is NOT compared).
   reconcileData: async (body: {
     productType: string;
     dateFrom: string;
     dateTo: string;
-    excelRows: Array<{ date?: string; poNo?: string; factoryPO?: string; size?: string; qty?: string | number }>;
+    excelRows: Array<{ date?: string; factoryPO?: string; size?: string; qty?: string | number }>;
   }) => {
     const res = await fetch("/api/reconcile", {
       method: "POST",
@@ -780,7 +781,6 @@ export const api = {
       };
       results: Array<{
         status: string;
-        poNo: string;
         factoryPO: string;
         size: string;
         excelQty: number;

@@ -1,0 +1,1550 @@
+     1→"use client";
+     2→
+     3→// ProductReconciliationView
+     4→// Data Reconciliation & Duplicate Check view — upload an Excel file, select a sheet,
+     5→// auto-map columns, choose a date range, then compare Excel rows against Website
+     6→// (MasterData) rows. READ-ONLY — never writes data. Reports status per group:
+     7→// MATCHED / QTY_MISMATCH / MISSING_ON_WEBSITE / MISSING_IN_EXCEL /
+     8→// POSSIBLE_WRONG_FACTORY_PO / POSSIBLE_WRONG_SIZE / POSSIBLE_DUPLICATE /
+     9→// EXACT_DUPLICATE / INVALID_DATA.
+    10→//
+    11→// Pipeline (spec §27):
+    12→//   Excel Data → Filter By Date → Normalize → Group By (PO+FactoryPO+Size) → SUM Qty
+    13→//   Website Data → Filter Same Date Range → Normalize → Group → SUM Qty
+    14→//   FULL OUTER COMPARISON → MATCH / MISMATCH / MISSING / DUPLICATE
+    15→//
+    16→// API contracts (see src/lib/api-client.ts):
+    17→//   - api.parseExcel(file, sheet?) → { headers, preview(50 rows), sheets, autoMapping, ... }
+    18→//   - api.reconcileData({ productType, dateFrom, dateTo, excelRows }) → { ok, summary, results }
+    19→// Excel full parse (client-side):
+    20→//   - readWorkbook(ArrayBuffer) → { wb, sheets }
+    21→//   - parseSheet(wb, sheetName, maxRows?) → { headers, rows: Record<string,string>[] }
+    22→
+    23→import * as React from "react";
+    24→import {
+    25→  GitCompare,
+    26→  ClipboardPaste,
+    27→  ClipboardCheck,
+    28→  Calendar,
+    29→  Search,
+    30→  CheckCircle2,
+    31→  AlertTriangle,
+    32→  AlertCircle,
+    33→  Eye,
+    34→  Loader2,
+    35→  X,
+    36→  Filter,
+    37→  Copy,
+    38→  Info,
+    39→  RefreshCw,
+    40→  Trash2,
+    41→  Layers,
+    42→} from "lucide-react";
+    43→import { api } from "@/lib/api-client";
+    44→import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
+    45→import { buildAutoMapping, mappingOptions } from "@/lib/header-normalize";
+    46→import type { CanonicalField } from "@/lib/fields";
+    47→import { FIELD_LABELS } from "@/lib/fields";
+    48→import { cn } from "@/lib/utils";
+    49→import { toast } from "sonner";
+    50→
+    51→import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+    52→import { Button } from "@/components/ui/button";
+    53→import { Badge } from "@/components/ui/badge";
+    54→import { Input } from "@/components/ui/input";
+    55→import { Label } from "@/components/ui/label";
+    56→import { Switch } from "@/components/ui/switch";
+    57→import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+    58→import {
+    59→  Select,
+    60→  SelectContent,
+    61→  SelectItem,
+    62→  SelectTrigger,
+    63→  SelectValue,
+    64→} from "@/components/ui/select";
+    65→import {
+    66→  Dialog,
+    67→  DialogContent,
+    68→  DialogDescription,
+    69→  DialogFooter,
+    70→  DialogHeader,
+    71→  DialogTitle,
+    72→} from "@/components/ui/dialog";
+    73→import {
+    74→  Table,
+    75→  TableBody,
+    76→  TableCell,
+    77→  TableHead,
+    78→  TableHeader,
+    79→  TableRow,
+    80→} from "@/components/ui/table";
+    81→import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    82→
+    83→// ===== Constants =====
+    84→
+    85→// Required canonical fields for reconciliation. Mapping must cover all of these
+    86→// before the "Compare with Website Data" button is enabled.
+    87→const REQUIRED_FIELDS: CanonicalField[] = ["date", "poNo", "factoryPO", "size", "qty1"];
+    88→
+    89→// Sentinel value used for unmapped columns (Radix Select can't use empty string).
+    90→const SKIP_VALUE = "__skip__";
+    91→
+    92→// Sample paste template — users can click "Load Sample" to prefill the paste area.
+    93→// Tab-separated (the format Excel copies to clipboard).
+    94→const SAMPLE_PASTE_TEMPLATE = [
+    95→  "Date\tPO NO#\tFactory PO\tSize\tQty",
+    96→  "26/08/2026\tH411040101\tMH25100234\tM(07)/W(08)\t10",
+    97→  "26/08/2026\tH411040101\tMH25100234\tM(07)/W(08)\t16",
+    98→  "27/08/2026\tH411349637\tMH26110226\tM(07)/W(08)\t8",
+    99→  "28/08/2026\tH411351971\tMH98060122\tM(04T)/W(05T)\t1",
+   100→  "31/08/2026\tH411040101\tMH25100234\tM(08)/W(09)\t20",
+   101→].join("\n");
+   102→
+   103→// Placeholder shown in the empty paste area.
+   104→const SAMPLE_PLACEHOLDER = "Date\tPO NO#\tFactory PO\tSize\tQty\n26/08/2026\tH411040101\tMH25100234\tM(07)/W(08)\t10\n27/08/2026\tH411349637\tMH26110226\tM(07)/W(08)\t8\n...\n\n(Click \"Load Sample\" to prefill this area with example data)";
+   105→
+   106→// Status tone map (row tint + badge color).
+   107→type Tone = "emerald" | "amber" | "rose" | "slate";
+   108→
+   109→const STATUS_TONE: Record<string, Tone> = {
+   110→  MATCHED: "emerald",
+   111→  QTY_MISMATCH: "amber",
+   112→  MISSING_ON_WEBSITE: "rose",
+   113→  MISSING_IN_EXCEL: "amber",
+   114→  POSSIBLE_WRONG_FACTORY_PO: "amber",
+   115→  POSSIBLE_WRONG_SIZE: "amber",
+   116→  POSSIBLE_DUPLICATE: "rose",
+   117→  EXACT_DUPLICATE: "rose",
+   118→  INVALID_DATA: "slate",
+   119→};
+   120→
+   121→const STATUS_ROW_TINT: Record<Tone, string> = {
+   122→  emerald: "bg-emerald-50/50 dark:bg-emerald-950/20 hover:bg-emerald-50 dark:hover:bg-emerald-950/30",
+   123→  amber: "bg-amber-50/50 dark:bg-amber-950/20 hover:bg-amber-50 dark:hover:bg-amber-950/30",
+   124→  rose: "bg-rose-50/50 dark:bg-rose-950/20 hover:bg-rose-50 dark:hover:bg-rose-950/30",
+   125→  slate: "bg-slate-50/50 dark:bg-slate-900/20 hover:bg-slate-50 dark:hover:bg-slate-900/30",
+   126→};
+   127→
+   128→const STATUS_BADGE: Record<Tone, string> = {
+   129→  emerald: "bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800",
+   130→  amber: "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800",
+   131→  rose: "bg-rose-100 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800",
+   132→  slate: "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/50 dark:text-slate-300 dark:border-slate-700",
+   133→};
+   134→
+   135→const STATUS_ICON: Record<Tone, React.ComponentType<{ className?: string }>> = {
+   136→  emerald: CheckCircle2,
+   137→  amber: AlertTriangle,
+   138→  rose: AlertCircle,
+   139→  slate: Info,
+   140→};
+   141→
+   142→// Filter tabs.
+   143→type FilterKey =
+   144→  | "all"
+   145→  | "MATCHED"
+   146→  | "QTY_MISMATCH"
+   147→  | "MISSING_ON_WEBSITE"
+   148→  | "MISSING_IN_EXCEL"
+   149→  | "DUPLICATE"
+   150→  | "FACTORY_PO_ERROR"
+   151→  | "SIZE_ERROR";
+   152→
+   153→const FILTER_TABS: { key: FilterKey; label: string }[] = [
+   154→  { key: "all", label: "ALL" },
+   155→  { key: "MATCHED", label: "MATCHED" },
+   156→  { key: "QTY_MISMATCH", label: "QTY MISMATCH" },
+   157→  { key: "MISSING_ON_WEBSITE", label: "MISSING ON WEBSITE" },
+   158→  { key: "MISSING_IN_EXCEL", label: "MISSING IN EXCEL" },
+   159→  { key: "DUPLICATE", label: "DUPLICATE" },
+   160→  { key: "FACTORY_PO_ERROR", label: "FACTORY PO ERROR" },
+   161→  { key: "SIZE_ERROR", label: "SIZE ERROR" },
+   162→];
+   163→
+   164→// ===== Helpers =====
+   165→
+   166→// Parse a date string to yyyy-MM-dd. Mirrors server logic in
+   167→// reconciliation-service.ts:parseDate. Handles Excel serials, dd/MM/yyyy, ISO.
+   168→function parseDateToISO(raw: string | number | null | undefined): string | null {
+   169→  if (raw === null || raw === undefined || raw === "") return null;
+   170→  const s = String(raw).trim();
+   171→  if (!s) return null;
+   172→  // Excel serial (number of days since 1899-12-30).
+   173→  const n = Number(s);
+   174→  if (!isNaN(n) && n > 1000 && n < 100000) {
+   175→    const epoch = new Date(Date.UTC(1899, 11, 30));
+   176→    epoch.setDate(epoch.getDate() + n);
+   177→    return epoch.toISOString().slice(0, 10);
+   178→  }
+   179→  // dd/MM/yyyy
+   180→  const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+   181→  if (dmy) {
+   182→    const d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
+   183→    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+   184→  }
+   185→  // yyyy-MM-dd or generic ISO
+   186→  const iso = new Date(s);
+   187→  if (!isNaN(iso.getTime())) return iso.toISOString().slice(0, 10);
+   188→  return null;
+   189→}
+   190→
+   191→// Convert raw Excel rows (keyed by Excel header) → canonical rows keyed by
+   192→// { date, poNo, factoryPO, size, qty } using the user's column mapping.
+   193→// mapping values can be canonicalField strings or "__skip__".
+   194→function buildCanonicalRows(
+   195→  allRows: Record<string, string>[],
+   196→  mapping: Record<string, string>
+   197→): Array<{ date?: string; poNo?: string; factoryPO?: string; size?: string; qty?: string }> {
+   198→  // Build reverse lookup: canonicalField → excelHeader (first match wins).
+   199→  const reverse: Partial<Record<CanonicalField, string>> = {};
+   200→  for (const [header, field] of Object.entries(mapping)) {
+   201→    if (!field || field === SKIP_VALUE) continue;
+   202→    if (!reverse[field as CanonicalField]) {
+   203→      reverse[field as CanonicalField] = header;
+   204→    }
+   205→  }
+   206→  const dh = reverse.date;
+   207→  const ph = reverse.poNo;
+   208→  const fh = reverse.factoryPO;
+   209→  const sh = reverse.size;
+   210→  const qh = reverse.qty1;
+   211→  return allRows.map((row) => {
+   212→    const out: { date?: string; poNo?: string; factoryPO?: string; size?: string; qty?: string } = {};
+   213→    if (dh) out.date = row[dh] ?? "";
+   214→    if (ph) out.poNo = row[ph] ?? "";
+   215→    if (fh) out.factoryPO = row[fh] ?? "";
+   216→    if (sh) out.size = row[sh] ?? "";
+   217→    if (qh) out.qty = row[qh] ?? "";
+   218→    return out;
+   219→  });
+   220→}
+   221→
+   222→// Filter canonical rows by date range. Rows without a parseable date or outside
+   223→// the [from, to] window are excluded (matches server-side filter logic).
+   224→// Generic in T so the caller's row shape (canonical fields) is preserved.
+   225→function filterRowsByDate<T extends { date?: string }>(
+   226→  rows: T[],
+   227→  from: string,
+   228→  to: string
+   229→): T[] {
+   230→  if (!from || !to) return rows;
+   231→  return rows.filter((r) => {
+   232→    if (!r.date) return false;
+   233→    const iso = parseDateToISO(r.date);
+   234→    if (!iso) return false;
+   235→    return iso >= from && iso <= to;
+   236→  });
+   237→}
+   238→
+   239→// Format a number with thousands separator. Empty/NaN → em dash.
+   240→function fmtNum(n: number | undefined | null): string {
+   241→  if (n === null || n === undefined || isNaN(n)) return "—";
+   242→  return n.toLocaleString();
+   243→}
+   244→
+   245→// Format a difference with explicit + or - sign.
+   246→function fmtDiff(n: number | undefined | null): string {
+   247→  if (n === null || n === undefined || isNaN(n) || n === 0) return "0";
+   248→  return n > 0 ? `+${n.toLocaleString()}` : n.toLocaleString();
+   249→}
+   250→
+   251→// Human-readable explanation for each comparison status.
+   252→function statusExplanation(status: string): string {
+   253→  switch (status) {
+   254→    case "MATCHED":
+   255→      return "Excel and Website have the same Qty for this PO NO# + Factory PO + Size combination. No action needed.";
+   256→    case "QTY_MISMATCH":
+   257→      return "Both sources have this combination, but the summed quantities differ. Verify which side is correct, then update.";
+   258→    case "MISSING_ON_WEBSITE":
+   259→      return "This combination exists in Excel but is missing on the Website (MasterData). Consider importing it into Master Data.";
+   260→    case "MISSING_IN_EXCEL":
+   261→      return "This combination exists on the Website but is missing in the uploaded Excel file. Possibly not yet shipped, or filtered out by date.";
+   262→    case "POSSIBLE_WRONG_FACTORY_PO":
+   263→      return "The Excel Factory PO was not found on the Website, but a different Factory PO for the same PO NO# + Size exists. Likely a typo in the Factory PO column.";
+   264→    case "POSSIBLE_WRONG_SIZE":
+   265→      return "The Excel Size was not found on the Website, but a different Size for the same PO NO# + Factory PO exists. Likely a typo or wrong size code.";
+   266→    case "POSSIBLE_DUPLICATE":
+   267→      return "Excel and Website totals match, but multiple rows were grouped together — possibly the same record was entered more than once.";
+   268→    case "EXACT_DUPLICATE":
+   269→      return "An identical record (same Date + PO + Factory PO + Size + Qty) appears more than once within a single source. Likely a duplicate entry.";
+   270→    case "INVALID_DATA":
+   271→      return "Row is missing required PO NO#, Factory PO, or Size — skipped from comparison. Fix the source data and re-upload.";
+   272→    default:
+   273→      return "Unknown status.";
+   274→  }
+   275→}
+   276→
+   277→// Get today - 6 days as { from, to } in yyyy-MM-dd (last 7 days inclusive).
+   278→function last7DaysRange(): { from: string; to: string } {
+   279→  const today = new Date();
+   280→  const start = new Date(today);
+   281→  start.setDate(today.getDate() - 6);
+   282→  return {
+   283→    from: start.toISOString().slice(0, 10),
+   284→    to: today.toISOString().slice(0, 10),
+   285→  };
+   286→}
+   287→
+   288→// Apply filter tab to a result row (multiple statuses can fall under one tab).
+   289→function rowMatchesFilter(status: string, filter: FilterKey): boolean {
+   290→  if (filter === "all") return true;
+   291→  if (filter === "DUPLICATE") return status === "POSSIBLE_DUPLICATE" || status === "EXACT_DUPLICATE";
+   292→  if (filter === "FACTORY_PO_ERROR") return status === "POSSIBLE_WRONG_FACTORY_PO";
+   293→  if (filter === "SIZE_ERROR") return status === "POSSIBLE_WRONG_SIZE";
+   294→  return status === filter;
+   295→}
+   296→
+   297→// ===== Component =====
+   298→
+   299→export function ProductReconciliationView() {
+   300→  const { currentProduct, bumpRefresh, refreshKey } = useAppStore();
+   301→  const theme = PRODUCT_THEME[currentProduct];
+   302→
+   303→  // Spec-required state.
+   304→  const [pastedText, setPastedText] = React.useState("");
+   305→  const [parsing, setParsing] = React.useState(false);
+   306→  const [parseResult, setParseResult] = React.useState<any>(null);
+   307→  const [allRows, setAllRows] = React.useState<Record<string, string>[]>([]);
+   308→  const [sheet, setSheet] = React.useState("");
+   309→  const [mapping, setMapping] = React.useState<Record<string, string>>({});
+   310→  const [dateFrom, setDateFrom] = React.useState("");
+   311→  const [dateTo, setDateTo] = React.useState("");
+   312→  const [comparing, setComparing] = React.useState(false);
+   313→  const [result, setResult] = React.useState<any>(null);
+   314→  const [filter, setFilter] = React.useState<string>("all");
+   315→  const [showOnlyIssues, setShowOnlyIssues] = React.useState(true);
+   316→  const [detailRow, setDetailRow] = React.useState<any>(null);
+   317→
+   318→  // Initialize date range default (last 7 days).
+   319→  React.useEffect(() => {
+   320→    const r = last7DaysRange();
+   321→    setDateFrom(r.from);
+   322→    setDateTo(r.to);
+   323→  }, []);
+   324→
+   325→  // ===== Parse pasted TSV text into rows + auto-detect column mapping.
+   326→  // Accepts tab-separated values copied from Excel. First row = headers.
+   327→  function handlePaste() {
+   328→    const text = pastedText.trim();
+   329→    if (!text) {
+   330→      toast.error("Please paste some data first.");
+   331→      return;
+   332→    }
+   333→    setParsing(true);
+   334→    setParseResult(null);
+   335→    setAllRows([]);
+   336→    setMapping({});
+   337→    setResult(null);
+   338→    setFilter("all");
+   339→    try {
+   340→      const lines = text.split(/\r\n|\n|\r/).filter((l) => l.trim() !== "");
+   341→      if (lines.length < 2) {
+   342→        toast.error("Need at least a header row + 1 data row.");
+   343→        setParsing(false);
+   344→        return;
+   345→      }
+   346→      // First line = headers (split by tab).
+   347→      const rawHeaders = lines[0].split("\t").map((h) => h.trim());
+   348→      const headers = rawHeaders.map((h, i) => h || `Column_${i + 1}`);
+   349→
+   350→      // Remaining lines = data rows.
+   351→      const rows: Record<string, string>[] = [];
+   352→      for (let i = 1; i < lines.length; i++) {
+   353→        const cells = lines[i].split("\t");
+   354→        const row: Record<string, string> = {};
+   355→        headers.forEach((h, idx) => {
+   356→          row[h] = (cells[idx] ?? "").trim();
+   357→        });
+   358→        rows.push(row);
+   359→      }
+   360→
+   361→      setAllRows(rows);
+   362→      setParseResult({ headers, preview: rows.slice(0, 50) });
+   363→
+   364→      // Auto-map headers to canonical fields via buildAutoMapping.
+   365→      const autoMapping = buildAutoMapping(headers);
+   366→      const initMapping: Record<string, string> = {};
+   367→      for (const h of headers) {
+   368→        const f = autoMapping[h] || "";
+   369→        initMapping[h] = f || SKIP_VALUE;
+   370→      }
+   371→      setMapping(initMapping);
+   372→
+   373→      toast.success(
+   374→        `Parsed ${rows.length.toLocaleString()} rows from pasted data (${headers.length} columns detected).`
+   375→      );
+   376→    } catch (e) {
+   377→      const msg = e instanceof Error ? e.message : "Failed to parse pasted data";
+   378→      toast.error(msg);
+   379→    } finally {
+   380→      setParsing(false);
+   381→    }
+   382→  }
+   383→
+   384→  // ===== Update a single column mapping entry.
+   385→  function handleMappingChange(header: string, value: string) {
+   386→    setMapping((prev) => ({ ...prev, [header]: value }));
+   387→    setResult(null);
+   388→  }
+   389→
+   390→  // ===== Compare Excel rows with Website data.
+   391→  async function handleCompare() {
+   392→    if (!allRows.length) {
+   393→      toast.error("No data to compare. Paste your Excel data first.");
+   394→      return;
+   395→    }
+   396→    // Required-field coverage check.
+   397→    const mappedFields = new Set(
+   398→      Object.values(mapping).filter((v) => v && v !== SKIP_VALUE) as CanonicalField[]
+   399→    );
+   400→    const missing = REQUIRED_FIELDS.filter((f) => !mappedFields.has(f));
+   401→    if (missing.length > 0) {
+   402→      toast.error(
+   403→        `Missing required columns: ${missing.map((f) => FIELD_LABELS[f]).join(", ")}`
+   404→      );
+   405→      return;
+   406→    }
+   407→    if (!dateFrom || !dateTo) {
+   408→      toast.error("Please select a date range (From + To).");
+   409→      return;
+   410→    }
+   411→    if (dateFrom > dateTo) {
+   412→      toast.error("Date From must be on or before Date To.");
+   413→      return;
+   414→    }
+   415→
+   416→    setComparing(true);
+   417→    setResult(null);
+   418→    try {
+   419→      // Build canonical rows from raw rows + user mapping.
+   420→      const canonicalRows = buildCanonicalRows(allRows, mapping);
+   421→      const res = await api.reconcileData({
+   422→        productType: currentProduct,
+   423→        dateFrom,
+   424→        dateTo,
+   425→        excelRows: canonicalRows,
+   426→      });
+   427→      setResult(res);
+   428→      setFilter("all");
+   429→      const issues = res.summary?.totalIssues ?? 0;
+   430→      const matched = res.summary?.matched ?? 0;
+   431→      if (issues > 0) {
+   432→        toast.warning(
+   433→          `Reconciled ${res.summary.totalGroups} groups — ${matched} matched, ${issues} issue(s).`
+   434→        );
+   435→      } else {
+   436→        toast.success(
+   437→          `Reconciled ${res.summary.totalGroups} groups — all matched!`
+   438→        );
+   439→      }
+   440→    } catch (e) {
+   441→      const msg = e instanceof Error ? e.message : "Reconciliation failed";
+   442→      toast.error(msg);
+   443→    } finally {
+   444→      setComparing(false);
+   445→    }
+   446→  }
+   447→
+   448→  // ===== Reset everything.
+   449→  function resetAll() {
+   450→    setPastedText("");
+   451→    setParsing(false);
+   452→    setParseResult(null);
+   453→    setAllRows([]);
+   454→    setMapping({});
+   455→    setResult(null);
+   456→    setFilter("all");
+   457→    setShowOnlyIssues(true);
+   458→    setDetailRow(null);
+   459→  }
+   460→
+   461→  // ===== Derived values.
+   462→  const headers = parseResult?.headers ?? [];
+   463→  const previewRows: Record<string, string>[] = parseResult?.preview ?? [];
+   464→  const sheets = parseResult?.sheets ?? [];
+   465→
+   466→  // In-range Excel rows (canonical) for preview table + counts.
+   467→  const canonicalRows = React.useMemo(
+   468→    () => buildCanonicalRows(allRows, mapping),
+   469→    [allRows, mapping]
+   470→  );
+   471→  const inRangeRows = React.useMemo(
+   472→    () => filterRowsByDate(canonicalRows, dateFrom, dateTo),
+   473→    [canonicalRows, dateFrom, dateTo]
+   474→  );
+   475→  const excelTotalRecords = allRows.length;
+   476→  const excelInDateRange = inRangeRows.length;
+   477→  const excelExcluded = Math.max(0, excelTotalRecords - excelInDateRange);
+   478→
+   479→  // Required-field coverage.
+   480→  const mappedFields = new Set(
+   481→    Object.values(mapping).filter((v) => v && v !== SKIP_VALUE) as CanonicalField[]
+   482→  );
+   483→  const missingRequired = REQUIRED_FIELDS.filter((f) => !mappedFields.has(f));
+   484→  const hasMappingError = headers.length > 0 && missingRequired.length > 0;
+   485→  const canCompare =
+   486→    !comparing &&
+   487→    !parsing &&
+   488→    allRows.length > 0 &&
+   489→    missingRequired.length === 0 &&
+   490→    excelInDateRange > 0 &&
+   491→    !!dateFrom &&
+   492→    !!dateTo;
+   493→
+   494→  // Filtered result rows.
+   495→  const allResults: any[] = result?.results ?? [];
+   496→  const filteredResults = React.useMemo(() => {
+   497→    let list = allResults;
+   498→    if (filter !== "all") {
+   499→      list = list.filter((r) => rowMatchesFilter(r.status, filter as FilterKey));
+   500→    }
+   501→    if (showOnlyIssues) {
+   502→      list = list.filter((r) => r.status !== "MATCHED");
+   503→    }
+   504→    return list;
+   505→  }, [allResults, filter, showOnlyIssues]);
+   506→
+   507→  // Tab counts.
+   508→  const tabCounts = React.useMemo(() => {
+   509→    const m: Record<FilterKey, number> = {
+   510→      all: allResults.length,
+   511→      MATCHED: 0,
+   512→      QTY_MISMATCH: 0,
+   513→      MISSING_ON_WEBSITE: 0,
+   514→      MISSING_IN_EXCEL: 0,
+   515→      DUPLICATE: 0,
+   516→      FACTORY_PO_ERROR: 0,
+   517→      SIZE_ERROR: 0,
+   518→    };
+   519→    for (const r of allResults) {
+   520→      if (r.status === "MATCHED") m.MATCHED++;
+   521→      else if (r.status === "QTY_MISMATCH") m.QTY_MISMATCH++;
+   522→      else if (r.status === "MISSING_ON_WEBSITE") m.MISSING_ON_WEBSITE++;
+   523→      else if (r.status === "MISSING_IN_EXCEL") m.MISSING_IN_EXCEL++;
+   524→      else if (r.status === "POSSIBLE_DUPLICATE" || r.status === "EXACT_DUPLICATE")
+   525→        m.DUPLICATE++;
+   526→      else if (r.status === "POSSIBLE_WRONG_FACTORY_PO") m.FACTORY_PO_ERROR++;
+   527→      else if (r.status === "POSSIBLE_WRONG_SIZE") m.SIZE_ERROR++;
+   528→    }
+   529→    return m;
+   530→  }, [allResults]);
+   531→
+   532→  // Suppress unused warning for refreshKey (reserved for query keys).
+   533→  void refreshKey;
+   534→  // bumpRefresh is included per spec; reconcile is read-only so we don't
+   535→  // need to call it, but keep the destructure for consistency with sibling views.
+   536→  void bumpRefresh;
+   537→
+   538→  const summary = result?.summary;
+   539→
+   540→  return (
+   541→    <div className="space-y-5">
+   542→      {/* ===== Header ===== */}
+   543→      <div
+   544→        className={cn(
+   545→          "relative overflow-hidden rounded-xl border bg-gradient-to-r p-5 text-white shadow-sm",
+   546→          theme.gradient
+   547→        )}
+   548→      >
+   549→        <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-white/10" />
+   550→        <div className="relative flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+   551→          <div className="flex items-center gap-3">
+   552→            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white/15 backdrop-blur">
+   553→              <GitCompare className="h-6 w-6" />
+   554→            </div>
+   555→            <div>
+   556→              <p className="text-[11px] font-medium uppercase tracking-wider text-white/80">
+   557→                Data Reconciliation &amp; Duplicate Check
+   558→              </p>
+   559→              <h1 className="text-2xl font-bold tracking-tight">
+   560→                Reconciliation · {currentProduct}
+   561→              </h1>
+   562→              <p className="text-xs text-white/80">
+   563→                Paste Excel data → filter by date → compare with Website MasterData →
+   564→                spot mismatches, missing rows, duplicates, and likely typos.
+   565→              </p>
+   566→            </div>
+   567→          </div>
+   568→          <div className="flex items-center gap-2">
+   569→            <Badge className="border-white/30 bg-white/15 text-white">{currentProduct}</Badge>
+   570→            {allRows.length > 0 && (
+   571→              <Badge className="flex items-center gap-1 border-white/30 bg-white/15 text-white">
+   572→                <ClipboardCheck className="h-3 w-3" /> {allRows.length.toLocaleString()} rows
+   573→              </Badge>
+   574→            )}
+   575→          </div>
+   576→        </div>
+   577→      </div>
+   578→
+   579→      {/* ===== Section 1: Paste Excel Data ===== */}
+   580→      <Card>
+   581→        <CardHeader className="pb-3">
+   582→          <CardTitle className="flex items-center gap-2 text-base">
+   583→            <ClipboardPaste className="h-4 w-4 text-primary" />
+   584→            Paste Excel Data
+   585→            {allRows.length > 0 && (
+   586→              <Badge variant="outline" className="ml-1 text-[10px]">
+   587→                {allRows.length.toLocaleString()} rows
+   588→              </Badge>
+   589→            )}
+   590→          </CardTitle>
+   591→        </CardHeader>
+   592→        <CardContent className="space-y-4">
+   593→          {/* Paste area */}
+   594→          <div className="space-y-2">
+   595→            <div className="flex items-center justify-between">
+   596→              <Label className="text-xs font-medium">
+   597→                Paste tab-separated data from Excel (Ctrl+V)
+   598→              </Label>
+   599→              <div className="flex items-center gap-2">
+   600→                <Button
+   601→                  type="button"
+   602→                  variant="outline"
+   603→                  size="sm"
+   604→                  className="gap-1.5"
+   605→                  onClick={() => setPastedText(SAMPLE_PASTE_TEMPLATE)}
+   606→                  disabled={parsing}
+   607→                >
+   608→                  <Info className="h-3.5 w-3.5" /> Load Sample
+   609→                </Button>
+   610→                <Button
+   611→                  type="button"
+   612→                  variant="outline"
+   613→                  size="sm"
+   614→                  className="gap-1.5 text-rose-600 hover:text-rose-700"
+   615→                  onClick={resetAll}
+   616→                  disabled={parsing || comparing || (!pastedText && allRows.length === 0)}
+   617→                >
+   618→                  <Trash2 className="h-3.5 w-3.5" /> Clear
+   619→                </Button>
+   620→              </div>
+   621→            </div>
+   622→            <textarea
+   623→              className={cn(
+   624→                "w-full min-h-[180px] rounded-md border border-input bg-background px-3 py-2 font-mono text-xs",
+   625→                "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1",
+   626→                "placeholder:text-muted-foreground"
+   627→              )}
+   628→              placeholder={SAMPLE_PLACEHOLDER}
+   629→              value={pastedText}
+   630→              onChange={(e) => setPastedText(e.target.value)}
+   631→              disabled={parsing}
+   632→              spellCheck={false}
+   633→            />
+   634→            <div className="flex flex-wrap items-center gap-2">
+   635→              <Button
+   636→                type="button"
+   637→                size="sm"
+   638→                className={cn("gap-1.5 text-white hover:opacity-90", theme.bg)}
+   639→                onClick={handlePaste}
+   640→                disabled={parsing || !pastedText.trim()}
+   641→              >
+   642→                {parsing ? (
+   643→                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+   644→                ) : (
+   645→                  <ClipboardCheck className="h-3.5 w-3.5" />
+   646→                )}
+   647→                {parsing ? "Parsing…" : "Parse Pasted Data"}
+   648→              </Button>
+   649→              {allRows.length > 0 && (
+   650→                <Badge variant="outline" className="text-[10px]">
+   651→                  {allRows.length.toLocaleString()} rows parsed · {headers.length} columns
+   652→                </Badge>
+   653→              )}
+   654→            </div>
+   655→          </div>
+   656→
+   657→          {/* Sample template helper */}
+   658→          <Alert className="border-primary/20 bg-primary/5">
+   659→            <Info className="h-4 w-4 text-primary" />
+   660→            <AlertTitle className="text-xs font-medium">How to copy from Excel</AlertTitle>
+   661→            <AlertDescription className="text-xs">
+   662→              <ol className="ml-4 list-decimal space-y-0.5">
+   663→                <li>Select the cells in Excel (including the header row).</li>
+   664→                <li>Press <kbd className="rounded bg-muted px-1">Ctrl+C</kbd> to copy.</li>
+   665→                <li>Click the paste area above, press <kbd className="rounded bg-muted px-1">Ctrl+V</kbd>.</li>
+   666→                <li>Click <strong>Parse Pasted Data</strong> — columns will be auto-detected.</li>
+   667→              </ol>
+   668→              <p className="mt-1.5 text-muted-foreground">
+   669→                Required columns: <strong>Date, PO NO#, Factory PO, Size, Qty</strong>.
+   670→                Column names can vary (e.g. "PO#" or "PO Number" → PO NO#) — you can remap after parsing.
+   671→              </p>
+   672→            </AlertDescription>
+   673→          </Alert>
+   674→        </CardContent>
+   675→      </Card>
+   676→
+   677→      {/* ===== Section 2: Column Mapping ===== */}
+   678→      {headers.length > 0 && (
+   679→        <Card>
+   680→          <CardHeader className="pb-3">
+   681→            <CardTitle className="flex items-center gap-2 text-base">
+   682→              <Layers className="h-4 w-4 text-primary" />
+   683→              Column Mapping
+   684→              <Badge variant="outline" className="ml-1 text-[10px]">
+   685→                {headers.length} columns
+   686→              </Badge>
+   687→              {hasMappingError ? (
+   688→                <Badge className="ml-1 bg-rose-100 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800 text-[10px]">
+   689→                  MISSING REQUIRED COLUMN
+   690→                </Badge>
+   691→              ) : (
+   692→                <Badge className="ml-1 bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800 text-[10px]">
+   693→                  Required OK
+   694→                </Badge>
+   695→              )}
+   696→            </CardTitle>
+   697→          </CardHeader>
+   698→          <CardContent className="space-y-3">
+   699→            {hasMappingError && (
+   700→              <Alert variant="destructive">
+   701→                <AlertCircle className="h-4 w-4" />
+   702→                <AlertTitle>Missing required column(s)</AlertTitle>
+   703→                <AlertDescription>
+   704→                  These required columns are not mapped:{" "}
+   705→                  <strong>
+   706→                    {missingRequired.map((f) => FIELD_LABELS[f]).join(", ")}
+   707→                  </strong>
+   708→                  . Either rename the column in Excel to match a known alias, or
+   709→                  manually map it below.
+   710→                </AlertDescription>
+   711→              </Alert>
+   712→            )}
+   713→            <div className="max-h-96 overflow-y-auto scroll-thin rounded-md border">
+   714→              <Table>
+   715→                <TableHeader className="sticky top-0 z-10 bg-muted/80 backdrop-blur">
+   716→                  <TableRow>
+   717→                    <TableHead className="w-1/3 text-[10px] uppercase">Excel Column</TableHead>
+   718→                    <TableHead className="w-1/3 text-[10px] uppercase">Sample Value</TableHead>
+   719→                    <TableHead className="w-12 text-[10px] uppercase text-center">→</TableHead>
+   720→                    <TableHead className="w-1/3 text-[10px] uppercase">System Field</TableHead>
+   721→                  </TableRow>
+   722→                </TableHeader>
+   723→                <TableBody>
+   724→                  {headers.map((h: string) => {
+   725→                    const canonical = mapping[h] || SKIP_VALUE;
+   726→                    const sample = previewRows[0]?.[h] ?? allRows[0]?.[h] ?? "";
+   727→                    const isRequired =
+   728→                      canonical !== SKIP_VALUE &&
+   729→                      REQUIRED_FIELDS.includes(canonical as CanonicalField);
+   730→                    return (
+   731→                      <TableRow key={h} className="border-t">
+   732→                        <TableCell className="px-3 py-2 text-xs font-medium break-all">
+   733→                          {h}
+   734→                          {REQUIRED_FIELDS.includes(canonical as CanonicalField) && (
+   735→                            <span className="ml-1 text-rose-600">*</span>
+   736→                          )}
+   737→                        </TableCell>
+   738→                        <TableCell className="px-3 py-2 text-xs text-muted-foreground break-all">
+   739→                          {sample ? (
+   740→                            <span className="line-clamp-1">{sample}</span>
+   741→                          ) : (
+   742→                            <span className="text-muted-foreground/40">—</span>
+   743→                          )}
+   744→                        </TableCell>
+   745→                        <TableCell className="px-3 py-2 text-center text-muted-foreground">
+   746→                          →
+   747→                        </TableCell>
+   748→                        <TableCell className="px-3 py-2">
+   749→                          <Select
+   750→                            value={canonical}
+   751→                            onValueChange={(v) => handleMappingChange(h, v)}
+   752→                          >
+   753→                            <SelectTrigger size="sm" className="w-full">
+   754→                              <SelectValue placeholder="— skip —" />
+   755→                            </SelectTrigger>
+   756→                            <SelectContent className="max-h-72 scroll-thin">
+   757→                              <SelectItem value={SKIP_VALUE}>— skip —</SelectItem>
+   758→                              {mappingOptions().map((opt) => (
+   759→                                <SelectItem key={opt.value} value={opt.value}>
+   760→                                  {opt.label}
+   761→                                  {REQUIRED_FIELDS.includes(opt.value as CanonicalField)
+   762→                                    ? " *"
+   763→                                    : ""}
+   764→                                </SelectItem>
+   765→                              ))}
+   766→                            </SelectContent>
+   767→                          </Select>
+   768→                          {isRequired && (
+   769→                            <div className="mt-0.5 text-[10px] text-rose-600 dark:text-rose-400">
+   770→                              required
+   771→                            </div>
+   772→                          )}
+   773→                        </TableCell>
+   774→                      </TableRow>
+   775→                    );
+   776→                  })}
+   777→                </TableBody>
+   778→              </Table>
+   779→            </div>
+   780→            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+   781→              <Info className="h-3 w-3" />
+   782→              Fields marked <strong>*</strong> are required for reconciliation:
+   783→              Date, PO NO#, Factory PO, Size, Q&apos;ty 1.
+   784→            </div>
+   785→          </CardContent>
+   786→        </Card>
+   787→      )}
+   788→
+   789→      {/* ===== Section 3: Date Range Filter ===== */}
+   790→      {allRows.length > 0 && (
+   791→        <Card>
+   792→          <CardHeader className="pb-3">
+   793→            <CardTitle className="flex items-center gap-2 text-base">
+   794→              <Calendar className="h-4 w-4 text-primary" />
+   795→              Date Range Filter
+   796→            </CardTitle>
+   797→          </CardHeader>
+   798→          <CardContent className="space-y-3">
+   799→            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+   800→              <div>
+   801→                <Label htmlFor="date-from" className="text-xs font-medium">
+   802→                  From
+   803→                </Label>
+   804→                <Input
+   805→                  id="date-from"
+   806→                  type="date"
+   807→                  value={dateFrom}
+   808→                  onChange={(e) => {
+   809→                    setDateFrom(e.target.value);
+   810→                    setResult(null);
+   811→                  }}
+   812→                  className="mt-1"
+   813→                />
+   814→              </div>
+   815→              <div>
+   816→                <Label htmlFor="date-to" className="text-xs font-medium">
+   817→                  To
+   818→                </Label>
+   819→                <Input
+   820→                  id="date-to"
+   821→                  type="date"
+   822→                  value={dateTo}
+   823→                  onChange={(e) => {
+   824→                    setDateTo(e.target.value);
+   825→                    setResult(null);
+   826→                  }}
+   827→                  className="mt-1"
+   828→                />
+   829→              </div>
+   830→            </div>
+   831→            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+   832→              <Info className="h-3 w-3" />
+   833→              Only data with <strong>Date</strong> in this range will be compared. Rows
+   834→              without a parseable Date or outside this window are excluded.
+   835→            </div>
+   836→          </CardContent>
+   837→        </Card>
+   838→      )}
+   839→
+   840→      {/* ===== Section 4: Preview Filtered Data ===== */}
+   841→      {allRows.length > 0 && (
+   842→        <Card>
+   843→          <CardHeader className="pb-3">
+   844→            <CardTitle className="flex items-center gap-2 text-base">
+   845→              <Search className="h-4 w-4 text-primary" />
+   846→              Preview Filtered Data
+   847→            </CardTitle>
+   848→          </CardHeader>
+   849→          <CardContent className="space-y-3">
+   850→            <div className="grid grid-cols-3 gap-3">
+   851→              <StatBox label="Total Excel Rows" value={excelTotalRecords} tone="slate" />
+   852→              <StatBox label="In Date Range" value={excelInDateRange} tone="emerald" />
+   853→              <StatBox label="Excluded" value={excelExcluded} tone="rose" />
+   854→            </div>
+   855→            {/* First 10 in-range rows */}
+   856→            <div className="rounded-md border">
+   857→              <Table>
+   858→                <TableHeader className="bg-muted/80 backdrop-blur">
+   859→                  <TableRow>
+   860→                    <TableHead className="text-[10px] uppercase">#</TableHead>
+   861→                    <TableHead className="text-[10px] uppercase">Date</TableHead>
+   862→                    <TableHead className="text-[10px] uppercase">PO NO#</TableHead>
+   863→                    <TableHead className="text-[10px] uppercase">Factory PO</TableHead>
+   864→                    <TableHead className="text-[10px] uppercase">Size</TableHead>
+   865→                    <TableHead className="text-[10px] uppercase text-right">Qty</TableHead>
+   866→                  </TableRow>
+   867→                </TableHeader>
+   868→                <TableBody>
+   869→                  {inRangeRows.length === 0 ? (
+   870→                    <TableRow>
+   871→                      <TableCell
+   872→                        colSpan={6}
+   873→                        className="py-8 text-center text-xs text-muted-foreground"
+   874→                      >
+   875→                        No rows in the selected date range.
+   876→                      </TableCell>
+   877→                    </TableRow>
+   878→                  ) : (
+   879→                    inRangeRows.slice(0, 10).map((r, i) => (
+   880→                      <TableRow key={i} className="border-t">
+   881→                        <TableCell className="px-3 py-1.5 text-[10px] tabular-nums text-muted-foreground">
+   882→                          {i + 1}
+   883→                        </TableCell>
+   884→                        <TableCell className="px-3 py-1.5 text-xs whitespace-nowrap">
+   885→                          {r.date || "—"}
+   886→                        </TableCell>
+   887→                        <TableCell className="px-3 py-1.5 text-xs whitespace-nowrap">
+   888→                          {r.poNo || "—"}
+   889→                        </TableCell>
+   890→                        <TableCell className="px-3 py-1.5 text-xs font-medium whitespace-nowrap">
+   891→                          {r.factoryPO || "—"}
+   892→                        </TableCell>
+   893→                        <TableCell className="px-3 py-1.5">
+   894→                          {r.size ? (
+   895→                            <Badge variant="outline" className="text-[9px] font-mono">
+   896→                              {r.size}
+   897→                            </Badge>
+   898→                          ) : (
+   899→                            "—"
+   900→                          )}
+   901→                        </TableCell>
+   902→                        <TableCell className="px-3 py-1.5 text-xs text-right tabular-nums">
+   903→                          {r.qty ?? "—"}
+   904→                        </TableCell>
+   905→                      </TableRow>
+   906→                    ))
+   907→                  )}
+   908→                </TableBody>
+   909→              </Table>
+   910→            </div>
+   911→            {inRangeRows.length > 10 && (
+   912→              <div className="text-center text-[11px] text-muted-foreground">
+   913→                Showing first 10 of {inRangeRows.length.toLocaleString()} in-range rows.
+   914→              </div>
+   915→            )}
+   916→            <div className="flex justify-end">
+   917→              <Button
+   918→                onClick={handleCompare}
+   919→                disabled={!canCompare}
+   920→                className={cn("gap-1.5", theme.bg, "text-white hover:opacity-90")}
+   921→              >
+   922→                {comparing ? (
+   923→                  <Loader2 className="h-4 w-4 animate-spin" />
+   924→                ) : (
+   925→                  <GitCompare className="h-4 w-4" />
+   926→                )}
+   927→                {comparing ? "Comparing…" : "Compare with Website Data"}
+   928→              </Button>
+   929→            </div>
+   930→            {!canCompare && allRows.length > 0 && (
+   931→              <div className="text-right text-[11px] text-muted-foreground">
+   932→                {missingRequired.length > 0
+   933→                  ? `Map required columns first: ${missingRequired
+   934→                      .map((f) => FIELD_LABELS[f])
+   935→                      .join(", ")}`
+   936→                  : excelInDateRange === 0
+   937→                  ? "No rows in date range — adjust the filter or upload a different file."
+   938→                  : ""}
+   939→              </div>
+   940→            )}
+   941→          </CardContent>
+   942→        </Card>
+   943→      )}
+   944→
+   945→      {/* ===== Section 5: Comparison Summary ===== */}
+   946→      {summary && (
+   947→        <>
+   948→          {/* 9 summary cards */}
+   949→          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+   950→            <SummaryCard
+   951→              label="Matched"
+   952→              value={summary.matched}
+   953→              icon={CheckCircle2}
+   954→              tone="emerald"
+   955→            />
+   956→            <SummaryCard
+   957→              label="Qty Mismatch"
+   958→              value={summary.qtyMismatch}
+   959→              icon={AlertTriangle}
+   960→              tone="amber"
+   961→            />
+   962→            <SummaryCard
+   963→              label="Missing on Website"
+   964→              value={summary.missingOnWebsite}
+   965→              icon={AlertCircle}
+   966→              tone="rose"
+   967→            />
+   968→            <SummaryCard
+   969→              label="Missing in Excel"
+   970→              value={summary.missingInExcel}
+   971→              icon={AlertTriangle}
+   972→              tone="amber"
+   973→            />
+   974→            <SummaryCard
+   975→              label="Possible Wrong Factory PO"
+   976→              value={summary.possibleWrongFactoryPO}
+   977→              icon={AlertTriangle}
+   978→              tone="amber"
+   979→            />
+   980→            <SummaryCard
+   981→              label="Possible Wrong Size"
+   982→              value={summary.possibleWrongSize}
+   983→              icon={AlertTriangle}
+   984→              tone="amber"
+   985→            />
+   986→            <SummaryCard
+   987→              label="Possible Duplicate"
+   988→              value={summary.possibleDuplicate}
+   989→              icon={AlertCircle}
+   990→              tone="rose"
+   991→            />
+   992→            <SummaryCard
+   993→              label="Exact Duplicate"
+   994→              value={summary.exactDuplicate}
+   995→              icon={AlertCircle}
+   996→              tone="rose"
+   997→            />
+   998→            <SummaryCard
+   999→              label="Total Issues"
+  1000→              value={summary.totalIssues}
+  1001→              icon={AlertCircle}
+  1002→              tone="rose"
+  1003→            />
+  1004→          </div>
+  1005→
+  1006→          {/* Date Range Safety card */}
+  1007→          <Card>
+  1008→            <CardHeader className="pb-3">
+  1009→              <CardTitle className="flex items-center gap-2 text-base">
+  1010→                <Info className="h-4 w-4 text-primary" />
+  1011→                Date Range Safety
+  1012→                <Badge variant="outline" className="ml-1 text-[10px]">
+  1013→                  {summary.dateRange?.from} → {summary.dateRange?.to}
+  1014→                </Badge>
+  1015→              </CardTitle>
+  1016→            </CardHeader>
+  1017→            <CardContent>
+  1018→              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+  1019→                {/* Excel */}
+  1020→                <div className="rounded-md border bg-muted/30 p-3">
+  1021→                  <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
+  1022→                    <ClipboardCheck className="h-3.5 w-3.5" /> Excel Source
+  1023→                  </div>
+  1024→                  <div className="grid grid-cols-3 gap-2 text-xs">
+  1025→                    <StatBox
+  1026→                      label="Total"
+  1027→                      value={summary.excelTotalRecords}
+  1028→                      tone="slate"
+  1029→                      compact
+  1030→                    />
+  1031→                    <StatBox
+  1032→                      label="In Range"
+  1033→                      value={summary.excelRecordsInDateRange}
+  1034→                      tone="emerald"
+  1035→                      compact
+  1036→                    />
+  1037→                    <StatBox
+  1038→                      label="Excluded"
+  1039→                      value={summary.excelExcluded}
+  1040→                      tone="rose"
+  1041→                      compact
+  1042→                    />
+  1043→                  </div>
+  1044→                </div>
+  1045→                {/* Website */}
+  1046→                <div className="rounded-md border bg-muted/30 p-3">
+  1047→                  <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
+  1048→                    <GitCompare className="h-3.5 w-3.5" /> Website Source
+  1049→                  </div>
+  1050→                  <div className="grid grid-cols-3 gap-2 text-xs">
+  1051→                    <StatBox
+  1052→                      label="Total"
+  1053→                      value={summary.websiteTotalRecords}
+  1054→                      tone="slate"
+  1055→                      compact
+  1056→                    />
+  1057→                    <StatBox
+  1058→                      label="In Range"
+  1059→                      value={summary.websiteRecordsInDateRange}
+  1060→                      tone="emerald"
+  1061→                      compact
+  1062→                    />
+  1063→                    <StatBox
+  1064→                      label="Excluded"
+  1065→                      value={summary.websiteExcluded}
+  1066→                      tone="rose"
+  1067→                      compact
+  1068→                    />
+  1069→                  </div>
+  1070→                </div>
+  1071→              </div>
+  1072→            </CardContent>
+  1073→          </Card>
+  1074→        </>
+  1075→      )}
+  1076→
+  1077→      {/* ===== Section 6 & 7: Filter Tabs + Results Table ===== */}
+  1078→      {result && (
+  1079→        <Card>
+  1080→          <CardHeader className="pb-2">
+  1081→            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+  1082→              <CardTitle className="flex items-center gap-2 text-base">
+  1083→                <ClipboardCheck className="h-4 w-4 text-primary" />
+  1084→                Comparison Results
+  1085→                <Badge variant="outline" className="ml-1 text-[10px]">
+  1086→                  {allResults.length.toLocaleString()} groups
+  1087→                </Badge>
+  1088→              </CardTitle>
+  1089→              <label className="flex items-center gap-2 text-xs">
+  1090→                <Switch
+  1091→                  checked={showOnlyIssues}
+  1092→                  onCheckedChange={(v) => {
+  1093→                    setShowOnlyIssues(v);
+  1094→                    setFilter("all");
+  1095→                  }}
+  1096→                />
+  1097→                Show only issues
+  1098→              </label>
+  1099→            </div>
+  1100→            <Tabs
+  1101→              value={filter}
+  1102→              onValueChange={(v) => setFilter(v as string)}
+  1103→              className="mt-2"
+  1104→            >
+  1105→              <TabsList className="flex w-full flex-wrap gap-1">
+  1106→                {FILTER_TABS.map((t) => (
+  1107→                  <TabsTrigger key={t.key} value={t.key} className="text-[10px]">
+  1108→                    {t.label}
+  1109→                    <Badge variant="secondary" className="ml-1 text-[9px]">
+  1110→                      {tabCounts[t.key]}
+  1111→                    </Badge>
+  1112→                  </TabsTrigger>
+  1113→                ))}
+  1114→              </TabsList>
+  1115→            </Tabs>
+  1116→          </CardHeader>
+  1117→          <CardContent className="p-0">
+  1118→            <div className="max-h-[600px] overflow-y-auto scroll-thin">
+  1119→              <Table>
+  1120→                <TableHeader className="sticky top-0 z-10 bg-muted/80 backdrop-blur">
+  1121→                  <TableRow>
+  1122→                    <TableHead className="w-[120px] text-[10px] uppercase">Status</TableHead>
+  1123→                    <TableHead className="text-[10px] uppercase">PO NO#</TableHead>
+  1124→                    <TableHead className="text-[10px] uppercase">Factory PO</TableHead>
+  1125→                    <TableHead className="text-[10px] uppercase">Size</TableHead>
+  1126→                    <TableHead className="text-[10px] uppercase text-right">Excel Qty</TableHead>
+  1127→                    <TableHead className="text-[10px] uppercase text-right">Website Qty</TableHead>
+  1128→                    <TableHead className="text-[10px] uppercase text-right">Difference</TableHead>
+  1129→                    <TableHead className="w-[100px] text-[10px] uppercase text-center">
+  1130→                      Actions
+  1131→                    </TableHead>
+  1132→                  </TableRow>
+  1133→                </TableHeader>
+  1134→                <TableBody>
+  1135→                  {filteredResults.length === 0 ? (
+  1136→                    <TableRow>
+  1137→                      <TableCell
+  1138→                        colSpan={8}
+  1139→                        className="py-10 text-center text-xs text-muted-foreground"
+  1140→                      >
+  1141→                        No rows match this filter.
+  1142→                      </TableCell>
+  1143→                    </TableRow>
+  1144→                  ) : (
+  1145→                    filteredResults.map((r: any, idx: number) => {
+  1146→                      const tone = STATUS_TONE[r.status] || "slate";
+  1147→                      const Icon = STATUS_ICON[tone];
+  1148→                      const diff = r.difference ?? 0;
+  1149→                      const diffTone =
+  1150→                        diff > 0
+  1151→                          ? "text-emerald-600 dark:text-emerald-400"
+  1152→                          : diff < 0
+  1153→                          ? "text-rose-600 dark:text-rose-400"
+  1154→                          : "text-muted-foreground";
+  1155→                      return (
+  1156→                        <TableRow
+  1157→                          key={`${r.poNo}-${r.factoryPO}-${r.size}-${idx}`}
+  1158→                          className={cn(
+  1159→                            "cursor-pointer border-t",
+  1160→                            STATUS_ROW_TINT[tone]
+  1161→                          )}
+  1162→                          onClick={() => setDetailRow(r)}
+  1163→                        >
+  1164→                          <TableCell className="px-3 py-1.5">
+  1165→                            <Badge
+  1166→                              variant="outline"
+  1167→                              className={cn("text-[9px]", STATUS_BADGE[tone])}
+  1168→                            >
+  1169→                              <Icon className="mr-0.5 h-2.5 w-2.5" />
+  1170→                              {r.status.replace(/_/g, " ")}
+  1171→                            </Badge>
+  1172→                          </TableCell>
+  1173→                          <TableCell className="px-3 py-1.5 text-xs whitespace-nowrap">
+  1174→                            {r.poNo || "—"}
+  1175→                          </TableCell>
+  1176→                          <TableCell className="px-3 py-1.5 text-xs font-medium whitespace-nowrap">
+  1177→                            {r.factoryPO || "—"}
+  1178→                          </TableCell>
+  1179→                          <TableCell className="px-3 py-1.5">
+  1180→                            {r.size ? (
+  1181→                              <Badge variant="outline" className="text-[9px] font-mono">
+  1182→                                {r.size}
+  1183→                              </Badge>
+  1184→                            ) : (
+  1185→                              "—"
+  1186→                            )}
+  1187→                          </TableCell>
+  1188→                          <TableCell className="px-3 py-1.5 text-xs text-right tabular-nums">
+  1189→                            {fmtNum(r.excelQty)}
+  1190→                          </TableCell>
+  1191→                          <TableCell className="px-3 py-1.5 text-xs text-right tabular-nums">
+  1192→                            {fmtNum(r.websiteQty)}
+  1193→                          </TableCell>
+  1194→                          <TableCell
+  1195→                            className={cn(
+  1196→                              "px-3 py-1.5 text-xs text-right tabular-nums font-semibold",
+  1197→                              diffTone
+  1198→                            )}
+  1199→                          >
+  1200→                            {fmtDiff(diff)}
+  1201→                          </TableCell>
+  1202→                          <TableCell className="px-3 py-1.5 text-center">
+  1203→                            <Button
+  1204→                              variant="ghost"
+  1205→                              size="sm"
+  1206→                              className="h-7 px-2 gap-1"
+  1207→                              onClick={(e) => {
+  1208→                                e.stopPropagation();
+  1209→                                setDetailRow(r);
+  1210→                              }}
+  1211→                            >
+  1212→                              <Eye className="h-3.5 w-3.5" />
+  1213→                              <span className="text-[10px]">View</span>
+  1214→                            </Button>
+  1215→                          </TableCell>
+  1216→                        </TableRow>
+  1217→                      );
+  1218→                    })
+  1219→                  )}
+  1220→                </TableBody>
+  1221→              </Table>
+  1222→            </div>
+  1223→            <div className="flex items-center justify-between border-t px-4 py-2 text-xs text-muted-foreground">
+  1224→              <span>
+  1225→                Showing {filteredResults.length.toLocaleString()} of{" "}
+  1226→                {allResults.length.toLocaleString()} groups
+  1227→              </span>
+  1228→              <span className="flex items-center gap-1">
+  1229→                <Filter className="h-3 w-3" /> Click a row to view detail
+  1230→              </span>
+  1231→            </div>
+  1232→          </CardContent>
+  1233→        </Card>
+  1234→      )}
+  1235→
+  1236→      {/* ===== Section 8: Detail Dialog (READ-ONLY) ===== */}
+  1237→      <Dialog open={!!detailRow} onOpenChange={(o) => !o && setDetailRow(null)}>
+  1238→        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto scroll-thin">
+  1239→          <DialogHeader>
+  1240→            <DialogTitle className="flex items-center gap-2">
+  1241→              <Eye className="h-5 w-5 text-primary" />
+  1242→              Reconciliation Detail
+  1243→              {detailRow && (
+  1244→                <Badge
+  1245→                  variant="outline"
+  1246→                  className={cn(
+  1247→                    "ml-1 text-[10px]",
+  1248→                    STATUS_BADGE[STATUS_TONE[detailRow.status] || "slate"]
+  1249→                  )}
+  1250→                >
+  1251→                  {detailRow.status.replace(/_/g, " ")}
+  1252→                </Badge>
+  1253→              )}
+  1254→            </DialogTitle>
+  1255→            <DialogDescription>
+  1256→              Read-only detail of one comparison group (PO NO# + Factory PO + Size).
+  1257→            </DialogDescription>
+  1258→          </DialogHeader>
+  1259→          {detailRow && (
+  1260→            <div className="space-y-4">
+  1261→              {/* Identity */}
+  1262→              <div className="grid grid-cols-3 gap-3">
+  1263→                <DetailField label="PO NO#" value={detailRow.poNo} />
+  1264→                <DetailField label="Factory PO" value={detailRow.factoryPO} />
+  1265→                <DetailField label="Size" value={detailRow.size} mono />
+  1266→              </div>
+  1267→
+  1268→              {/* Quantities */}
+  1269→              <div className="grid grid-cols-3 gap-3 rounded-md border bg-muted/30 p-3">
+  1270→                <DetailNumber label="Excel Qty" value={detailRow.excelQty} />
+  1271→                <DetailNumber label="Website Qty" value={detailRow.websiteQty} />
+  1272→                <div>
+  1273→                  <div className="text-[10px] font-medium uppercase text-muted-foreground">
+  1274→                    Difference
+  1275→                  </div>
+  1276→                  <div
+  1277→                    className={cn(
+  1278→                      "text-sm font-bold tabular-nums",
+  1279→                      (detailRow.difference ?? 0) > 0
+  1280→                        ? "text-emerald-600 dark:text-emerald-400"
+  1281→                        : (detailRow.difference ?? 0) < 0
+  1282→                        ? "text-rose-600 dark:text-rose-400"
+  1283→                        : "text-foreground"
+  1284→                    )}
+  1285→                  >
+  1286→                    {fmtDiff(detailRow.difference)}
+  1287→                  </div>
+  1288→                </div>
+  1289→              </div>
+  1290→
+  1291→              {/* Status + explanation */}
+  1292→              <div
+  1293→                className={cn(
+  1294→                  "rounded-md border p-3 text-xs",
+  1295→                  STATUS_BADGE[STATUS_TONE[detailRow.status] || "slate"]
+  1296→                )}
+  1297→              >
+  1298→                <div className="flex items-center gap-1.5 font-semibold">
+  1299→                  <Badge
+  1300→                    variant="outline"
+  1301→                    className={cn("text-[9px]", STATUS_BADGE[STATUS_TONE[detailRow.status] || "slate"])}
+  1302→                  >
+  1303→                    {detailRow.status.replace(/_/g, " ")}
+  1304→                  </Badge>
+  1305→                  Status Explanation
+  1306→                </div>
+  1307→                <p className="mt-1.5 text-foreground/90">
+  1308→                  {statusExplanation(detailRow.status)}
+  1309→                </p>
+  1310→              </div>
+  1311→
+  1312→              {/* Suggestions for typo statuses */}
+  1313→              {detailRow.status === "POSSIBLE_WRONG_FACTORY_PO" &&
+  1314→                detailRow.suggestedFactoryPO && (
+  1315→                  <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-3 text-xs">
+  1316→                    <div className="mb-1 flex items-center gap-1.5 font-semibold text-amber-700 dark:text-amber-300">
+  1317→                      <AlertTriangle className="h-3.5 w-3.5" /> Suggested Factory PO
+  1318→                    </div>
+  1319→                    <div className="flex items-center gap-2">
+  1320→                      <code className="rounded bg-amber-100 dark:bg-amber-950/60 px-2 py-1 font-mono text-amber-800 dark:text-amber-200">
+  1321→                        {detailRow.suggestedFactoryPO}
+  1322→                      </code>
+  1323→                      <Button
+  1324→                        variant="outline"
+  1325→                        size="sm"
+  1326→                        className="h-7 gap-1"
+  1327→                        onClick={() => {
+  1328→                          navigator.clipboard
+  1329→                            .writeText(detailRow.suggestedFactoryPO)
+  1330→                            .then(() => toast.success("Copied to clipboard."))
+  1331→                            .catch(() => toast.error("Failed to copy."));
+  1332→                        }}
+  1333→                      >
+  1334→                        <Copy className="h-3 w-3" /> Copy
+  1335→                      </Button>
+  1336→                    </div>
+  1337→                    <p className="mt-2 text-amber-700/80 dark:text-amber-300/80">
+  1338→                      A different Factory PO for the same PO NO# + Size exists on the
+  1339→                      Website — likely a typo in the Excel file.
+  1340→                    </p>
+  1341→                  </div>
+  1342→                )}
+  1343→
+  1344→              {detailRow.status === "POSSIBLE_WRONG_SIZE" && detailRow.suggestedSize && (
+  1345→                <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-3 text-xs">
+  1346→                  <div className="mb-1 flex items-center gap-1.5 font-semibold text-amber-700 dark:text-amber-300">
+  1347→                    <AlertTriangle className="h-3.5 w-3.5" /> Suggested Size
+  1348→                  </div>
+  1349→                  <div className="flex items-center gap-2">
+  1350→                    <code className="rounded bg-amber-100 dark:bg-amber-950/60 px-2 py-1 font-mono text-amber-800 dark:text-amber-200">
+  1351→                      {detailRow.suggestedSize}
+  1352→                    </code>
+  1353→                    <Button
+  1354→                      variant="outline"
+  1355→                      size="sm"
+  1356→                      className="h-7 gap-1"
+  1357→                      onClick={() => {
+  1358→                        navigator.clipboard
+  1359→                          .writeText(detailRow.suggestedSize)
+  1360→                          .then(() => toast.success("Copied to clipboard."))
+  1361→                          .catch(() => toast.error("Failed to copy."));
+  1362→                      }}
+  1363→                    >
+  1364→                      <Copy className="h-3 w-3" /> Copy
+  1365→                    </Button>
+  1366→                  </div>
+  1367→                  <p className="mt-2 text-amber-700/80 dark:text-amber-300/80">
+  1368→                    A different Size for the same PO NO# + Factory PO exists on the
+  1369→                    Website — likely a typo or wrong size code in the Excel file.
+  1370→                  </p>
+  1371→                </div>
+  1372→              )}
+  1373→
+  1374→              {detailRow.status === "EXACT_DUPLICATE" &&
+  1375→                typeof detailRow.duplicateCount === "number" && (
+  1376→                  <div className="rounded-md border border-rose-200 bg-rose-50 dark:border-rose-800 dark:bg-rose-950/30 p-3 text-xs">
+  1377→                    <div className="mb-1 flex items-center gap-1.5 font-semibold text-rose-700 dark:text-rose-300">
+  1378→                      <AlertCircle className="h-3.5 w-3.5" /> Duplicate Count
+  1379→                    </div>
+  1380→                    <p>
+  1381→                      An identical record (Date + PO + Factory PO + Size + Qty) appears{" "}
+  1382→                      <strong>{detailRow.duplicateCount}</strong> time(s) within a single
+  1383→                      source. Likely a duplicate entry that should be removed.
+  1384→                    </p>
+  1385→                  </div>
+  1386→                )}
+  1387→
+  1388→              {/* Row counts */}
+  1389→              <div className="grid grid-cols-2 gap-3">
+  1390→                <DetailNumber
+  1391→                  label="Excel Row Count"
+  1392→                  value={detailRow.excelRowCount}
+  1393→                  tone="default"
+  1394→                />
+  1395→                <DetailNumber
+  1396→                  label="Website Row Count"
+  1397→                  value={detailRow.websiteRowCount}
+  1398→                  tone="default"
+  1399→                />
+  1400→              </div>
+  1401→
+  1402→              {/* Read-only notice */}
+  1403→              <Alert>
+  1404→                <Info className="h-4 w-4" />
+  1405→                <AlertDescription>
+  1406→                  This view is <strong>read-only</strong>. Edit data in Data Entry or
+  1407→                  Master Data.
+  1408→                </AlertDescription>
+  1409→              </Alert>
+  1410→            </div>
+  1411→          )}
+  1412→          <DialogFooter>
+  1413→            <Button variant="outline" size="sm" onClick={() => setDetailRow(null)}>
+  1414→              <X className="h-3.5 w-3.5" /> Close
+  1415→            </Button>
+  1416→          </DialogFooter>
+  1417→        </DialogContent>
+  1418→      </Dialog>
+  1419→    </div>
+  1420→  );
+  1421→}
+  1422→
+  1423→export default ProductReconciliationView;
+  1424→
+  1425→// ===== Sub-components =====
+  1426→
+  1427→function SummaryCard({
+  1428→  label,
+  1429→  value,
+  1430→  icon: Icon,
+  1431→  tone = "slate",
+  1432→}: {
+  1433→  label: string;
+  1434→  value: number | string;
+  1435→  icon: React.ComponentType<{ className?: string }>;
+  1436→  tone?: Tone;
+  1437→}) {
+  1438→  const toneClass = (() => {
+  1439→    switch (tone) {
+  1440→      case "emerald":
+  1441→        return "text-emerald-600 dark:text-emerald-400";
+  1442→      case "amber":
+  1443→        return "text-amber-600 dark:text-amber-400";
+  1444→      case "rose":
+  1445→        return "text-rose-600 dark:text-rose-400";
+  1446→      default:
+  1447→        return "text-slate-700 dark:text-slate-200";
+  1448→    }
+  1449→  })();
+  1450→  const iconBg = (() => {
+  1451→    switch (tone) {
+  1452→      case "emerald":
+  1453→        return "bg-emerald-100 dark:bg-emerald-950/40";
+  1454→      case "amber":
+  1455→        return "bg-amber-100 dark:bg-amber-950/40";
+  1456→      case "rose":
+  1457→        return "bg-rose-100 dark:bg-rose-950/40";
+  1458→      default:
+  1459→        return "bg-slate-100 dark:bg-slate-900/40";
+  1460→    }
+  1461→  })();
+  1462→  return (
+  1463→    <Card className="border-border/60">
+  1464→      <CardContent className="flex items-center gap-3 p-3">
+  1465→        <div className={cn("flex h-9 w-9 items-center justify-center rounded-lg", iconBg)}>
+  1466→          <Icon className={cn("h-4 w-4", toneClass)} />
+  1467→        </div>
+  1468→        <div className="min-w-0">
+  1469→          <div className={cn("text-xl font-bold tabular-nums leading-tight", toneClass)}>
+  1470→            {typeof value === "number" ? value.toLocaleString() : value}
+  1471→          </div>
+  1472→          <div className="text-[11px] text-muted-foreground leading-tight">{label}</div>
+  1473→        </div>
+  1474→      </CardContent>
+  1475→    </Card>
+  1476→  );
+  1477→}
+  1478→
+  1479→function StatBox({
+  1480→  label,
+  1481→  value,
+  1482→  tone = "slate",
+  1483→  compact = false,
+  1484→}: {
+  1485→  label: string;
+  1486→  value: number | string;
+  1487→  tone?: Tone;
+  1488→  compact?: boolean;
+  1489→}) {
+  1490→  const toneClass = (() => {
+  1491→    switch (tone) {
+  1492→      case "emerald":
+  1493→        return "text-emerald-600 dark:text-emerald-400";
+  1494→      case "amber":
+  1495→        return "text-amber-600 dark:text-amber-400";
+  1496→      case "rose":
+  1497→        return "text-rose-600 dark:text-rose-400";
+  1498→      default:
+  1499→        return "text-slate-700 dark:text-slate-200";
+  1500→    }
+  1501→  })();
+  1502→  return (
+  1503→    <div className="rounded-md border bg-card p-2 text-center">
+  1504→      <div className={cn("font-bold tabular-nums", compact ? "text-sm" : "text-lg", toneClass)}>
+  1505→        {typeof value === "number" ? value.toLocaleString() : value}
+  1506→      </div>
+  1507→      <div className="text-[10px] text-muted-foreground leading-tight">{label}</div>
+  1508→    </div>
+  1509→  );
+  1510→}
+  1511→
+  1512→function DetailField({
+  1513→  label,
+  1514→  value,
+  1515→  mono,
+  1516→}: {
+  1517→  label: string;
+  1518→  value: string | undefined | null;
+  1519→  mono?: boolean;
+  1520→}) {
+  1521→  return (
+  1522→    <div>
+  1523→      <div className="text-[10px] font-medium uppercase text-muted-foreground">{label}</div>
+  1524→      <div className={cn("text-xs font-medium break-words", mono && "font-mono")}>
+  1525→        {value || <span className="text-muted-foreground/40">—</span>}
+  1526→      </div>
+  1527→    </div>
+  1528→  );
+  1529→}
+  1530→
+  1531→function DetailNumber({
+  1532→  label,
+  1533→  value,
+  1534→  tone = "default",
+  1535→}: {
+  1536→  label: string;
+  1537→  value: number | undefined | null;
+  1538→  tone?: "default" | "emerald";
+  1539→}) {
+  1540→  const toneClass = tone === "emerald" ? "text-emerald-600 dark:text-emerald-400" : "text-foreground";
+  1541→  return (
+  1542→    <div>
+  1543→      <div className="text-[10px] font-medium uppercase text-muted-foreground">{label}</div>
+  1544→      <div className={cn("text-sm font-bold tabular-nums", toneClass)}>
+  1545→        {typeof value === "number" ? value.toLocaleString() : "—"}
+  1546→      </div>
+  1547→    </div>
+  1548→  );
+  1549→}
+  1550→
