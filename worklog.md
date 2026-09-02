@@ -1166,3 +1166,45 @@ Stage Summary:
 - Date remains a filter only. Qty is still summed per group.
 - All 9 status types preserved (MATCHED, QTY_MISMATCH, MISSING_ON_WEBSITE, MISSING_IN_EXCEL, POSSIBLE_WRONG_FACTORY_PO, POSSIBLE_WRONG_SIZE, POSSIBLE_DUPLICATE, EXACT_DUPLICATE, INVALID_DATA).
 - Files modified: src/lib/reconciliation-service.ts, src/components/views/product-reconciliation-view.tsx, src/lib/api-client.ts.
+
+---
+Task ID: IMPORT-3FILES-1
+Agent: main (Z.ai Code)
+Task: Import latest data from 3 Excel files — MAFATE, ONYX, MIZUNO. Skip Pending rows, dedup within file.
+
+Work Log:
+- Verified all 3 files exist in /home/z/my-project/upload/:
+  * Copy of FMT shipped out S-TECH mafate -2026.xlsx (4.3 MB, MAFATE)
+  * FMT shipped out S-TECH Onyx-2026.xlsx (0.9 MB, ONYX)
+  * FMT shipped out MIZUNO-2026..xlsx (0.1 MB, MIZUNO)
+- Inspected each file's structure:
+  * MAFATE: 19 sheets, DATA sheet 42,728 rows, standard 16-col layout. Status: Order=5615, Pending=16455, Output=10842, Input=9816.
+  * ONYX: 13 sheets, DATA sheet 6,419 rows, 21 cols (extra: COLOR NAME, M/W, ETD). Status: Order=1118, Pending=2552, Output=1435, Input=1314.
+  * MIZUNO: 7 sheets, DATA sheet 436 rows, 15 cols (no Dead Line column; lowercase status "1.order"). Status: order=59, Pending=208, output=150, input=19.
+- Wrote memory-efficient import script `scripts/import-3files.ts`:
+  * Uses XLSX dense mode + deletes non-DATA sheets immediately
+  * Skips 3.Pending rows (status starts with "3" or contains "pending", case-insensitive)
+  * Deduplicates within each file by full row signature
+  * Replaces existing data per productType before inserting
+  * Rebuilds MasterGroup index per product
+  * Uses buildAutoMapping to handle different column names per file
+- Stopped dev server to free memory (MAFATE file is 4.3MB with 19 sheets).
+- Ran the import:
+  * MAFATE: 42,728 rows parsed → 16,455 Pending skipped, 731 invalid, 95 dupes → 25,447 unique rows. Deleted 25,353 old rows, inserted 25,447 new. Rebuilt 496 Factory PO groups.
+  * ONYX: 6,419 rows parsed → 2,552 Pending skipped, 0 invalid, 14 dupes → 3,853 unique rows. Deleted 3,770 old rows, inserted 3,853 new. Rebuilt 155 Factory PO groups.
+  * MIZUNO: 436 rows parsed → 208 Pending skipped, 0 invalid, 0 dupes → 228 unique rows. Deleted 207 old rows, inserted 228 new. Rebuilt 11 Factory PO groups.
+- Restarted dev server. Verified dashboards via API:
+  * MAFATE: orderQty=266,823, outputQty=258,199, inputQty=239,529, totalFactoryPOs=496, totalRows=25,447
+  * ONYX: orderQty=73,132, outputQty=47,521, inputQty=44,248, totalFactoryPOs=155
+  * MIZUNO: orderQty=4,574, outputQty=4,673, inputQty=978, totalFactoryPOs=11
+  * Global Dashboard shows all 3 products with correct data
+  * 0 Pending rows in DB for all products ✓
+
+Stage Summary:
+- Imported 29,528 total rows from 3 Excel files.
+- MAFATE: 25,447 rows (was 25,353), 496 groups. Source: "Copy of FMT shipped out S-TECH mafate -2026.xlsx"
+- ONYX: 3,853 rows (was 3,770), 155 groups. Source: "FMT shipped out S-TECH Onyx-2026.xlsx"
+- MIZUNO: 228 rows (was 207), 11 groups. Source: "FMT shipped out MIZUNO-2026..xlsx"
+- 0 Pending rows in DB across all products (Pending = -Output, calculated dynamically).
+- All dashboards verified reflecting the new imported data.
+- Files: scripts/import-3files.ts (new script).
