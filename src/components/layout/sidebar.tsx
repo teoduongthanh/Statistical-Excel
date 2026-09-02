@@ -21,6 +21,7 @@ import {
   Truck,
   ClipboardCheck,
   FileOutput,
+  GitCompare,
 } from "lucide-react";
 import { useAppStore, PRODUCT_THEME, type ProductType, type ViewKey } from "@/store/app-store";
 import { cn } from "@/lib/utils";
@@ -69,6 +70,7 @@ const PRODUCT_NAV: NavGroup[] = [
       { key: "product-report", label: "Report & Validation", icon: ShieldCheck },
       { key: "product-bulk-check", label: "Bulk Check", icon: ClipboardCheck },
       { key: "product-output-slip", label: "Output Slips", icon: FileOutput },
+      { key: "product-reconciliation", label: "Reconciliation", icon: GitCompare },
       { key: "product-import", label: "Import Excel", icon: Upload },
       { key: "product-export", label: "Export Excel", icon: Download },
     ],

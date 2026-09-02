@@ -741,6 +741,59 @@ export const api = {
     const res = await fetch(`/api/lookup-rules?id=${id}`, { method: "DELETE" });
     return jsonOrThrow(res);
   },
+
+  // ===== Data Reconciliation & Duplicate Check =====
+  // Compares imported Excel data with Website MasterData within a date range.
+  // READ-ONLY — never writes data. Returns comparison results + summary.
+  reconcileData: async (body: {
+    productType: string;
+    dateFrom: string;
+    dateTo: string;
+    excelRows: Array<{ date?: string; poNo?: string; factoryPO?: string; size?: string; qty?: string | number }>;
+  }) => {
+    const res = await fetch("/api/reconcile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{
+      ok: boolean;
+      summary: {
+        dateRange: { from: string; to: string };
+        excelTotalRecords: number;
+        excelRecordsInDateRange: number;
+        excelExcluded: number;
+        websiteTotalRecords: number;
+        websiteRecordsInDateRange: number;
+        websiteExcluded: number;
+        matched: number;
+        qtyMismatch: number;
+        missingOnWebsite: number;
+        missingInExcel: number;
+        possibleWrongFactoryPO: number;
+        possibleWrongSize: number;
+        possibleDuplicate: number;
+        exactDuplicate: number;
+        invalidData: number;
+        totalIssues: number;
+        totalGroups: number;
+      };
+      results: Array<{
+        status: string;
+        poNo: string;
+        factoryPO: string;
+        size: string;
+        excelQty: number;
+        websiteQty: number;
+        difference: number;
+        suggestedFactoryPO?: string;
+        suggestedSize?: string;
+        excelRowCount: number;
+        websiteRowCount: number;
+        duplicateCount?: number;
+      }>;
+    }>(res);
+  },
 };
 
 export type { CanonicalField };

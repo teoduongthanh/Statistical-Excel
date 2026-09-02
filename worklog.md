@@ -955,3 +955,89 @@ Stage Summary:
 - Frontend: Full UI view (product-output-slip-view.tsx) with PO search → Factory PO list → per-size breakdown → selection summary → generate slip (3 modes) → preview → export Excel / print / confirm actual output / cancel.
 - Business rules enforced: Remaining Output = Order - Output per size; qtyToOutput ≤ remainingOutput; "Select All Ready" only selects FPOs with remaining > 0; generating a slip does NOT write to EntryData; only "Confirm Actual Output" creates 2.Output entries with conflict check.
 - Verified via Agent Browser: page renders, search works, 70 Factory POs display with correct status badges, no errors.
+
+---
+Task ID: RECONCILE-UI-2
+Agent: main (Z.ai Code)
+Task: Create `/home/z/my-project/src/components/views/product-reconciliation-view.tsx` — the Data Reconciliation & Duplicate Check UI (named + default export `ProductReconciliationView`).
+
+Work Log:
+- Read `/home/z/my-project/worklog.md` (full prior history) to understand conventions used by sibling product views (especially `product-bulk-check-view.tsx` which has a similar mapping + table + dialog pattern).
+- Verified backend contracts:
+  * `api.parseExcel(file, sheet?)` returns `{ headers, preview(50 rows), sheets, autoMapping, ... }` (api-client.ts line 33).
+  * `api.reconcileData({ productType, dateFrom, dateTo, excelRows })` returns `{ ok, summary, results }` with 9 summary counters + per-group result objects (api-client.ts line 748).
+  * Server route `POST /api/reconcile` enforces: productType required, dateFrom/dateTo required, excelRows array max 10,000 — calls `reconcileData` from `src/lib/reconciliation-service.ts` which filters by date, groups by (poNo+factoryPO+size), sums qty, full-outer-compares against MasterData.
+  * `buildAutoMapping(headers)` + `mappingOptions()` from `@/lib/header-normalize` for column auto-detection + dropdown options.
+  * `readWorkbook(buf)` + `parseSheet(wb, sheetName, maxRows?)` from `@/lib/excel` for client-side full parse (spec-required because `api.parseExcel` only returns 50 preview rows but the comparison needs ALL rows).
+  * `PRODUCT_THEME[currentProduct]` accent system from `@/store/app-store` (MAFATE=emerald, ONYX=violet, MIZUNO=rose).
+  * Confirmed view registration: `src/app/page.tsx` line 15 + 55 (import + render on `view === "product-reconciliation"`), `src/components/layout/sidebar.tsx` line 73 (nav item "Reconciliation" w/ GitCompare icon), `src/components/layout/header.tsx` line 27 (title "Data Reconciliation"). No wiring changes needed — file just had to be created.
+- Built the 1615-line `"use client"` component implementing all 8 spec sections:
+  * **Section 1: File Upload + Sheet Selection** — drag-drop zone (or click-to-browse via hidden `<input type=file accept=".xlsx,.xls">`). On select: calls `api.parseExcel(file)` for 50-row preview + sheets list, then `readWorkbook(await file.arrayBuffer())` once + `parseSheet(wb, sheetName)` for ALL rows. Workbook is stored in a `useRef` (non-serializable XLSX.WorkBook). Sheet `<Select>` dropdown lists every sheet with row-count badge. Replace/Remove buttons.
+  * **Section 2: Column Mapping** — sticky-header `<Table>` with columns: Excel Column | Sample Value (from preview[0] or allRows[0]) | → | System Field dropdown. Uses sentinel value `"__skip__"` for unmapped columns (Radix Select forbids empty string). Required fields (`date, poNo, factoryPO, size, qty1`) marked with red `*`. Auto-mapping initialized via `buildAutoMapping(headers)` then converted to `Record<string, string>` (`""` → `"__skip__"`). Mapping error surfaced as Alert + MISSING REQUIRED COLUMN badge.
+  * **Section 3: Date Range Filter** — two `<Input type="date">` (From + To). Default = last 7 days (`last7DaysRange()` initialized in a useEffect). Helper text: "Only data with Date in this range will be compared." Changing dates clears the comparison result.
+  * **Section 4: Preview Filtered Data** — three StatBoxes (Total / In Range / Excluded). Small preview table showing first 10 in-range rows. "Compare with Website Data" button (themed bg) — disabled when missing required columns, no rows in range, or no date range. Disabled-state helper text explains what to fix.
+  * **Section 5: Comparison Summary** (after compare) — 9 SummaryCards in a 2/3/5-col responsive grid (Matched emerald, Qty Mismatch amber, Missing on Website rose, Missing in Excel amber, Possible Wrong Factory PO amber, Possible Wrong Size amber, Possible Duplicate rose, Exact Duplicate rose, Total Issues rose). Plus a "Date Range Safety" Card with Excel (Total/In Range/Excluded) + Website (Total/In Range/Excluded) side-by-side.
+  * **Section 6: Filter Tabs** — 8 tabs (ALL / MATCHED / QTY MISMATCH / MISSING ON WEBSITE / MISSING IN EXCEL / DUPLICATE / FACTORY PO ERROR / SIZE ERROR) each with a count badge. "Show only issues" `<Switch>` (default ON) hides MATCHED rows. Tab-to-status mapping: DUPLICATE = (POSSIBLE_DUPLICATE + EXACT_DUPLICATE); FACTORY_PO_ERROR = POSSIBLE_WRONG_FACTORY_PO; SIZE_ERROR = POSSIBLE_WRONG_SIZE.
+  * **Section 7: Comparison Results Table** — sticky header, `max-h-[600px] overflow-y-auto scroll-thin`. Columns: Status (colored badge) | PO NO# | Factory PO | Size | Excel Qty | Website Qty | Difference (green if excel>website, rose if website>excel) | Actions. Rows tinted by status tone (emerald/amber/rose/slate). Row click + "View" button (Eye icon) open the detail dialog.
+  * **Section 8: Detail Dialog (READ-ONLY)** — shows PO NO# / Factory PO / Size, Excel Qty vs Website Qty, Difference (colored), Status badge + status explanation text. For POSSIBLE_WRONG_FACTORY_PO: shows suggested Factory PO + Copy button. For POSSIBLE_WRONG_SIZE: shows suggested Size + Copy button. For EXACT_DUPLICATE: shows duplicateCount. Row counts (excelRowCount, websiteRowCount). Read-only Alert: "This view is read-only. Edit data in Data Entry or Master Data." Single Close button (no edit/save — spec §24).
+- Helpers implemented exactly per spec:
+  * `parseDateToISO(raw)` — Excel serial (>1000, <100000) / dd/MM/yyyy / ISO → yyyy-MM-dd. Mirrors `reconciliation-service.ts:parseDate`.
+  * `buildCanonicalRows(allRows, mapping)` — converts raw Excel rows (keyed by header) → canonical `{date, poNo, factoryPO, size, qty}`. Reverse-looks-up the mapping to find which excelHeader corresponds to each canonical field. `qty1` (canonical) → `qty` (API body field).
+  * `filterRowsByDate(rows, from, to)` — generic `<T extends { date?: string }>` so the caller's row shape is preserved (fixed an initial TS error where the narrower input type lost the `poNo/factoryPO/size/qty` fields in the preview table).
+  * `fmtNum(n)` — `toLocaleString()` with em-dash fallback for empty/NaN.
+  * `fmtDiff(n)` — signed format (`+123` / `-456` / `0`).
+  * `statusExplanation(status)` — per-status human-readable description for the detail dialog.
+- State matches spec exactly: `file, parsing, parseResult, allRows, sheet, mapping, dateFrom, dateTo, comparing, result, filter, showOnlyIssues, detailRow`. Plus 3 extras: `wbRef` (workbook ref), `fileInputRef` (hidden input ref), `dragOver` (drag-drop visual state).
+- Color system: emerald for matched/success, amber for warnings/mismatches, rose for errors/duplicates, slate for neutral. `PRODUCT_THEME[currentProduct]` used for accent (header gradient, primary "Compare" button). NO indigo/blue.
+- UX: toast notifications (sonner) on parse success/switch, compare success/warning, copy-to-clipboard success/failure. Loading spinners (Loader2) on parse, compare. Disabled states with explanatory helper text. Responsive: stack on mobile (`grid-cols-1`), grid on desktop (`md:grid-cols-2/3/5`).
+- Validation:
+  * `npx tsc --noEmit -p tsconfig.json 2>&1 | grep product-reconciliation` → NO output (file is clean). Pre-existing TS errors in unrelated files (quantity-check-view, shipment-planning-view, statistics-view, users-view, auth.ts, report-service.ts, types/index.ts) are not in this file.
+  * `npx eslint src/components/views/product-reconciliation-view.tsx` → exit 0, clean (no warnings/errors).
+
+Stage Summary:
+- Created `src/components/views/product-reconciliation-view.tsx` (1615 lines, named + default export `ProductReconciliationView`).
+- View was already wired into the router (page.tsx) + sidebar + header by a prior session — no other files needed modification.
+- All 2 backend API methods called as specified: `api.parseExcel(file, sheet?)` for preview+sheets, `api.reconcileData(...)` for comparison. Full client-side row parse via `readWorkbook` + `parseSheet` (because api.parseExcel only returns 50 preview rows but the comparison needs ALL rows).
+- READ-ONLY: never writes data — the detail dialog has only a Close button (no edit/save per spec §24). All status badges + row tints + tab counts + filter logic implemented per spec.
+- TypeScript clean (no errors in new file). ESLint clean.
+- Files created:
+  * `src/components/views/product-reconciliation-view.tsx`
+
+---
+Task ID: RECONCILE-2
+Agent: main (Z.ai Code) + full-stack-developer subagent
+Task: Build DATA RECONCILIATION & DUPLICATE CHECK feature — compare imported Excel data with Website MasterData within a selected date range.
+
+Work Log:
+- **Backend service** (`src/lib/reconciliation-service.ts`):
+  * `reconcileData({ productType, dateFrom, dateTo, excelRows })` — READ-ONLY comparison.
+  * Normalization: `normalizeStr()` (trim, collapse spaces, remove line breaks, uppercase), `normalizeSize()` (M(07) /W(08) → M(07)/W(08), preserves T suffix — M(10) ≠ M(10T)), `normalizeQty()` (string/number → number), `parseDate()` (Excel serial, dd/MM/yyyy, ISO → yyyy-MM-dd).
+  * Date filtering: both Excel and Website rows filtered by date range BEFORE comparison. Date is only a filter — not part of the comparison key (spec §2, §4).
+  * Grouping: rows grouped by (poNo + factoryPO + size) and qty summed before comparison (spec §8: so 10+16=26 matches a single 26).
+  * 9 status types: MATCHED, QTY_MISMATCH, MISSING_ON_WEBSITE, MISSING_IN_EXCEL, POSSIBLE_WRONG_FACTORY_PO, POSSIBLE_WRONG_SIZE, POSSIBLE_DUPLICATE, EXACT_DUPLICATE, INVALID_DATA.
+  * EXACT_DUPLICATE detection (spec §17): same (date + poNo + factoryPO + size + qty) appears >1 time within the same source — reports duplicateCount.
+  * "Possible wrong" detection: builds lookup indexes by (poNo+size)→factoryPOs and (poNo+factoryPO)→sizes to suggest corrections.
+  * Returns: summary (9 counts by status + date-range safety: total/in-range/excluded for both Excel and Website) + results array.
+- **API route** (`src/app/api/reconcile/route.ts`): POST handler, max 10,000 Excel rows.
+- **API client method**: `api.reconcileData({ productType, dateFrom, dateTo, excelRows })`.
+- **UI view** (`src/components/views/product-reconciliation-view.tsx`, 1615 lines):
+  * Section 1: File upload (drag-drop + browse) + sheet selection (api.parseExcel for preview/sheets, then readWorkbook+parseSheet for ALL rows via useRef)
+  * Section 2: Column mapping (auto-detect via buildAutoMapping, user override; required: date, poNo, factoryPO, size, qty1; sentinel "__skip__" for unmapped)
+  * Section 3: Date range filter (From/To date inputs, default last 7 days)
+  * Section 4: Preview filtered data (Total/In-range/Excluded + first 10 rows + Compare button)
+  * Section 5: Comparison summary (9 cards + Date Range Safety card showing both sources' total/in-range/excluded)
+  * Section 6: Filter tabs (ALL/MATCHED/QTY_MISMATCH/MISSING_ON_WEBSITE/MISSING_IN_EXCEL/DUPLICATE/FACTORY_PO_ERROR/SIZE_ERROR) + "Show only issues" switch (default ON)
+  * Section 7: Results table (Status badge + row tint, sticky header, max-h-600px, click for detail)
+  * Section 8: Detail dialog (READ-ONLY — shows PO/FactoryPO/Size/ExcelQty/WebsiteQty/Difference/suggested corrections with copy buttons/EXACT_DUPLICATE count; single Close button, no edit per spec §24)
+- **Registration**: ViewKey `"product-reconciliation"` in store, nav item "Reconciliation" (GitCompare icon) in sidebar, header title "Data Reconciliation".
+- **Verification** (curl API test):
+  * Input: 2 Excel rows (H411351971/MH26111046/M(12)/qty=10, TEST-PO/MH-TEST/M(12)/qty=5), date range 2026-08-26 to 2026-08-31
+  * Output: matched=0, qtyMismatch=1 (H411351971: Excel=10, Website=19, diff=-9), missingOnWebsite=1 (TEST-PO), missingInExcel=642, totalIssues=644 ✓
+  * Date filtering: websiteTotalRecords=25353, websiteRecordsInDateRange=962, websiteExcluded=24391 ✓
+  * Agent Browser: page renders "Reconciliation · MAFATE" + Browse button, no errors ✓
+
+Stage Summary:
+- **Feature complete**: users can import Excel → map columns → select date range → compare with Website data → see 9 types of discrepancies → view details (READ-ONLY).
+- **Key business rules enforced**: Date is only a filter (not comparison key); Size normalization preserves T suffix (M(10) ≠ M(10T)); Qty is summed per (poNo+factoryPO+size) group before comparison; EXACT_DUPLICATE detection (same date+poNo+factoryPO+size+qty appears >1 time); READ-ONLY (no auto-fix per spec §24); Date Range Safety shows total/in-range/excluded for both sources.
+- Files created: src/lib/reconciliation-service.ts, src/app/api/reconcile/route.ts, src/components/views/product-reconciliation-view.tsx.
+- Files modified: src/lib/api-client.ts (added reconcileData method), src/store/app-store.ts (ViewKey), src/app/page.tsx (router), src/components/layout/sidebar.tsx (nav item + GitCompare icon), src/components/layout/header.tsx (title).
