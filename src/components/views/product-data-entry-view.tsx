@@ -219,6 +219,39 @@ export function ProductDataEntryView() {
     };
   }, [factoryPO, size, currentProduct]);
 
+  // ===== Keyboard shortcuts (Data Entry) =====
+  // Ctrl+Alt+Q: clear PO NO# field and jump focus to it (for fast PO switching).
+  // Ctrl+Alt+W: clear Factory PO field and jump focus to it (for fast FPO switching).
+  // NOTE: Using Ctrl+Alt+ (instead of just Ctrl+) avoids conflicts with the
+  // browser's built-in shortcuts (Ctrl+W closes the tab, Ctrl+Q quits the
+  // browser). Ctrl+Alt+Q/W have no default browser behavior.
+  React.useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!((e.ctrlKey || e.metaKey) && e.altKey)) return;
+      // Ctrl+Alt+Q → clear + focus PO NO#
+      if (e.key === "q" || e.key === "Q") {
+        e.preventDefault();
+        setPoNo("");
+        setTimeout(() => focusAutocomplete(poNoRef.current), 0);
+        return;
+      }
+      // Ctrl+Alt+W → clear + focus Factory PO
+      if (e.key === "w" || e.key === "W") {
+        e.preventDefault();
+        setFactoryPO("");
+        // Clearing Factory PO invalidates the size dropdown (it depends on FPO
+        // lookup), so reset size + qty + autoFill too.
+        setSize("");
+        setQty("");
+        setAutoFill(null);
+        setTimeout(() => focusAutocomplete(factoryPORef.current), 0);
+        return;
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   // Validation (spec §13)
   const validationErrors = React.useMemo(() => {
     const errs: string[] = [];
