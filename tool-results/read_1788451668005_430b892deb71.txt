@@ -1,0 +1,2002 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import { useQuery, useQueryClient } from "@tanstack/react-query";
+     5→import {
+     6→  PenLine,
+     7→  Sparkles,
+     8→  Loader2,
+     9→  CheckCircle2,
+    10→  AlertTriangle,
+    11→  Plus,
+    12→  Wand2,
+    13→  RotateCcw,
+    14→  AlertCircle,
+    15→  Info,
+    16→  Trash2,
+    17→  Pencil,
+    18→  Save,
+    19→  X,
+    20→  Table2,
+    21→  Calculator,
+    22→  Database,
+    23→  ClipboardPaste,
+    24→  ClipboardCheck,
+    25→  Upload,
+    26→  RefreshCw,
+    27→  Eye,
+    28→} from "lucide-react";
+    29→import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
+    30→import { api } from "@/lib/api-client";
+    31→import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
+    32→import { buildAutoMapping } from "@/lib/header-normalize";
+    33→import { cn } from "@/lib/utils";
+    34→import { Button } from "@/components/ui/button";
+    35→import { Input } from "@/components/ui/input";
+    36→import { Label } from "@/components/ui/label";
+    37→import { Switch } from "@/components/ui/switch";
+    38→import { Textarea } from "@/components/ui/textarea";
+    39→import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+    40→import { Badge } from "@/components/ui/badge";
+    41→import { Checkbox } from "@/components/ui/checkbox";
+    42→import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    43→import {
+    44→  Select,
+    45→  SelectContent,
+    46→  SelectItem,
+    47→  SelectTrigger,
+    48→  SelectValue,
+    49→} from "@/components/ui/select";
+    50→import {
+    51→  Dialog,
+    52→  DialogContent,
+    53→  DialogHeader,
+    54→  DialogTitle,
+    55→  DialogDescription,
+    56→  DialogFooter,
+    57→} from "@/components/ui/dialog";
+    58→import {
+    59→  AlertDialog,
+    60→  AlertDialogAction,
+    61→  AlertDialogCancel,
+    62→  AlertDialogContent,
+    63→  AlertDialogDescription,
+    64→  AlertDialogFooter,
+    65→  AlertDialogHeader,
+    66→  AlertDialogTitle,
+    67→} from "@/components/ui/alert-dialog";
+    68→import { toast } from "sonner";
+    69→
+    70→const SHIPPING_OPTIONS = [
+    71→  { value: "1.Order", label: "1.Order", color: "bg-slate-100 text-slate-700" },
+    72→  { value: "2.Output", label: "2.Output", color: "bg-amber-100 text-amber-700" },
+    73→  { value: "3.Pending", label: "3.Pending", color: "bg-violet-100 text-violet-700" },
+    74→  { value: "4.Input", label: "4.Input", color: "bg-emerald-100 text-emerald-700" },
+    75→];
+    76→
+    77→export function ProductDataEntryView() {
+    78→  const { currentProduct, bumpRefresh, refreshKey } = useAppStore();
+    79→  const theme = PRODUCT_THEME[currentProduct];
+    80→
+    81→  // Form state — 5 user inputs (spec §1)
+    82→  const [shippingStatus, setShippingStatus] = React.useState("");
+    83→  const [poNo, setPoNo] = React.useState("");
+    84→  const [factoryPO, setFactoryPO] = React.useState("");
+    85→  const [size, setSize] = React.useState("");
+    86→  const [qty, setQty] = React.useState("");
+    87→
+    88→  // Auto-filled from Master Data (spec §6)
+    89→  const [autoFill, setAutoFill] = React.useState<any>(null);
+    90→  const [lookupLoading, setLookupLoading] = React.useState(false);
+    91→
+    92→  // Preview / Confirm state — removed. Add Data saves directly (user request).
+    93→  // Review now happens later in the "Review & Merge with Master Data" view.
+    94→  const [saving, setSaving] = React.useState(false);
+    95→
+    96→  // Recent entries
+    97→  const [recent, setRecent] = React.useState<any[]>([]);
+    98→  const qc = useQueryClient();
+    99→
+   100→  // ===== Entries table state =====
+   101→  const [selectedEntryIds, setSelectedEntryIds] = React.useState<Set<string>>(new Set());
+   102→  const [editEntry, setEditEntry] = React.useState<any>(null);
+   103→  const [editData, setEditData] = React.useState<Record<string, string>>({});
+   104→  const [savingEdit, setSavingEdit] = React.useState(false);
+   105→  const [deleteEntryRow, setDeleteEntryRow] = React.useState<any>(null);
+   106→  const [deleting, setDeleting] = React.useState(false);
+   107→  const [deleteWarn, setDeleteWarn] = React.useState<{ id: string; message: string } | null>(null);
+   108→  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+   109→  const [bulkDeleting, setBulkDeleting] = React.useState(false);
+   110→  // ===== Add entries to Master Data =====
+   111→  const [selectedMasterIds, setSelectedMasterIds] = React.useState<Set<string>>(new Set());
+   112→  const [addingToMaster, setAddingToMaster] = React.useState(false);
+   113→
+   114→  // ===== Bulk Entry mode =====
+   115→  // Toggle between "single" (one row at a time with autocomplete lookup) and
+   116→  // "bulk" (paste many rows from Excel, validate, then confirm import).
+   117→  const [entryMode, setEntryMode] = React.useState<"single" | "bulk">("single");
+   118→  const [bulkPastedText, setBulkPastedText] = React.useState("");
+   119→  const [bulkHasHeader, setBulkHasHeader] = React.useState(true);
+   120→  const [bulkValidating, setBulkValidating] = React.useState(false);
+   121→  const [bulkResult, setBulkResult] = React.useState<any>(null);
+   122→  const [bulkFilter, setBulkFilter] = React.useState<"all" | "valid" | "warning" | "error">("all");
+   123→  const [bulkImporting, setBulkImporting] = React.useState(false);
+   124→  const [showBulkImportPreview, setShowBulkImportPreview] = React.useState(false);
+   125→  const [bulkExpandedRow, setBulkExpandedRow] = React.useState<number | null>(null);
+   126→  // Tracks the most recent mapping (header → canonical field) so we can show
+   127→  // the user what we detected, in the UI.
+   128→  const [bulkMapping, setBulkMapping] = React.useState<Record<string, string>>({});
+   129→
+   130→  // ===== Entries table pagination (server-side via page/pageSize) =====
+   131→  const [entryPage, setEntryPage] = React.useState(1);
+   132→  const ENTRY_PAGE_SIZE = 20;
+   133→
+   134→  // Fetch entries for this product (today's entries + recent), paginated.
+   135→  const entriesQ = useQuery({
+   136→    queryKey: ["data-entry-entries", currentProduct, refreshKey, entryPage],
+   137→    queryFn: () => api.listEntries({ productType: currentProduct, page: entryPage, pageSize: ENTRY_PAGE_SIZE }),
+   138→  });
+   139→  const entryRows = entriesQ.data?.rows ?? [];
+   140→  const entryTotal = entriesQ.data?.total ?? 0;
+   141→  const entryTotalPages = entriesQ.data?.totalPages ?? 1;
+   142→
+   143→  // Reset to first page whenever the product context changes.
+   144→  React.useEffect(() => {
+   145→    setEntryPage(1);
+   146→  }, [currentProduct]);
+   147→
+   148→  // Keep context checkboxes (spec §48 — extended to PO NO# + Factory PO)
+   149→  const [keepStatus, setKeepStatus] = React.useState(true);
+   150→  const [keepPoNo, setKeepPoNo] = React.useState(true);
+   151→  const [keepFactoryPO, setKeepFactoryPO] = React.useState(true);
+   152→
+   153→  // Refs for Enter-key navigation (spec §11, §43)
+   154→  const poNoRef = React.useRef<HTMLDivElement>(null);
+   155→  const factoryPORef = React.useRef<HTMLDivElement>(null);
+   156→  const sizeRef = React.useRef<HTMLInputElement>(null);
+   157→  const qtyRef = React.useRef<HTMLInputElement>(null);
+   158→
+   159→  // Focus the <input> inside a SmartAutocomplete wrapper div.
+   160→  function focusAutocomplete(wrapper: HTMLDivElement | null) {
+   161→    if (!wrapper) return;
+   162→    const input = wrapper.querySelector("input");
+   163→    input?.focus();
+   164→    input?.select();
+   165→  }
+   166→
+   167→  // Reset all form fields (spec §44). Keeps selected context fields if their keep-flag is on.
+   168→  function resetForm(opts?: { keepStatus?: boolean; keepPoNo?: boolean; keepFactoryPO?: boolean }) {
+   169→    const keepStatusFlag = opts?.keepStatus ?? keepStatus;
+   170→    const keepPoNoFlag = opts?.keepPoNo ?? keepPoNo;
+   171→    const keepFactoryPOFlag = opts?.keepFactoryPO ?? keepFactoryPO;
+   172→    if (!keepStatusFlag) setShippingStatus("");
+   173→    if (!keepPoNoFlag) setPoNo("");
+   174→    if (!keepFactoryPOFlag) setFactoryPO("");
+   175→    setSize("");
+   176→    setQty("");
+   177→    setAutoFill(null);
+   178→    // Focus: jump to the first cleared field, or Size if context is kept.
+   179→    setTimeout(() => {
+   180→      if (keepStatusFlag && keepPoNoFlag && keepFactoryPOFlag) {
+   181→        // All context kept → jump straight to Size for fast re-entry.
+   182→        sizeRef.current?.focus();
+   183→      } else if (keepStatusFlag && !keepPoNoFlag) {
+   184→        focusAutocomplete(poNoRef.current);
+   185→      } else if (keepStatusFlag && keepPoNoFlag && !keepFactoryPOFlag) {
+   186→        focusAutocomplete(factoryPORef.current);
+   187→      } else {
+   188→        focusAutocomplete(poNoRef.current);
+   189→      }
+   190→    }, 50);
+   191→  }
+   192→
+   193→  // Auto-lookup Master Data when factoryPO + size are set (spec §5, §6).
+   194→  React.useEffect(() => {
+   195→    if (!factoryPO || !size || !currentProduct) {
+   196→      setAutoFill(null);
+   197→      return;
+   198→    }
+   199→    let cancelled = false;
+   200→    setLookupLoading(true);
+   201→    const t = setTimeout(async () => {
+   202→      try {
+   203→        const group = await api.lookupFactoryPO(factoryPO, currentProduct);
+   204→        if (cancelled) return;
+   205→        if (group) {
+   206→          setAutoFill(group);
+   207→        } else {
+   208→          setAutoFill(null);
+   209→        }
+   210→      } catch {
+   211→        if (!cancelled) setAutoFill(null);
+   212→      } finally {
+   213→        if (!cancelled) setLookupLoading(false);
+   214→      }
+   215→    }, 250);
+   216→    return () => {
+   217→      cancelled = true;
+   218→      clearTimeout(t);
+   219→    };
+   220→  }, [factoryPO, size, currentProduct]);
+   221→
+   222→  // ===== Keyboard shortcuts (Data Entry) =====
+   223→  // Ctrl+Alt+Q: clear PO NO# field and jump focus to it (for fast PO switching).
+   224→  // Ctrl+Alt+W: clear Factory PO field and jump focus to it (for fast FPO switching).
+   225→  // NOTE: Using Ctrl+Alt+ (instead of just Ctrl+) avoids conflicts with the
+   226→  // browser's built-in shortcuts (Ctrl+W closes the tab, Ctrl+Q quits the
+   227→  // browser). Ctrl+Alt+Q/W have no default browser behavior.
+   228→  React.useEffect(() => {
+   229→    function onKeyDown(e: KeyboardEvent) {
+   230→      if (!((e.ctrlKey || e.metaKey) && e.altKey)) return;
+   231→      // Ctrl+Alt+Q → clear + focus PO NO#
+   232→      if (e.key === "q" || e.key === "Q") {
+   233→        e.preventDefault();
+   234→        setPoNo("");
+   235→        setTimeout(() => focusAutocomplete(poNoRef.current), 0);
+   236→        return;
+   237→      }
+   238→      // Ctrl+Alt+W → clear + focus Factory PO
+   239→      if (e.key === "w" || e.key === "W") {
+   240→        e.preventDefault();
+   241→        setFactoryPO("");
+   242→        // Clearing Factory PO invalidates the size dropdown (it depends on FPO
+   243→        // lookup), so reset size + qty + autoFill too.
+   244→        setSize("");
+   245→        setQty("");
+   246→        setAutoFill(null);
+   247→        setTimeout(() => focusAutocomplete(factoryPORef.current), 0);
+   248→        return;
+   249→      }
+   250→    }
+   251→    window.addEventListener("keydown", onKeyDown);
+   252→    return () => window.removeEventListener("keydown", onKeyDown);
+   253→  }, []);
+   254→
+   255→  // Validation (spec §13)
+   256→  const validationErrors = React.useMemo(() => {
+   257→    const errs: string[] = [];
+   258→    if (!shippingStatus) errs.push("Please select Shipping Status first.");
+   259→    if (!poNo) errs.push("PO NO# is required");
+   260→    if (!factoryPO) errs.push("Factory PO is required");
+   261→    if (!size) errs.push("Size is required");
+   262→    if (!qty) errs.push("Qty is required");
+   263→    else if (isNaN(Number(qty))) errs.push("Qty must be a number");
+   264→    else if (Number(qty) <= 0) errs.push("Qty must be greater than 0");
+   265→    return errs;
+   266→  }, [shippingStatus, poNo, factoryPO, size, qty]);
+   267→
+   268→  const canAdd = validationErrors.length === 0;
+   269→
+   270→  // ADD DATA — saves immediately via the confirm API (atomic transaction).
+   271→  // No preview step: the user wants fast entry. Review/merge with Master Data
+   272→  // is a separate function done later in the Review view.
+   273→  async function handleAddData() {
+   274→    if (!canAdd) {
+   275→      toast.error("Please fix validation errors", { description: validationErrors[0] });
+   276→      return;
+   277→    }
+   278→    setSaving(true);
+   279→    try {
+   280→      const r = await api.confirmEntry({
+   281→        productType: currentProduct,
+   282→        shippingStatus,
+   283→        poNo,
+   284→        factoryPO,
+   285→        size,
+   286→        qty,
+   287→      });
+   288→      if (r.ok) {
+   289→        const createdCount = r.created?.length || 0;
+   290→        let msg = `${shippingStatus} saved`;
+   291→        if (shippingStatus === "2.Output") {
+   292→          msg = `Output + Pending saved (${createdCount} records)`;
+   293→        }
+   294→        toast.success(msg, {
+   295→          description: `${factoryPO} · ${size} · Qty=${qty}`,
+   296→        });
+   297→        // Add to recent list (show the created entries).
+   298→        if (r.created && r.created.length > 0) {
+   299→          setRecent((prev) => [...r.created!, ...prev].slice(0, 10));
+   300→        }
+   301→        bumpRefresh();
+   302→        // Reset form: keep selected context fields per checkboxes.
+   303→        resetForm();
+   304→      } else {
+   305→        toast.error("Save failed", { description: r.errors?.join(", ") });
+   306→      }
+   307→    } catch (e) {
+   308→      toast.error("Save failed", { description: e instanceof Error ? e.message : "" });
+   309→    } finally {
+   310→      setSaving(false);
+   311→    }
+   312→  }
+   313→
+   314→  // Enter-key navigation (spec §11, §43).
+   315→  // When in an autocomplete dropdown that is open, Enter selects the suggestion first.
+   316→  // When the dropdown is closed (or no suggestion), Enter moves to the next field.
+   317→
+   318→  // ===== Add entries to Master Data handlers =====
+   319→  function toggleMasterRow(id: string) {
+   320→    setSelectedMasterIds((s) => {
+   321→      const n = new Set(s);
+   322→      if (n.has(id)) n.delete(id);
+   323→      else n.add(id);
+   324→      return n;
+   325→    });
+   326→  }
+   327→  function toggleAllMasterRows() {
+   328→    if (selectedMasterIds.size === entryRows.length) setSelectedMasterIds(new Set());
+   329→    else setSelectedMasterIds(new Set(entryRows.map((r: any) => r.id)));
+   330→  }
+   331→
+   332→  async function addEntriesToMasterData(mode: "selected" | "all") {
+   333→    const rowsToAdd = mode === "selected"
+   334→      ? entryRows.filter((r: any) => selectedMasterIds.has(r.id))
+   335→      : entryRows;
+   336→    if (rowsToAdd.length === 0) {
+   337→      toast.error("No rows to add");
+   338→      return;
+   339→    }
+   340→    setAddingToMaster(true);
+   341→    try {
+   342→      // Use the BULK endpoint: insert all rows in a single transaction +
+   343→      // rebuild MasterGroup index ONCE (not per row). This is much faster
+   344→      // and ensures all dashboards reflect the new data immediately.
+   345→      const bulkRows = rowsToAdd.map((r: any) => ({
+   346→        productType: currentProduct,
+   347→        factoryPO: r.factoryPO,
+   348→        size: r.size,
+   349→        poNo: r.poNo,
+   350→        shippingStatus: r.shippingStatus,
+   351→        model: r.model,
+   352→        sku: r.sku,
+   353→        item: r.item,
+   354→        season: r.season,
+   355→        colorCode: r.colorCode,
+   356→        colorCode2: r.colorCode2,
+   357→        painting: r.painting,
+   358→        printingColor: r.printingColor,
+   359→        deadline: r.deadline,
+   360→        qty1: r.qty1,
+   361→        qty2: r.qty2,
+   362→      }));
+   363→      const res = await api.bulkAddMasterRows(bulkRows);
+   364→      const added = res.inserted;
+   365→      toast.success(`${added} rows added to Master Data`, {
+   366→        description: `${res.productsAffected} product(s) index rebuilt`,
+   367→      });
+   368→      setSelectedMasterIds(new Set());
+   369→      // bumpRefresh triggers ALL views (dashboards, statistics, shipments,
+   370→      // reports, autocomplete lookups) to refetch because they all include
+   371→      // refreshKey in their query keys.
+   372→      bumpRefresh();
+   373→    } catch (e) {
+   374→      toast.error("Failed to add to Master Data", { description: e instanceof Error ? e.message : "" });
+   375→    } finally {
+   376→      setAddingToMaster(false);
+   377→    }
+   378→  }
+   379→  function handleEnter(e: React.KeyboardEvent, currentField: string) {
+   380→    if (e.key !== "Enter") return;
+   381→    e.preventDefault();
+   382→    // Order: shippingStatus → poNo → factoryPO → size → qty → save
+   383→    switch (currentField) {
+   384→      case "poNo":
+   385→        focusAutocomplete(factoryPORef.current);
+   386→        break;
+   387→      case "factoryPO":
+   388→        sizeRef.current?.focus();
+   389→        break;
+   390→      case "size":
+   391→        qtyRef.current?.focus();
+   392→        break;
+   393→      case "qty":
+   394→        // From Qty, Enter saves immediately (fast entry — no preview step).
+   395→        if (canAdd) handleAddData();
+   396→        break;
+   397→    }
+   398→  }
+   399→
+   400→  // ===== Entries table handlers =====
+   401→  function toggleEntry(id: string) {
+   402→    setSelectedEntryIds((s) => {
+   403→      const n = new Set(s);
+   404→      if (n.has(id)) n.delete(id);
+   405→      else n.add(id);
+   406→      return n;
+   407→    });
+   408→  }
+   409→  function toggleAllEntries() {
+   410→    if (selectedEntryIds.size === entryRows.length) setSelectedEntryIds(new Set());
+   411→    else setSelectedEntryIds(new Set(entryRows.map((r: any) => r.id)));
+   412→  }
+   413→
+   414→  // Calculate totals for checked rows.
+   415→  const totals = React.useMemo(() => {
+   416→    let qty1Sum = 0, qty2Sum = 0;
+   417→    for (const r of entryRows) {
+   418→      if (selectedEntryIds.has(r.id)) {
+   419→        qty1Sum += Number(r.qty1) || 0;
+   420→        qty2Sum += Number(r.qty2) || 0;
+   421→      }
+   422→    }
+   423→    return { qty1Sum, qty2Sum, count: selectedEntryIds.size };
+   424→  }, [entryRows, selectedEntryIds]);
+   425→
+   426→  function openEditEntry(row: any) {
+   427→    setEditEntry(row);
+   428→    setEditData({
+   429→      shippingStatus: row.shippingStatus || "",
+   430→      poNo: row.poNo || "",
+   431→      factoryPO: row.factoryPO || "",
+   432→      size: row.size || "",
+   433→      qty1: String(row.qty1 ?? ""),
+   434→      qty2: String(row.qty2 ?? ""),
+   435→      model: row.model || "",
+   436→      sku: row.sku || "",
+   437→      season: row.season || "",
+   438→      colorCode: row.colorCode || "",
+   439→      colorCode2: row.colorCode2 || "",
+   440→      deadline: row.deadline || "",
+   441→      note: row.note || "",
+   442→    });
+   443→  }
+   444→
+   445→  async function saveEditEntry() {
+   446→    if (!editEntry) return;
+   447→    setSavingEdit(true);
+   448→    try {
+   449→      await api.updateEntry(editEntry.id, editData);
+   450→      toast.success("Entry updated");
+   451→      setEditEntry(null);
+   452→      qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+   453→      bumpRefresh();
+   454→    } catch (e) {
+   455→      toast.error("Update failed", { description: e instanceof Error ? e.message : "" });
+   456→    } finally {
+   457→      setSavingEdit(false);
+   458→    }
+   459→  }
+   460→
+   461→  function openDeleteEntry(row: any) {
+   462→    setDeleteEntryRow(row);
+   463→    setDeleteWarn(null);
+   464→  }
+   465→
+   466→  async function confirmDeleteEntry() {
+   467→    if (!deleteEntryRow) return;
+   468→    setDeleting(true);
+   469→    try {
+   470→      const res = await api.deleteEntry(deleteEntryRow.id, false);
+   471→      if (res.needsConfirm) {
+   472→        setDeleteWarn({ id: deleteEntryRow.id, message: res.needsConfirm.message });
+   473→        setDeleting(false);
+   474→        return;
+   475→      }
+   476→      toast.success("Entry deleted");
+   477→      setSelectedEntryIds((s) => { const n = new Set(s); n.delete(deleteEntryRow.id); return n; });
+   478→      setDeleteEntryRow(null);
+   479→      qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+   480→      bumpRefresh();
+   481→    } catch (e) {
+   482→      toast.error("Delete failed", { description: e instanceof Error ? e.message : "" });
+   483→    } finally {
+   484→      setDeleting(false);
+   485→    }
+   486→  }
+   487→
+   488→  async function confirmDeleteEntryGroup() {
+   489→    if (!deleteWarn) return;
+   490→    setDeleting(true);
+   491→    try {
+   492→      const res = await api.deleteEntry(deleteWarn.id, true);
+   493→      if (res.ok) {
+   494→        toast.success("Entry and paired transaction deleted");
+   495→        setSelectedEntryIds((s) => { const n = new Set(s); n.delete(deleteWarn.id); return n; });
+   496→        setDeleteWarn(null);
+   497→        setDeleteEntryRow(null);
+   498→        qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+   499→        bumpRefresh();
+   500→      }
+   501→    } catch (e) {
+   502→      toast.error("Delete failed", { description: e instanceof Error ? e.message : "" });
+   503→    } finally {
+   504→      setDeleting(false);
+   505→    }
+   506→  }
+   507→
+   508→  async function confirmBulkDeleteEntries() {
+   509→    setBulkDeleting(true);
+   510→    try {
+   511→      const ids = [...selectedEntryIds];
+   512→      const res = await api.bulkDeleteEntries(ids);
+   513→      if (res.ok) {
+   514→        let msg = `${res.deleted} entries deleted`;
+   515→        if (res.deleted > ids.length) {
+   516→          msg += ` (includes ${res.deleted - ids.length} paired transaction records)`;
+   517→        }
+   518→        toast.success(msg);
+   519→        setSelectedEntryIds(new Set());
+   520→        setBulkDeleteOpen(false);
+   521→        qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+   522→        bumpRefresh();
+   523→      }
+   524→    } catch (e) {
+   525→      toast.error("Bulk delete failed", { description: e instanceof Error ? e.message : "" });
+   526→    } finally {
+   527→      setBulkDeleting(false);
+   528→    }
+   529→  }
+   530→
+   531→  // ===== Bulk Entry handlers =====
+   532→  // Parse the pasted TSV → canonical rows → call bulkValidateEntries.
+   533→  async function handleBulkValidate() {
+   534→    const trimmed = bulkPastedText.trim();
+   535→    if (!trimmed) {
+   536→      toast.error("Nothing to check", { description: "Paste some rows first." });
+   537→      return;
+   538→    }
+   539→    setBulkValidating(true);
+   540→    setBulkResult(null);
+   541→    setBulkExpandedRow(null);
+   542→    setBulkFilter("all");
+   543→    try {
+   544→      const rawRows = parseBulkText(trimmed, bulkHasHeader);
+   545→      if (rawRows.length === 0) {
+   546→        toast.error("No data rows found", { description: "Check that rows are tab-separated." });
+   547→        return;
+   548→      }
+   549→      // Capture the detected header mapping for display.
+   550→      if (bulkHasHeader) {
+   551→        const headers = Object.keys(rawRows[0]);
+   552→        const mapping = buildAutoMapping(headers);
+   553→        setBulkMapping(
+   554→          Object.fromEntries(Object.entries(mapping).map(([k, v]) => [k, v || ""]))
+   555→        );
+   556→      } else {
+   557→        setBulkMapping({
+   558→          shippingStatus: "shippingStatus",
+   559→          poNo: "poNo",
+   560→          factoryPO: "factoryPO",
+   561→          size: "size",
+   562→          qty1: "qty1",
+   563→        });
+   564→      }
+   565→      const canonicalRows = mapRowsToCanonical(rawRows, bulkHasHeader);
+   566→      const result = await api.bulkValidateEntries({
+   567→        productType: currentProduct,
+   568→        rows: canonicalRows,
+   569→      });
+   570→      setBulkResult(result);
+   571→      toast.success(`Checked ${result.summary.totalRows} rows`, {
+   572→        description: `${result.summary.validRows} valid · ${result.summary.warningRows} warnings · ${result.summary.errorRows} errors`,
+   573→      });
+   574→    } catch (e) {
+   575→      toast.error("Bulk validation failed", {
+   576→        description: e instanceof Error ? e.message : "",
+   577→      });
+   578→    } finally {
+   579→      setBulkValidating(false);
+   580→    }
+   581→  }
+   582→
+   583→  // Filtered rows for the results table (by bucket).
+   584→  const filteredBulkRows = React.useMemo<any[]>(() => {
+   585→    if (!bulkResult?.rows) return [];
+   586→    if (bulkFilter === "all") return bulkResult.rows;
+   587→    return bulkResult.rows.filter((r: any) => r.statusBucket === bulkFilter);
+   588→  }, [bulkResult, bulkFilter]);
+   589→
+   590→  // Open the import preview dialog (Confirm Import button).
+   591→  function handleBulkConfirmClick() {
+   592→    if (!bulkResult) return;
+   593→    if (bulkResult.summary.errorRows > 0) {
+   594→      toast.error("Cannot import — fix errors first", {
+   595→        description: `${bulkResult.summary.errorRows} row(s) have errors. Filter to ERROR to review.`,
+   596→      });
+   597→      return;
+   598→    }
+   599→    setShowBulkImportPreview(true);
+   600→  }
+   601→
+   602→  // Actually perform the import (from the preview dialog).
+   603→  async function handleBulkImport() {
+   604→    if (!bulkResult) return;
+   605→    setShowBulkImportPreview(false);
+   606→    setBulkImporting(true);
+   607→    try {
+   608→      const importableRows = (bulkResult.rows as any[])
+   609→        .filter((r) => r.statusBucket === "valid" || r.statusBucket === "warning")
+   610→        .map((r) => ({
+   611→          shippingStatus: r.shippingStatus || "",
+   612→          poNo: r.poNo || "",
+   613→          factoryPO: r.factoryPO || "",
+   614→          size: r.size || "",
+   615→          qty1: Number(r.qty1Num ?? r.qty1) || 0,
+   616→          confirmReason: r.needsConfirm ? "bulk-import-warning" : undefined,
+   617→        }));
+   618→      if (importableRows.length === 0) {
+   619→        toast.error("No importable rows", { description: "Need at least one valid or warning row." });
+   620→        return;
+   621→      }
+   622→      const res = await api.bulkImportEntries({
+   623→        productType: currentProduct,
+   624→        rows: importableRows,
+   625→        mode: "all_valid",
+   626→        importedBy: "bulk-entry",
+   627→      });
+   628→      if (res.ok) {
+   629→        toast.success(`Imported ${res.imported} entries`, {
+   630→          description: res.skipped > 0 ? `${res.skipped} skipped` : "All rows written to DB.",
+   631→        });
+   632→        // Reset bulk panel + switch back to single mode.
+   633→        setBulkPastedText("");
+   634→        setBulkResult(null);
+   635→        setBulkMapping({});
+   636→        setBulkFilter("all");
+   637→        setBulkExpandedRow(null);
+   638→        setEntryMode("single");
+   639→        bumpRefresh();
+   640→        qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+   641→      } else {
+   642→        toast.error("Import failed", { description: res.errors?.join(", ") });
+   643→      }
+   644→    } catch (e) {
+   645→      toast.error("Import failed", { description: e instanceof Error ? e.message : "" });
+   646→    } finally {
+   647→      setBulkImporting(false);
+   648→    }
+   649→  }
+   650→
+   651→  // Cancel: clear everything and return to single-entry mode.
+   652→  function handleBulkCancel() {
+   653→    setBulkPastedText("");
+   654→    setBulkResult(null);
+   655→    setBulkMapping({});
+   656→    setBulkFilter("all");
+   657→    setBulkExpandedRow(null);
+   658→    setEntryMode("single");
+   659→  }
+   660→
+   661→  // "Fix Data": clears the result but keeps the pasted text so the user can
+   662→  // edit it and click Check Data again.
+   663→  function handleBulkFix() {
+   664→    setBulkResult(null);
+   665→    setBulkFilter("all");
+   666→    setBulkExpandedRow(null);
+   667→    toast.info("Edit the pasted data above, then click Check Data again.");
+   668→  }
+   669→
+   670→  const shippingDisabled = !shippingStatus;
+   671→  const shippingColor = SHIPPING_OPTIONS.find((s) => s.value === shippingStatus)?.color;
+   672→
+   673→  return (
+   674→    <div className="space-y-6">
+   675→      {/* Intro banner */}
+   676→      <Card className={cn("border-primary/20 bg-gradient-to-br", theme.gradient, "text-white")}>
+   677→        <CardContent className="flex flex-col gap-3 p-5 md:flex-row md:items-center md:justify-between">
+   678→          <div className="flex items-start gap-3">
+   679→            <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-xl bg-white/20 backdrop-blur">
+   680→              <Wand2 className="h-5 w-5" />
+   681→            </div>
+   682→            <div>
+   683→              <h2 className="text-base font-semibold">Product Data Entry · {currentProduct}</h2>
+   684→              <p className="text-sm text-white/90">
+   685→                Select Shipping Status → PO NO# → Factory PO → Size → Qty → Enter to save instantly.
+   686→              </p>
+   687→            </div>
+   688→          </div>
+   689→          <div className="flex flex-wrap items-center gap-2">
+   690→            <div className="flex flex-wrap items-center gap-1.5 bg-white/15 rounded-md px-2 py-1">
+   691→              <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80 mr-1">Keep:</span>
+   692→              <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+   693→                <Switch checked={keepStatus} onCheckedChange={setKeepStatus} className="scale-[0.6] origin-left" />
+   694→                Status
+   695→              </label>
+   696→              <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+   697→                <Switch checked={keepPoNo} onCheckedChange={setKeepPoNo} className="scale-[0.6] origin-left" />
+   698→                PO NO#
+   699→              </label>
+   700→              <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+   701→                <Switch checked={keepFactoryPO} onCheckedChange={setKeepFactoryPO} className="scale-[0.6] origin-left" />
+   702→                Factory PO
+   703→              </label>
+   704→            </div>
+   705→            <Button variant="secondary" size="sm" onClick={() => resetForm({ keepStatus: false, keepPoNo: false, keepFactoryPO: false })} className="bg-white/20 hover:bg-white/30 text-white border-0">
+   706→              <RotateCcw className="mr-1.5 h-4 w-4" /> Reset
+   707→            </Button>
+   708→          </div>
+   709→        </CardContent>
+   710→      </Card>
+   711→
+   712→      {/* Entry mode toggle: Single vs Bulk */}
+   713→      <div className="flex items-center justify-center">
+   714→        <Tabs value={entryMode} onValueChange={(v) => setEntryMode(v as "single" | "bulk")}>
+   715→          <TabsList>
+   716→            <TabsTrigger value="single" className="px-4">
+   717→              <PenLine className="h-4 w-4 mr-1.5" /> Single Entry
+   718→            </TabsTrigger>
+   719→            <TabsTrigger value="bulk" className="px-4">
+   720→              <ClipboardPaste className="h-4 w-4 mr-1.5" /> Bulk Entry
+   721→            </TabsTrigger>
+   722→          </TabsList>
+   723→        </Tabs>
+   724→      </div>
+   725→
+   726→      {entryMode === "single" && (
+   727→      <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
+   728→        {/* Input form */}
+   729→        <div className="lg:col-span-2 space-y-4">
+   730→          <Card>
+   731→            <CardHeader className="pb-3">
+   732→              <CardTitle className="flex items-center gap-2 text-sm">
+   733→                <PenLine className="h-4 w-4 text-primary" /> Input Fields
+   734→                {shippingStatus && (
+   735→                  <Badge className={cn("ml-auto text-[10px]", shippingColor)}>
+   736→                    {shippingStatus}
+   737→                  </Badge>
+   738→                )}
+   739→              </CardTitle>
+   740→            </CardHeader>
+   741→            <CardContent className="space-y-4">
+   742→              {/* Step 1: Shipping Status (MUST be first, spec §2) */}
+   743→              <div className="space-y-1.5">
+   744→                <Label className="flex items-center justify-between text-xs">
+   745→                  <span>Shipping Status <span className="text-destructive">*</span></span>
+   746→                  <span className="text-[10px] text-muted-foreground">Step 1 — select first</span>
+   747→                </Label>
+   748→                <Select value={shippingStatus} onValueChange={(v) => { setShippingStatus(v); setTimeout(() => focusAutocomplete(poNoRef.current), 50); }}>
+   749→                  <SelectTrigger className="h-11">
+   750→                    <SelectValue placeholder="Select Shipping Status…" />
+   751→                  </SelectTrigger>
+   752→                  <SelectContent>
+   753→                    {SHIPPING_OPTIONS.map((s) => (
+   754→                      <SelectItem key={s.value} value={s.value}>
+   755→                        <span className="flex items-center gap-2">
+   756→                          <span className={cn("h-2 w-2 rounded-full", s.color.split(" ")[0])} />
+   757→                          {s.label}
+   758→                        </span>
+   759→                      </SelectItem>
+   760→                    ))}
+   761→                  </SelectContent>
+   762→                </Select>
+   763→                {!shippingStatus && (
+   764→                  <p className="text-xs text-amber-600 flex items-center gap-1">
+   765→                    <AlertCircle className="h-3 w-3" /> Please select Shipping Status first.
+   766→                  </p>
+   767→                )}
+   768→                {shippingStatus === "2.Output" && (
+   769→                  <p className="text-[11px] text-amber-600 flex items-center gap-1">
+   770→                    <Info className="h-3 w-3" /> Output will auto-create a paired Pending record (Q'ty 2 = -Qty).
+   771→                  </p>
+   772→                )}
+   773→                {shippingStatus === "3.Pending" && (
+   774→                  <p className="text-[11px] text-violet-600 flex items-center gap-1">
+   775→                    <Info className="h-3 w-3" /> Pending is normally auto-created from Output. Manual entry only for adjustments.
+   776→                  </p>
+   777→                )}
+   778→              </div>
+   779→
+   780→              {/* Step 2: PO NO# (autocomplete, spec §3) */}
+   781→              <div className="space-y-1.5">
+   782→                <Label className="text-xs">PO NO# <span className="text-destructive">*</span></Label>
+   783→                <div ref={poNoRef} onKeyDown={(e) => handleEnter(e, "poNo")}>
+   784→                  <SmartAutocomplete
+   785→                    field="poNo"
+   786→                    value={poNo}
+   787→                    onChange={setPoNo}
+   788→                    onSelect={() => setTimeout(() => factoryPORef.current?.focus(), 100)}
+   789→                    placeholder={shippingDisabled ? "Select Shipping Status first" : "Type PO NO#…"}
+   790→                    disabled={shippingDisabled}
+   791→                    productType={currentProduct}
+   792→                  />
+   793→                </div>
+   794→                <p className="text-[10px] text-muted-foreground">Searches {currentProduct} Master Data. If not found, you can still continue.</p>
+   795→              </div>
+   796→
+   797→              {/* Step 3: Factory PO (autocomplete, spec §4, §5) */}
+   798→              <div className="space-y-1.5">
+   799→                <Label className="flex items-center justify-between text-xs">
+   800→                  <span>Factory PO <span className="text-destructive">*</span></span>
+   801→                  {lookupLoading && (
+   802→                    <span className="flex items-center gap-1 text-muted-foreground">
+   803→                      <Loader2 className="h-3 w-3 animate-spin" /> Looking up…
+   804→                    </span>
+   805→                  )}
+   806→                </Label>
+   807→                <div ref={factoryPORef} onKeyDown={(e) => handleEnter(e, "factoryPO")}>
+   808→                  <SmartAutocomplete
+   809→                    field="factoryPO"
+   810→                    value={factoryPO}
+   811→                    onChange={setFactoryPO}
+   812→                    onSelect={() => setTimeout(() => sizeRef.current?.focus(), 100)}
+   813→                    placeholder={shippingDisabled ? "Select Shipping Status first" : "Type 051, 228, MH27…"}
+   814→                    disabled={shippingDisabled}
+   815→                    productType={currentProduct}
+   816→                    poNo={poNo || undefined}
+   817→                  />
+   818→                </div>
+   819→                {factoryPO && !lookupLoading && autoFill === null && (
+   820→                  <p className="text-xs text-amber-600 flex items-center gap-1">
+   821→                    <AlertTriangle className="h-3.5 w-3.5" />
+   822→                    Factory PO not in Master Data — you can add it to Master Data from the list below after saving.
+   823→                  </p>
+   824→                )}
+   825→              </div>
+   826→
+   827→              {/* Step 4: Size (filtered by Factory PO, spec §13 of prev prompt) */}
+   828→              <div className="space-y-1.5">
+   829→                <Label className="flex items-center justify-between text-xs">
+   830→                  <span>Size <span className="text-destructive">*</span></span>
+   831→                  {autoFill && (
+   832→                    <Badge variant="secondary" className="text-[10px]">
+   833→                      {autoFill.sizes?.length || 0} available
+   834→                    </Badge>
+   835→                  )}
+   836→                </Label>
+   837→                <SizeInput
+   838→                  ref={sizeRef}
+   839→                  value={size}
+   840→                  onChange={setSize}
+   841→                  sizes={autoFill?.sizes || []}
+   842→                  disabled={shippingDisabled || !factoryPO}
+   843→                  placeholder={shippingDisabled ? "Select Shipping Status first" : !factoryPO ? "Enter Factory PO first" : "Type 13, 08…"}
+   844→                  onEnter={() => qtyRef.current?.focus()}
+   845→                />
+   846→                {autoFill && autoFill.sizes?.length > 0 && (
+   847→                  <div className="flex flex-wrap gap-1 pt-1">
+   848→                    {autoFill.sizes.slice(0, 8).map((s: string) => (
+   849→                      <button
+   850→                        key={s}
+   851→                        type="button"
+   852→                        onClick={() => { setSize(s); setTimeout(() => qtyRef.current?.focus(), 50); }}
+   853→                        className={cn(
+   854→                          "rounded-md border px-1.5 py-0.5 text-[10px] transition-colors hover:bg-accent",
+   855→                          size === s ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground"
+   856→                        )}
+   857→                      >
+   858→                        {s}
+   859→                      </button>
+   860→                    ))}
+   861→                    {autoFill.sizes.length > 8 && (
+   862→                      <span className="text-[10px] text-muted-foreground self-center">+{autoFill.sizes.length - 8} more</span>
+   863→                    )}
+   864→                  </div>
+   865→                )}
+   866→              </div>
+   867→
+   868→              {/* Step 5: Qty (spec §9) */}
+   869→              <div className="space-y-1.5">
+   870→                <Label className="text-xs">Qty <span className="text-destructive">*</span></Label>
+   871→                <Input
+   872→                  ref={qtyRef}
+   873→                  value={qty}
+   874→                  onChange={(e) => setQty(e.target.value.replace(/[^0-9.\-]/g, ""))}
+   875→                  onKeyDown={(e) => handleEnter(e, "qty")}
+   876→                  placeholder="e.g. 100"
+   877→                  className="h-11"
+   878→                  inputMode="numeric"
+   879→                  disabled={shippingDisabled}
+   880→                />
+   881→                {qty && !isNaN(Number(qty)) && (
+   882→                  <p className="text-[11px] text-muted-foreground">
+   883→                    Q'ty 1 = {qty} · Q'ty 2 ={" "}
+   884→                    <span className="font-mono font-medium text-foreground">
+   885→                      {computeQty2Preview(shippingStatus, qty)}
+   886→                    </span>
+   887→                  </p>
+   888→                )}
+   889→              </div>
+   890→
+   891→              {validationErrors.length > 0 && (
+   892→                <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5">
+   893→                  <div className="flex items-center gap-1.5 text-xs font-medium text-destructive">
+   894→                    <AlertTriangle className="h-3.5 w-3.5" /> Validation
+   895→                  </div>
+   896→                  <ul className="mt-1 space-y-0.5 text-[11px] text-destructive/90">
+   897→                    {validationErrors.map((e, i) => (
+   898→                      <li key={i}>• {e}</li>
+   899→                    ))}
+   900→                  </ul>
+   901→                </div>
+   902→              )}
+   903→
+   904→              <div className="flex gap-2 pt-1">
+   905→                <Button className="flex-1" disabled={!canAdd || saving} onClick={handleAddData}>
+   906→                  {saving ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Plus className="mr-1.5 h-4 w-4" />}
+   907→                  Add Data
+   908→                </Button>
+   909→              </div>
+   910→            </CardContent>
+   911→          </Card>
+   912→
+   913→          {/* Recent entries */}
+   914→          {recent.length > 0 && (
+   915→            <Card>
+   916→              <CardHeader className="pb-2">
+   917→                <CardTitle className="text-sm">Just Added</CardTitle>
+   918→              </CardHeader>
+   919→              <CardContent className="space-y-1.5">
+   920→                {recent.map((e) => (
+   921→                  <div
+   922→                    key={e.id}
+   923→                    className="flex items-center justify-between rounded-md border bg-muted/30 px-2.5 py-1.5 text-xs"
+   924→                  >
+   925→                    <div className="min-w-0">
+   926→                      <div className="font-medium truncate">{e.factoryPO} · {e.size}</div>
+   927→                      <div className="text-muted-foreground truncate">
+   928→                        <Badge variant="outline" className="text-[9px] mr-1">{e.shippingStatus}</Badge>
+   929→                        {e.model} · {e.season}
+   930→                      </div>
+   931→                    </div>
+   932→                    <div className="text-right shrink-0">
+   933→                      <div className="font-mono">{e.qty1} / {e.qty2}</div>
+   934→                      <CheckCircle2 className="ml-auto h-3 w-3 text-emerald-500" />
+   935→                    </div>
+   936→                  </div>
+   937→                ))}
+   938→              </CardContent>
+   939→            </Card>
+   940→          )}
+   941→        </div>
+   942→
+   943→        {/* Auto-generated data panel */}
+   944→        <div className="lg:col-span-3">
+   945→          <Card className="h-full">
+   946→            <CardHeader className="pb-3">
+   947→              <CardTitle className="flex items-center gap-2 text-sm">
+   948→                <Sparkles className="h-4 w-4 text-primary" /> Auto-Generated Data
+   949→                {autoFill && (
+   950→                  <Badge variant="outline" className="ml-auto text-[10px]">from Master Data</Badge>
+   951→                )}
+   952→              </CardTitle>
+   953→            </CardHeader>
+   954→            <CardContent>
+   955→              {!autoFill ? (
+   956→                <div className="flex flex-col items-center justify-center py-16 text-center">
+   957→                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+   958→                    <Sparkles className="h-6 w-6" />
+   959→                  </div>
+   960→                  <p className="mt-3 text-sm font-medium">Auto-fill appears after Factory PO + Size</p>
+   961→                  <p className="mt-1 text-xs text-muted-foreground max-w-xs">
+   962→                    Shared attributes (MODEL, SKU, Season, colors, painting, printing, deadline) will appear here from Master Data lookup.
+   963→                  </p>
+   964→                </div>
+   965→              ) : (
+   966→                <AutoFillGrid group={autoFill} factoryPO={factoryPO} size={size} qty={qty} shippingStatus={shippingStatus} />
+   967→              )}
+   968→            </CardContent>
+   969→          </Card>
+   970→        </div>
+   971→      </div>
+   972→      )}
+   973→
+   974→      {/* ===== Bulk Entry panel (when in bulk mode) ===== */}
+   975→      {entryMode === "bulk" && (
+   976→        <BulkEntryPanel
+   977→          pastedText={bulkPastedText}
+   978→          setPastedText={setBulkPastedText}
+   979→          hasHeader={bulkHasHeader}
+   980→          setHasHeader={setBulkHasHeader}
+   981→          validating={bulkValidating}
+   982→          result={bulkResult}
+   983→          filter={bulkFilter}
+   984→          setFilter={setBulkFilter}
+   985→          filteredRows={filteredBulkRows}
+   986→          importing={bulkImporting}
+   987→          onCheck={handleBulkValidate}
+   988→          onConfirmClick={handleBulkConfirmClick}
+   989→          onCancel={handleBulkCancel}
+   990→          onFix={handleBulkFix}
+   991→          expandedRow={bulkExpandedRow}
+   992→          setExpandedRow={setBulkExpandedRow}
+   993→          mapping={bulkMapping}
+   994→          currentProduct={currentProduct}
+   995→          theme={theme}
+   996→        />
+   997→      )}
+   998→
+   999→      {/* ===== Entries Table ===== */}
+  1000→      <Card>
+  1001→        <CardHeader className="pb-3">
+  1002→          <CardTitle className="flex items-center justify-between text-sm">
+  1003→            <span className="flex items-center gap-2">
+  1004→              <Table2 className="h-4 w-4 text-primary" /> Entries Data ({entryTotal})
+  1005→              {entriesQ.isFetching && <Badge variant="secondary" className="text-[10px]">loading…</Badge>}
+  1006→            </span>
+  1007→            <span className="flex items-center gap-2">
+  1008→              {selectedEntryIds.size > 0 && (
+  1009→                <Button size="sm" variant="destructive" className="h-7 text-xs" onClick={() => setBulkDeleteOpen(true)}>
+  1010→                  <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete Selected ({selectedEntryIds.size})
+  1011→                </Button>
+  1012→              )}
+  1013→              {selectedMasterIds.size > 0 && (
+  1014→                <Button
+  1015→                  size="sm"
+  1016→                  className={cn("h-7 text-xs", theme.bg, "hover:opacity-90")}
+  1017→                  disabled={addingToMaster}
+  1018→                  onClick={() => addEntriesToMasterData("selected")}
+  1019→                >
+  1020→                  {addingToMaster ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1" />}
+  1021→                  Add Selected to Master Data ({selectedMasterIds.size})
+  1022→                </Button>
+  1023→              )}
+  1024→              {entryRows.length > 0 && (
+  1025→                <Button
+  1026→                  size="sm"
+  1027→                  variant="outline"
+  1028→                  className="h-7 text-xs"
+  1029→                  disabled={addingToMaster}
+  1030→                  onClick={() => addEntriesToMasterData("all")}
+  1031→                >
+  1032→                  {addingToMaster ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1" />}
+  1033→                  Add All to Master Data
+  1034→                </Button>
+  1035→              )}
+  1036→            </span>
+  1037→          </CardTitle>
+  1038→        </CardHeader>
+  1039→        <CardContent className="p-0">
+  1040→          {entriesQ.isLoading ? (
+  1041→            <div className="p-6 space-y-2">
+  1042→              {Array.from({ length: 5 }).map((_, i) => (
+  1043→                <div key={i} className="h-8 w-full animate-pulse rounded bg-muted" />
+  1044→              ))}
+  1045→            </div>
+  1046→          ) : entryRows.length === 0 ? (
+  1047→            <div className="p-10 text-center text-sm text-muted-foreground">
+  1048→              No entries yet for {currentProduct}. Add data using the form above.
+  1049→            </div>
+  1050→          ) : (
+  1051→            <>
+  1052→            <div className="overflow-x-auto scroll-thin">
+  1053→              <table className="w-full text-xs">
+  1054→                <thead className="bg-muted/40 sticky top-0">
+  1055→                  <tr>
+  1056→                    <th className="px-2 py-2 w-8">
+  1057→                      <Checkbox
+  1058→                        checked={entryRows.length > 0 && selectedEntryIds.size === entryRows.length}
+  1059→                        onCheckedChange={toggleAllEntries}
+  1060→                      />
+  1061→                    </th>
+  1062→                    <th className="px-2 py-2 w-8" title="Select for Add to Master Data">
+  1063→                      <Checkbox
+  1064→                        checked={entryRows.length > 0 && selectedMasterIds.size === entryRows.length}
+  1065→                        onCheckedChange={toggleAllMasterRows}
+  1066→                      />
+  1067→                    </th>
+  1068→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Status</th>
+  1069→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">PO NO#</th>
+  1070→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Factory PO</th>
+  1071→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Model</th>
+  1072→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Size</th>
+  1073→                    <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Qty1</th>
+  1074→                    <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Qty2</th>
+  1075→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Season</th>
+  1076→                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Deadline</th>
+  1077→                    <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Actions</th>
+  1078→                  </tr>
+  1079→                </thead>
+  1080→                <tbody>
+  1081→                  {entryRows.map((r: any) => {
+  1082→                    const isSelected = selectedEntryIds.has(r.id);
+  1083→                    const isMasterSelected = selectedMasterIds.has(r.id);
+  1084→                    return (
+  1085→                      <tr key={r.id} className={cn("border-t hover:bg-muted/30", isSelected && "bg-primary/5", isMasterSelected && "bg-emerald-50 dark:bg-emerald-950/20")}>
+  1086→                        <td className="px-2 py-1.5">
+  1087→                          <Checkbox checked={isSelected} onCheckedChange={() => toggleEntry(r.id)} />
+  1088→                        </td>
+  1089→                        <td className="px-2 py-1.5">
+  1090→                          <Checkbox checked={isMasterSelected} onCheckedChange={() => toggleMasterRow(r.id)} />
+  1091→                        </td>
+  1092→                        <td className="px-2 py-1.5">
+  1093→                          <Badge variant="outline" className={cn("text-[9px]", shippingBadgeClass(r.shippingStatus))}>
+  1094→                            {r.shippingStatus || "—"}
+  1095→                          </Badge>
+  1096→                        </td>
+  1097→                        <td className="px-2 py-1.5 whitespace-nowrap">{r.poNo}</td>
+  1098→                        <td className="px-2 py-1.5 font-medium text-primary whitespace-nowrap">{r.factoryPO}</td>
+  1099→                        <td className="px-2 py-1.5 whitespace-nowrap">{r.model}</td>
+  1100→                        <td className="px-2 py-1.5"><Badge variant="outline" className="text-[9px] font-mono">{r.size}</Badge></td>
+  1101→                        <td className="px-2 py-1.5 text-right tabular-nums font-medium">{r.qty1}</td>
+  1102→                        <td className={cn("px-2 py-1.5 text-right tabular-nums", Number(r.qty2) < 0 && "text-rose-600")}>{r.qty2}</td>
+  1103→                        <td className="px-2 py-1.5"><Badge variant="secondary" className="text-[9px]">{r.season}</Badge></td>
+  1104→                        <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground">{r.deadline || "—"}</td>
+  1105→                        <td className="px-2 py-1.5">
+  1106→                          <div className="flex justify-end gap-0.5">
+  1107→                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEditEntry(r)}>
+  1108→                              <Pencil className="h-3.5 w-3.5" />
+  1109→                            </Button>
+  1110→                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => openDeleteEntry(r)}>
+  1111→                              <Trash2 className="h-3.5 w-3.5" />
+  1112→                            </Button>
+  1113→                          </div>
+  1114→                        </td>
+  1115→                      </tr>
+  1116→                    );
+  1117→                  })}
+  1118→                </tbody>
+  1119→                {/* Totals footer */}
+  1120→                {selectedEntryIds.size > 0 && (
+  1121→                  <tfoot className="bg-primary/5 border-t-2 border-primary/20">
+  1122→                    <tr>
+  1123→                      <td colSpan={7} className="px-2 py-2 text-right text-[11px] font-semibold uppercase text-muted-foreground">
+  1124→                        <Calculator className="h-3 w-3 inline mr-1" />
+  1125→                        Total ({totals.count} selected):
+  1126→                      </td>
+  1127→                      <td className="px-2 py-2 text-right tabular-nums font-bold text-primary text-sm">{totals.qty1Sum}</td>
+  1128→                      <td className={cn("px-2 py-2 text-right tabular-nums font-bold text-sm", totals.qty2Sum < 0 && "text-rose-600")}>{totals.qty2Sum}</td>
+  1129→                      <td colSpan={4}></td>
+  1130→                    </tr>
+  1131→                  </tfoot>
+  1132→                )}
+  1133→              </table>
+  1134→            </div>
+  1135→            <div className="flex items-center justify-between border-t px-3 py-2">
+  1136→              <span className="text-xs text-muted-foreground">
+  1137→                Page {entryPage} of {entryTotalPages} ({entryTotal} total)
+  1138→              </span>
+  1139→              <div className="flex gap-1">
+  1140→                <Button
+  1141→                  variant="outline"
+  1142→                  size="sm"
+  1143→                  disabled={entryPage <= 1}
+  1144→                  onClick={() => setEntryPage((p) => Math.max(1, p - 1))}
+  1145→                >
+  1146→                  Prev
+  1147→                </Button>
+  1148→                <Button
+  1149→                  variant="outline"
+  1150→                  size="sm"
+  1151→                  disabled={entryPage >= entryTotalPages}
+  1152→                  onClick={() => setEntryPage((p) => p + 1)}
+  1153→                >
+  1154→                  Next
+  1155→                </Button>
+  1156→              </div>
+  1157→            </div>
+  1158→          </>
+  1159→          )}
+  1160→        </CardContent>
+  1161→      </Card>
+  1162→
+  1163→      {/* Edit entry dialog */}
+  1164→      <Dialog open={!!editEntry} onOpenChange={(o) => !o && setEditEntry(null)}>
+  1165→        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto scroll-thin">
+  1166→          <DialogHeader>
+  1167→            <DialogTitle className="flex items-center gap-2">
+  1168→              <Pencil className="h-4 w-4 text-primary" /> Edit Entry
+  1169→            </DialogTitle>
+  1170→            <DialogDescription>Edit this entry. Master Data is not affected.</DialogDescription>
+  1171→          </DialogHeader>
+  1172→          {editEntry && (
+  1173→            <div className="space-y-3">
+  1174→              <div className="grid grid-cols-2 gap-2">
+  1175→                {[
+  1176→                  { f: "shippingStatus", l: "Shipping Status" },
+  1177→                  { f: "poNo", l: "PO NO#" },
+  1178→                  { f: "factoryPO", l: "Factory PO" },
+  1179→                  { f: "size", l: "Size" },
+  1180→                  { f: "qty1", l: "Q'ty 1" },
+  1181→                  { f: "qty2", l: "Q'ty 2" },
+  1182→                  { f: "model", l: "MODEL" },
+  1183→                  { f: "sku", l: "SKU" },
+  1184→                  { f: "season", l: "Season" },
+  1185→                  { f: "colorCode", l: "Color Code" },
+  1186→                  { f: "colorCode2", l: "COLOR CODE" },
+  1187→                  { f: "deadline", l: "Dead Line" },
+  1188→                ].map(({ f, l }) => (
+  1189→                  <div key={f} className="space-y-1">
+  1190→                    <label className="text-[10px] font-semibold uppercase text-muted-foreground">{l}</label>
+  1191→                    <Input value={editData[f] ?? ""} onChange={(e) => setEditData((d) => ({ ...d, [f]: e.target.value }))} className="h-8 text-xs" />
+  1192→                  </div>
+  1193→                ))}
+  1194→              </div>
+  1195→            </div>
+  1196→          )}
+  1197→          <DialogFooter>
+  1198→            <Button variant="outline" onClick={() => setEditEntry(null)}><X className="h-4 w-4 mr-1.5" /> Cancel</Button>
+  1199→            <Button onClick={saveEditEntry} disabled={savingEdit}>
+  1200→              {savingEdit ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Save className="h-4 w-4 mr-1.5" />} Save
+  1201→            </Button>
+  1202→          </DialogFooter>
+  1203→        </DialogContent>
+  1204→      </Dialog>
+  1205→
+  1206→      {/* Delete entry dialog */}
+  1207→      <AlertDialog open={!!deleteEntryRow && !deleteWarn} onOpenChange={(o) => { if (!o) setDeleteEntryRow(null); }}>
+  1208→        <AlertDialogContent>
+  1209→          <AlertDialogHeader>
+  1210→            <AlertDialogTitle className="flex items-center gap-2">
+  1211→              <Trash2 className="h-5 w-5 text-destructive" /> Delete Entry
+  1212→            </AlertDialogTitle>
+  1213→            <AlertDialogDescription>
+  1214→              Are you sure you want to delete this entry?
+  1215→              {deleteEntryRow && (
+  1216→                <span className="mt-2 block text-xs font-mono bg-muted/40 rounded p-2">
+  1217→                  {deleteEntryRow.shippingStatus} · {deleteEntryRow.factoryPO} · {deleteEntryRow.size} · Qty1={deleteEntryRow.qty1} Qty2={deleteEntryRow.qty2}
+  1218→                </span>
+  1219→              )}
+  1220→              {deleteEntryRow?.transactionGroupId && (
+  1221→                <span className="mt-2 block text-xs text-amber-600">
+  1222→                  ⚠ Part of an Output+Pending transaction group. You will be asked to delete both.
+  1223→                </span>
+  1224→              )}
+  1225→            </AlertDialogDescription>
+  1226→          </AlertDialogHeader>
+  1227→          <AlertDialogFooter>
+  1228→            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+  1229→            <AlertDialogAction onClick={(e) => { e.preventDefault(); confirmDeleteEntry(); }} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+  1230→              {deleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />} Delete
+  1231→            </AlertDialogAction>
+  1232→          </AlertDialogFooter>
+  1233→        </AlertDialogContent>
+  1234→      </AlertDialog>
+  1235→
+  1236→      {/* Delete group warning */}
+  1237→      <AlertDialog open={!!deleteWarn} onOpenChange={(o) => { if (!o) { setDeleteWarn(null); setDeleteEntryRow(null); } }}>
+  1238→        <AlertDialogContent>
+  1239→          <AlertDialogHeader>
+  1240→            <AlertDialogTitle className="flex items-center gap-2">
+  1241→              <AlertTriangle className="h-5 w-5 text-amber-500" /> Delete Both Records?
+  1242→            </AlertDialogTitle>
+  1243→            <AlertDialogDescription>
+  1244→              {deleteWarn?.message}
+  1245→              <span className="mt-2 block text-xs">This will delete both the Output and its paired Pending entry.</span>
+  1246→            </AlertDialogDescription>
+  1247→          </AlertDialogHeader>
+  1248→          <AlertDialogFooter>
+  1249→            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+  1250→            <AlertDialogAction onClick={(e) => { e.preventDefault(); confirmDeleteEntryGroup(); }} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+  1251→              {deleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />} Delete Both
+  1252→            </AlertDialogAction>
+  1253→          </AlertDialogFooter>
+  1254→        </AlertDialogContent>
+  1255→      </AlertDialog>
+  1256→
+  1257→      {/* Bulk delete dialog */}
+  1258→      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+  1259→        <AlertDialogContent>
+  1260→          <AlertDialogHeader>
+  1261→            <AlertDialogTitle className="flex items-center gap-2">
+  1262→              <AlertTriangle className="h-5 w-5 text-amber-500" /> Delete {selectedEntryIds.size} Selected Entries?
+  1263→            </AlertDialogTitle>
+  1264→            <AlertDialogDescription>
+  1265→              You are about to delete <strong>{selectedEntryIds.size}</strong> entry row(s).
+  1266→              <span className="mt-2 block text-xs text-amber-600">
+  1267→                ⚠ Entries belonging to an Output+Pending transaction group will have their paired record deleted too.
+  1268→              </span>
+  1269→            </AlertDialogDescription>
+  1270→          </AlertDialogHeader>
+  1271→          <AlertDialogFooter>
+  1272→            <AlertDialogCancel disabled={bulkDeleting}>Cancel</AlertDialogCancel>
+  1273→            <AlertDialogAction onClick={(e) => { e.preventDefault(); confirmBulkDeleteEntries(); }} disabled={bulkDeleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+  1274→              {bulkDeleting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1.5" />}
+  1275→              Delete {selectedEntryIds.size} Entries
+  1276→            </AlertDialogAction>
+  1277→          </AlertDialogFooter>
+  1278→        </AlertDialogContent>
+  1279→      </AlertDialog>
+  1280→
+  1281→      {/* ===== Bulk Import preview dialog ===== */}
+  1282→      <Dialog open={showBulkImportPreview} onOpenChange={(o) => { if (!bulkImporting) setShowBulkImportPreview(o); }}>
+  1283→        <DialogContent className="max-w-md">
+  1284→          <DialogHeader>
+  1285→            <DialogTitle className="flex items-center gap-2">
+  1286→              <Upload className="h-4 w-4 text-emerald-600" /> Confirm Bulk Import
+  1287→            </DialogTitle>
+  1288→            <DialogDescription>
+  1289→              Review the summary below. Valid + warning rows will be written to the database.
+  1290→            </DialogDescription>
+  1291→          </DialogHeader>
+  1292→          {bulkResult && (
+  1293→            <div className="space-y-2 text-sm">
+  1294→              <div className="grid grid-cols-2 gap-2">
+  1295→                <div className="rounded-md border bg-muted/30 p-2">
+  1296→                  <div className="text-[10px] uppercase text-muted-foreground">Total checked</div>
+  1297→                  <div className="text-lg font-semibold">{bulkResult.summary.totalRows}</div>
+  1298→                </div>
+  1299→                <div className="rounded-md border border-emerald-300/50 bg-emerald-50 dark:bg-emerald-950/20 p-2">
+  1300→                  <div className="text-[10px] uppercase text-emerald-700 dark:text-emerald-300">Will import</div>
+  1301→                  <div className="text-lg font-semibold text-emerald-700 dark:text-emerald-300">
+  1302→                    {bulkResult.summary.validRows + bulkResult.summary.warningRows}
+  1303→                  </div>
+  1304→                </div>
+  1305→              </div>
+  1306→              <div className="rounded-md border border-rose-300/50 bg-rose-50 dark:bg-rose-950/20 p-2 text-rose-700 dark:text-rose-300 text-xs">
+  1307→                <AlertCircle className="h-3.5 w-3.5 inline mr-1" />
+  1308→                Skipped (errors): <strong>{bulkResult.summary.errorRows}</strong>
+  1309→              </div>
+  1310→              <div className="text-xs text-muted-foreground">
+  1311→                <Database className="h-3 w-3 inline mr-1" />
+  1312→                Product: <strong>{currentProduct}</strong> · Mode: <code className="rounded bg-muted px-1">all_valid</code>
+  1313→              </div>
+  1314→            </div>
+  1315→          )}
+  1316→          <DialogFooter>
+  1317→            <Button variant="outline" onClick={() => setShowBulkImportPreview(false)} disabled={bulkImporting}>
+  1318→              <X className="h-4 w-4 mr-1.5" /> Cancel
+  1319→            </Button>
+  1320→            <Button onClick={handleBulkImport} disabled={bulkImporting} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+  1321→              {bulkImporting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Upload className="h-4 w-4 mr-1.5" />}
+  1322→              Confirm Import
+  1323→            </Button>
+  1324→          </DialogFooter>
+  1325→        </DialogContent>
+  1326→      </Dialog>
+  1327→    </div>
+  1328→  );
+  1329→}
+  1330→
+  1331→// Compute Q'ty 2 preview client-side (mirrors server logic).
+  1332→function computeQty2Preview(shippingStatus: string, qty: string): string {
+  1333→  const n = Number(qty);
+  1334→  if (isNaN(n)) return "—";
+  1335→  if (shippingStatus === "3.Pending") return String(-Math.abs(n));
+  1336→  return String(n);
+  1337→}
+  1338→
+  1339→// Parse pasted Excel/TSV data into rows of { header: value } objects.
+  1340→// If `hasHeader` is true, the first row is treated as headers and used as keys.
+  1341→// Otherwise, columns are assumed to be in canonical order:
+  1342→//   shippingStatus, poNo, factoryPO, size, qty1.
+  1343→function parseBulkText(text: string, hasHeader: boolean): Record<string, string>[] {
+  1344→  const lines = text.trim().split(/\r?\n/).filter((l) => l.trim());
+  1345→  if (lines.length === 0) return [];
+  1346→  let headers: string[];
+  1347→  let dataLines: string[];
+  1348→  if (hasHeader) {
+  1349→    headers = lines[0].split("\t").map((h) => h.trim());
+  1350→    dataLines = lines.slice(1);
+  1351→  } else {
+  1352→    headers = ["shippingStatus", "poNo", "factoryPO", "size", "qty1"];
+  1353→    dataLines = lines;
+  1354→  }
+  1355→  return dataLines.map((line) => {
+  1356→    const cells = line.split("\t");
+  1357→    const obj: Record<string, string> = {};
+  1358→    headers.forEach((h, i) => {
+  1359→      obj[h] = (cells[i] || "").trim();
+  1360→    });
+  1361→    return obj;
+  1362→  });
+  1363→}
+  1364→
+  1365→// Convert raw header-keyed rows into canonical-keyed rows
+  1366→// (shippingStatus, poNo, factoryPO, size, qty1) using buildAutoMapping.
+  1367→function mapRowsToCanonical(rawRows: Record<string, string>[], hasHeader: boolean): Record<string, string>[] {
+  1368→  if (!hasHeader) return rawRows; // already canonical keys
+  1369→  if (rawRows.length === 0) return [];
+  1370→  const headers = Object.keys(rawRows[0]);
+  1371→  const mapping = buildAutoMapping(headers);
+  1372→  return rawRows.map((r) => {
+  1373→    const obj: Record<string, string> = {};
+  1374→    for (const [origHeader, value] of Object.entries(r)) {
+  1375→      const field = mapping[origHeader];
+  1376→      if (field) obj[field] = value;
+  1377→    }
+  1378→    return {
+  1379→      shippingStatus: obj.shippingStatus || "",
+  1380→      poNo: obj.poNo || "",
+  1381→      factoryPO: obj.factoryPO || "",
+  1382→      size: obj.size || "",
+  1383→      qty1: obj.qty1 || "",
+  1384→    };
+  1385→  });
+  1386→}
+  1387→
+  1388→// Bucket label/colors for the bulk results table.
+  1389→const BULK_BUCKET_META: Record<string, { label: string; tint: string; badge: string; icon: typeof CheckCircle2 }> = {
+  1390→  valid: {
+  1391→    label: "Valid",
+  1392→    tint: "bg-emerald-50/60 dark:bg-emerald-950/15",
+  1393→    badge: "bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800",
+  1394→    icon: CheckCircle2,
+  1395→  },
+  1396→  warning: {
+  1397→    label: "Warning",
+  1398→    tint: "bg-amber-50/60 dark:bg-amber-950/15",
+  1399→    badge: "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800",
+  1400→    icon: AlertTriangle,
+  1401→  },
+  1402→  error: {
+  1403→    label: "Error",
+  1404→    tint: "bg-rose-50/60 dark:bg-rose-950/15",
+  1405→    badge: "bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800",
+  1406→    icon: AlertCircle,
+  1407→  },
+  1408→  unknown: {
+  1409→    label: "Pending",
+  1410→    tint: "bg-muted/40",
+  1411→    badge: "bg-muted text-muted-foreground",
+  1412→    icon: Info,
+  1413→  },
+  1414→};
+  1415→
+  1416→// Shipping status badge color helper.
+  1417→function shippingBadgeClass(status: string | null | undefined): string {
+  1418→  if (!status) return "";
+  1419→  const s = status.toLowerCase();
+  1420→  if (s.startsWith("1")) return "bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300";
+  1421→  if (s.startsWith("2")) return "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300";
+  1422→  if (s.startsWith("3")) return "bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300";
+  1423→  if (s.startsWith("4")) return "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300";
+  1424→  return "";
+  1425→}
+  1426→
+  1427→// Size input with filtered suggestions.
+  1428→const SizeInput = React.forwardRef<HTMLInputElement, {
+  1429→  value: string;
+  1430→  onChange: (v: string) => void;
+  1431→  sizes: string[];
+  1432→  disabled?: boolean;
+  1433→  placeholder?: string;
+  1434→  onEnter?: () => void;
+  1435→}>(function SizeInput({ value, onChange, sizes, disabled, placeholder, onEnter }, ref) {
+  1436→  const [open, setOpen] = React.useState(false);
+  1437→  const wrapRef = React.useRef<HTMLDivElement>(null);
+  1438→  React.useEffect(() => {
+  1439→    function onDown(e: MouseEvent) {
+  1440→      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+  1441→    }
+  1442→    document.addEventListener("mousedown", onDown);
+  1443→    return () => document.removeEventListener("mousedown", onDown);
+  1444→  }, []);
+  1445→
+  1446→  const filtered = React.useMemo(() => {
+  1447→    const q = value.trim().toLowerCase();
+  1448→    if (!q) return sizes;
+  1449→    return sizes.filter((s) => s.toLowerCase().includes(q));
+  1450→  }, [value, sizes]);
+  1451→
+  1452→  return (
+  1453→    <div ref={wrapRef} className="relative">
+  1454→      <Input
+  1455→        ref={ref}
+  1456→        value={value}
+  1457→        disabled={disabled}
+  1458→        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+  1459→        onFocus={() => setOpen(true)}
+  1460→        onKeyDown={(e) => {
+  1461→          if (e.key === "Enter") {
+  1462→            e.preventDefault();
+  1463→            if (open && filtered.length > 0) {
+  1464→              onChange(filtered[0]);
+  1465→              setOpen(false);
+  1466→            } else {
+  1467→              onEnter?.();
+  1468→            }
+  1469→          }
+  1470→        }}
+  1471→        placeholder={placeholder}
+  1472→        className="h-11"
+  1473→      />
+  1474→      {open && !disabled && filtered.length > 0 && (
+  1475→        <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-md border bg-popover shadow-lg">
+  1476→          <ul className="max-h-56 overflow-y-auto scroll-thin py-1">
+  1477→            {filtered.map((s) => (
+  1478→              <li key={s}>
+  1479→                <button
+  1480→                  type="button"
+  1481→                  onMouseEnter={() => {}}
+  1482→                  onClick={() => { onChange(s); setOpen(false); onEnter?.(); }}
+  1483→                  className={cn("flex w-full px-3 py-1.5 text-left text-sm hover:bg-accent", s === value && "bg-accent")}
+  1484→                >
+  1485→                  {s}
+  1486→                </button>
+  1487→              </li>
+  1488→            ))}
+  1489→          </ul>
+  1490→        </div>
+  1491→      )}
+  1492→    </div>
+  1493→  );
+  1494→});
+  1495→
+  1496→function AutoFillGrid({ group, factoryPO, size, qty, shippingStatus }: { group: any; factoryPO: string; size: string; qty: string; shippingStatus: string }) {
+  1497→  const rows: { label: string; value: string | null; field: string }[] = [
+  1498→    { label: "MODEL", value: group.model, field: "model" },
+  1499→    { label: "SKU", value: group.sku, field: "sku" },
+  1500→    { label: "ITEM", value: group.item, field: "item" },
+  1501→    { label: "Season", value: group.season, field: "season" },
+  1502→    { label: "Color Code", value: group.colorCode, field: "colorCode" },
+  1503→    { label: "COLOR CODE", value: group.colorCode2, field: "colorCode2" },
+  1504→    { label: "PAINTING", value: group.painting, field: "painting" },
+  1505→    { label: "PRINTING COLOR", value: group.printingColor, field: "printingColor" },
+  1506→    { label: "Dead Line", value: group.nearestDeadline || group.deadline, field: "deadline" },
+  1507→    { label: "Q'ty 1", value: qty, field: "qty1" },
+  1508→    { label: "Q'ty 2", value: computeQty2Preview(shippingStatus, qty), field: "qty2" },
+  1509→  ];
+  1510→  return (
+  1511→    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+  1512→      {rows.map((r) => {
+  1513→        const isInput = r.field === "qty1" || r.field === "qty2";
+  1514→        return (
+  1515→          <div key={r.label} className={cn("rounded-md border p-2.5", isInput ? "border-primary/30 bg-primary/5" : "bg-muted/30")}>
+  1516→            <div className="flex items-center justify-between">
+  1517→              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{r.label}</span>
+  1518→              {isInput && <Badge variant="outline" className="text-[9px] py-0">computed</Badge>}
+  1519→            </div>
+  1520→            <div className={cn("mt-0.5 text-sm font-medium break-words", !r.value && "text-muted-foreground/50")}>
+  1521→              {r.value || "—"}
+  1522→            </div>
+  1523→          </div>
+  1524→        );
+  1525→      })}
+  1526→    </div>
+  1527→  );
+  1528→}
+  1529→
+  1530→// ===== Bulk Entry panel =====
+  1531→// Renders the paste area, validation summary, filter tabs, results table,
+  1532→// grouped errors, and action bar. State lives in the parent so it can interact
+  1533→// with the entries table query client + bumpRefresh on successful import.
+  1534→type BulkEntryPanelProps = {
+  1535→  pastedText: string;
+  1536→  setPastedText: (v: string) => void;
+  1537→  hasHeader: boolean;
+  1538→  setHasHeader: (v: boolean) => void;
+  1539→  validating: boolean;
+  1540→  result: any;
+  1541→  filter: "all" | "valid" | "warning" | "error";
+  1542→  setFilter: (v: "all" | "valid" | "warning" | "error") => void;
+  1543→  filteredRows: any[];
+  1544→  importing: boolean;
+  1545→  onCheck: () => void;
+  1546→  onConfirmClick: () => void;
+  1547→  onCancel: () => void;
+  1548→  onFix: () => void;
+  1549→  expandedRow: number | null;
+  1550→  setExpandedRow: (n: number | null) => void;
+  1551→  mapping: Record<string, string>;
+  1552→  currentProduct: string;
+  1553→  theme: { bg: string; text: string; border: string; gradient: string };
+  1554→};
+  1555→
+  1556→function BulkEntryPanel(props: BulkEntryPanelProps) {
+  1557→  const {
+  1558→    pastedText,
+  1559→    setPastedText,
+  1560→    hasHeader,
+  1561→    setHasHeader,
+  1562→    validating,
+  1563→    result,
+  1564→    filter,
+  1565→    setFilter,
+  1566→    filteredRows,
+  1567→    importing,
+  1568→    onCheck,
+  1569→    onConfirmClick,
+  1570→    onCancel,
+  1571→    onFix,
+  1572→    expandedRow,
+  1573→    setExpandedRow,
+  1574→    mapping,
+  1575→    currentProduct,
+  1576→    theme,
+  1577→  } = props;
+  1578→
+  1579→  const summary = result?.summary;
+  1580→  const hasErrors = (summary?.errorRows ?? 0) > 0;
+  1581→  const canImport = !!result && !hasErrors && !importing;
+  1582→
+  1583→  return (
+  1584→    <div className="space-y-4">
+  1585→      {/* Paste area */}
+  1586→      <Card>
+  1587→        <CardHeader className="pb-3">
+  1588→          <CardTitle className="flex items-center gap-2 text-sm">
+  1589→            <ClipboardPaste className="h-4 w-4 text-primary" /> Paste Bulk Data
+  1590→            <Badge variant="outline" className="ml-auto text-[10px]">{currentProduct}</Badge>
+  1591→          </CardTitle>
+  1592→        </CardHeader>
+  1593→        <CardContent className="space-y-3">
+  1594→          <div className="space-y-1.5">
+  1595→            <Label className="text-xs">
+  1596→              Paste rows from Excel <span className="text-muted-foreground">(tab-separated columns)</span>
+  1597→            </Label>
+  1598→            <Textarea
+  1599→              value={pastedText}
+  1600→              onChange={(e) => setPastedText(e.target.value)}
+  1601→              placeholder={
+  1602→                "Shipping Status\tPO NO#\tFactory PO\tSize\tQty\n" +
+  1603→                "1.Order\tPO123\tMH271001\t13\t100\n" +
+  1604→                "4.Input\tPO456\tMH271002\t08\t250"
+  1605→              }
+  1606→              className="min-h-[200px] font-mono text-sm"
+  1607→              spellCheck={false}
+  1608→            />
+  1609→            <p className="text-[10px] text-muted-foreground">
+  1610→              Columns: Shipping Status · PO NO# · Factory PO · Size · Qty. Order does not matter if header is on.
+  1611→            </p>
+  1612→          </div>
+  1613→          <div className="flex flex-wrap items-center justify-between gap-3">
+  1614→            <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
+  1615→              <Switch checked={hasHeader} onCheckedChange={setHasHeader} />
+  1616→              First row is header
+  1617→              <span className="text-muted-foreground">
+  1618→                {hasHeader ? "(auto-detect columns)" : "(columns assumed in order)"}
+  1619→              </span>
+  1620→            </label>
+  1621→            <Button onClick={onCheck} disabled={validating || !pastedText.trim()} className={cn(theme.bg, "hover:opacity-90")}>
+  1622→              {validating ? (
+  1623→                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+  1624→              ) : (
+  1625→                <ClipboardCheck className="mr-1.5 h-4 w-4" />
+  1626→              )}
+  1627→              Check Data
+  1628→            </Button>
+  1629→          </div>
+  1630→          {/* Show detected mapping */}
+  1631→          {result && Object.keys(mapping).length > 0 && (
+  1632→            <div className="rounded-md border bg-muted/30 p-2">
+  1633→              <div className="text-[10px] font-semibold uppercase text-muted-foreground mb-1 flex items-center gap-1">
+  1634→                <Eye className="h-3 w-3" /> Detected column mapping
+  1635→              </div>
+  1636→              <div className="flex flex-wrap gap-1.5">
+  1637→                {Object.entries(mapping).map(([orig, field]) => (
+  1638→                  <Badge
+  1639→                    key={orig}
+  1640→                    variant="outline"
+  1641→                    className={cn(
+  1642→                      "text-[10px]",
+  1643→                      field
+  1644→                        ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300 dark:border-emerald-800"
+  1645→                        : "border-rose-300 bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300 dark:border-rose-800"
+  1646→                    )}
+  1647→                  >
+  1648→                    <span className="font-mono">{orig}</span>
+  1649→                    <span className="mx-1 opacity-50">→</span>
+  1650→                    {field || "(ignored)"}
+  1651→                  </Badge>
+  1652→                ))}
+  1653→              </div>
+  1654→            </div>
+  1655→          )}
+  1656→        </CardContent>
+  1657→      </Card>
+  1658→
+  1659→      {result && summary && (
+  1660→        <>
+  1661→          {/* Validation summary cards */}
+  1662→          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+  1663→            <SummaryCard
+  1664→              icon={<Table2 className="h-4 w-4" />}
+  1665→              label="Total Rows"
+  1666→              value={summary.totalRows}
+  1667→              tint="bg-muted/40"
+  1668→            />
+  1669→            <SummaryCard
+  1670→              icon={<CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+  1671→              label="Valid"
+  1672→              value={summary.validRows}
+  1673→              tint="bg-emerald-50 dark:bg-emerald-950/20"
+  1674→              valueClass="text-emerald-700 dark:text-emerald-300"
+  1675→            />
+  1676→            <SummaryCard
+  1677→              icon={<AlertTriangle className="h-4 w-4 text-amber-600" />}
+  1678→              label="Warnings"
+  1679→              value={summary.warningRows}
+  1680→              tint="bg-amber-50 dark:bg-amber-950/20"
+  1681→              valueClass="text-amber-700 dark:text-amber-300"
+  1682→            />
+  1683→            <SummaryCard
+  1684→              icon={<AlertCircle className="h-4 w-4 text-rose-600" />}
+  1685→              label="Errors"
+  1686→              value={summary.errorRows}
+  1687→              tint="bg-rose-50 dark:bg-rose-950/20"
+  1688→              valueClass="text-rose-700 dark:text-rose-300"
+  1689→            />
+  1690→          </div>
+  1691→
+  1692→          {/* Secondary stats */}
+  1693→          <div className="flex flex-wrap gap-2 text-xs">
+  1694→            <Badge variant="outline" className="text-[10px]">
+  1695→              <Database className="h-3 w-3 mr-1" />
+  1696→              {summary.productGroupsAffected} product group(s) affected
+  1697→            </Badge>
+  1698→            {summary.duplicatePossible > 0 && (
+  1699→              <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700 dark:text-amber-300">
+  1700→                <AlertTriangle className="h-3 w-3 mr-1" />
+  1701→                {summary.duplicatePossible} duplicate(s) possible
+  1702→              </Badge>
+  1703→            )}
+  1704→            {summary.quantityErrors > 0 && (
+  1705→              <Badge variant="outline" className="text-[10px] border-rose-300 text-rose-700 dark:text-rose-300">
+  1706→                <AlertCircle className="h-3 w-3 mr-1" />
+  1707→                {summary.quantityErrors} quantity error(s)
+  1708→              </Badge>
+  1709→            )}
+  1710→            {summary.masterDataErrors > 0 && (
+  1711→              <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700 dark:text-amber-300">
+  1712→                <Database className="h-3 w-3 mr-1" />
+  1713→                {summary.masterDataErrors} master data issue(s)
+  1714→              </Badge>
+  1715→            )}
+  1716→            {summary.deadlineErrors > 0 && (
+  1717→              <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700 dark:text-amber-300">
+  1718→                <AlertCircle className="h-3 w-3 mr-1" />
+  1719→                {summary.deadlineErrors} deadline issue(s)
+  1720→              </Badge>
+  1721→            )}
+  1722→          </div>
+  1723→
+  1724→          {/* Filter tabs */}
+  1725→          <Tabs value={filter} onValueChange={(v) => setFilter(v as any)}>
+  1726→            <TabsList>
+  1727→              <TabsTrigger value="all" className="text-xs">
+  1728→                All <span className="ml-1 rounded bg-muted-foreground/15 px-1.5 py-0.5 text-[10px]">{summary.totalRows}</span>
+  1729→              </TabsTrigger>
+  1730→              <TabsTrigger value="valid" className="text-xs">
+  1731→                <CheckCircle2 className="h-3 w-3 mr-1 text-emerald-600" />
+  1732→                Valid <span className="ml-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-300">{summary.validRows}</span>
+  1733→              </TabsTrigger>
+  1734→              <TabsTrigger value="warning" className="text-xs">
+  1735→                <AlertTriangle className="h-3 w-3 mr-1 text-amber-600" />
+  1736→                Warning <span className="ml-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-300">{summary.warningRows}</span>
+  1737→              </TabsTrigger>
+  1738→              <TabsTrigger value="error" className="text-xs">
+  1739→                <AlertCircle className="h-3 w-3 mr-1 text-rose-600" />
+  1740→                Error <span className="ml-1 rounded bg-rose-500/15 px-1.5 py-0.5 text-[10px] text-rose-700 dark:text-rose-300">{summary.errorRows}</span>
+  1741→              </TabsTrigger>
+  1742→            </TabsList>
+  1743→          </Tabs>
+  1744→
+  1745→          {/* Results table */}
+  1746→          <Card>
+  1747→            <CardHeader className="pb-2">
+  1748→              <CardTitle className="flex items-center gap-2 text-sm">
+  1749→                <Table2 className="h-4 w-4 text-primary" /> Validation Results
+  1750→                <span className="ml-auto text-xs text-muted-foreground">
+  1751→                  Showing {filteredRows.length} of {summary.totalRows}
+  1752→                </span>
+  1753→              </CardTitle>
+  1754→            </CardHeader>
+  1755→            <CardContent className="p-0">
+  1756→              <div className="max-h-[500px] overflow-y-auto scroll-thin">
+  1757→                <table className="w-full text-xs">
+  1758→                  <thead className="bg-muted/40 sticky top-0 z-10">
+  1759→                    <tr>
+  1760→                      <th className="px-2 py-2 w-10 text-left text-[10px] font-semibold uppercase text-muted-foreground">Row</th>
+  1761→                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Status</th>
+  1762→                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">PO NO#</th>
+  1763→                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Factory PO</th>
+  1764→                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Size</th>
+  1765→                      <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Qty</th>
+  1766→                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Model</th>
+  1767→                      <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Result</th>
+  1768→                    </tr>
+  1769→                  </thead>
+  1770→                  <tbody>
+  1771→                    {filteredRows.length === 0 ? (
+  1772→                      <tr>
+  1773→                        <td colSpan={8} className="px-3 py-10 text-center text-muted-foreground">
+  1774→                          No rows in this filter.
+  1775→                        </td>
+  1776→                      </tr>
+  1777→                    ) : (
+  1778→                      filteredRows.map((r: any) => {
+  1779→                        const bucket = r.statusBucket || "unknown";
+  1780→                        const meta = BULK_BUCKET_META[bucket] || BULK_BUCKET_META.unknown;
+  1781→                        const Icon = meta.icon;
+  1782→                        const isExpanded = expandedRow === r.rowNumber;
+  1783→                        const hasErrs = (r.errors?.length ?? 0) > 0;
+  1784→                        return (
+  1785→                          <React.Fragment key={r.rowNumber ?? Math.random()}>
+  1786→                            <tr
+  1787→                              className={cn(
+  1788→                                "border-t cursor-pointer transition-colors",
+  1789→                                meta.tint,
+  1790→                                hasErrs ? "hover:bg-muted/50" : "hover:bg-muted/30"
+  1791→                              )}
+  1792→                              onClick={() =>
+  1793→                                setExpandedRow(isExpanded ? null : (r.rowNumber ?? null))
+  1794→                              }
+  1795→                            >
+  1796→                              <td className="px-2 py-1.5 text-muted-foreground tabular-nums">{r.rowNumber}</td>
+  1797→                              <td className="px-2 py-1.5">
+  1798→                                <Badge variant="outline" className={cn("text-[9px]", shippingBadgeClass(r.shippingStatus))}>
+  1799→                                  {r.shippingStatus || "—"}
+  1800→                                </Badge>
+  1801→                              </td>
+  1802→                              <td className="px-2 py-1.5 whitespace-nowrap">{r.poNo || "—"}</td>
+  1803→                              <td className="px-2 py-1.5 font-medium text-primary whitespace-nowrap">{r.factoryPO || "—"}</td>
+  1804→                              <td className="px-2 py-1.5">
+  1805→                                <Badge variant="outline" className="text-[9px] font-mono">{r.size || "—"}</Badge>
+  1806→                              </td>
+  1807→                              <td className="px-2 py-1.5 text-right tabular-nums font-medium">{r.qty1 ?? "—"}</td>
+  1808→                              <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground">{r.model || "—"}</td>
+  1809→                              <td className="px-2 py-1.5">
+  1810→                                <Badge variant="outline" className={cn("text-[9px] gap-1", meta.badge)}>
+  1811→                                  <Icon className="h-3 w-3" />
+  1812→                                  {meta.label}
+  1813→                                  {hasErrs && (
+  1814→                                    <span className="ml-1 rounded bg-rose-500/20 px-1 text-[9px]">
+  1815→                                      {r.errors.length}
+  1816→                                    </span>
+  1817→                                  )}
+  1818→                                </Badge>
+  1819→                              </td>
+  1820→                            </tr>
+  1821→                            {isExpanded && hasErrs && (
+  1822→                              <tr className={cn("border-t", meta.tint)}>
+  1823→                                <td colSpan={8} className="px-3 py-2">
+  1824→                                  <div className="space-y-1.5">
+  1825→                                    {r.errors.map((err: any, i: number) => (
+  1826→                                      <div
+  1827→                                        key={i}
+  1828→                                        className={cn(
+  1829→                                          "rounded-md border p-2 text-[11px]",
+  1830→                                          err.severity === "error"
+  1831→                                            ? "border-rose-300 bg-rose-50 text-rose-800 dark:bg-rose-950/30 dark:text-rose-200 dark:border-rose-800"
+  1832→                                            : "border-amber-300 bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200 dark:border-amber-800"
+  1833→                                        )}
+  1834→                                      >
+  1835→                                        <div className="flex items-start gap-1.5">
+  1836→                                          {err.severity === "error" ? (
+  1837→                                            <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+  1838→                                          ) : (
+  1839→                                            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+  1840→                                          )}
+  1841→                                          <div className="min-w-0 flex-1">
+  1842→                                            <div className="font-semibold">{err.title}</div>
+  1843→                                            {err.description && (
+  1844→                                              <div className="text-[10px] mt-0.5 opacity-90">{err.description}</div>
+  1845→                                            )}
+  1846→                                            {err.excess != null && (
+  1847→                                              <div className="text-[10px] mt-0.5 font-mono">
+  1848→                                                Excess: <strong>{err.excess}</strong>
+  1849→                                              </div>
+  1850→                                            )}
+  1851→                                            {err.duplicateRowNumbers?.length > 0 && (
+  1852→                                              <div className="text-[10px] mt-0.5">
+  1853→                                                Duplicate rows: {err.duplicateRowNumbers.join(", ")}
+  1854→                                              </div>
+  1855→                                            )}
+  1856→                                            <div className="text-[9px] mt-0.5 opacity-70 font-mono">
+  1857→                                              code: {err.code}
+  1858→                                            </div>
+  1859→                                          </div>
+  1860→                                        </div>
+  1861→                                      </div>
+  1862→                                    ))}
+  1863→                                  </div>
+  1864→                                </td>
+  1865→                              </tr>
+  1866→                            )}
+  1867→                          </React.Fragment>
+  1868→                        );
+  1869→                      })
+  1870→                    )}
+  1871→                  </tbody>
+  1872→                </table>
+  1873→              </div>
+  1874→            </CardContent>
+  1875→          </Card>
+  1876→
+  1877→          {/* Grouped errors */}
+  1878→          {result.groupedErrors && result.groupedErrors.length > 0 && (
+  1879→            <Card>
+  1880→              <CardHeader className="pb-2">
+  1881→                <CardTitle className="flex items-center gap-2 text-sm">
+  1882→                  <AlertCircle className="h-4 w-4 text-rose-600" /> Grouped Issues
+  1883→                  <Badge variant="outline" className="ml-auto text-[10px]">
+  1884→                    {result.groupedErrors.length} group(s)
+  1885→                  </Badge>
+  1886→                </CardTitle>
+  1887→              </CardHeader>
+  1888→              <CardContent className="space-y-2">
+  1889→                {result.groupedErrors.map((g: any, i: number) => (
+  1890→                  <div
+  1891→                    key={i}
+  1892→                    className="rounded-md border border-rose-300/50 bg-rose-50/50 dark:bg-rose-950/15 p-2.5"
+  1893→                  >
+  1894→                    <div className="flex flex-wrap items-center gap-2 text-xs">
+  1895→                      <Badge variant="outline" className="text-[10px] font-mono">
+  1896→                        {g.poNo || "—"} · {g.factoryPO || "—"} · {g.size || "—"}
+  1897→                      </Badge>
+  1898→                      {g.rowNumbers?.length > 0 && (
+  1899→                        <span className="text-muted-foreground">
+  1900→                          Rows: <strong className="text-rose-700 dark:text-rose-300">{g.rowNumbers.join(", ")}</strong>
+  1901→                        </span>
+  1902→                      )}
+  1903→                    </div>
+  1904→                    <div className="mt-1.5 grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+  1905→                      {g.currentOrder != null && (
+  1906→                        <StatBox label="Current Order" value={g.currentOrder} />
+  1907→                      )}
+  1908→                      {g.currentOutput != null && (
+  1909→                        <StatBox label="Current Output" value={g.currentOutput} />
+  1910→                      )}
+  1911→                      {g.currentInput != null && (
+  1912→                        <StatBox label="Current Input" value={g.currentInput} />
+  1913→                      )}
+  1914→                      {g.expectedQty != null && (
+  1915→                        <StatBox label="Expected Qty" value={g.expectedQty} />
+  1916→                      )}
+  1917→                      {g.excess != null && (
+  1918→                        <StatBox
+  1919→                          label="Excess"
+  1920→                          value={g.excess}
+  1921→                          highlight="rose"
+  1922→                        />
+  1923→                      )}
+  1924→                    </div>
+  1925→                    {g.message && (
+  1926→                      <p className="mt-1.5 text-[11px] text-rose-700 dark:text-rose-300">{g.message}</p>
+  1927→                    )}
+  1928→                  </div>
+  1929→                ))}
+  1930→              </CardContent>
+  1931→            </Card>
+  1932→          )}
+  1933→
+  1934→          {/* Action bar */}
+  1935→          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 p-3">
+  1936→            <Button variant="ghost" size="sm" onClick={onCancel} disabled={importing}>
+  1937→              <X className="mr-1.5 h-4 w-4" /> Cancel
+  1938→            </Button>
+  1939→            <div className="flex gap-2">
+  1940→              <Button variant="outline" size="sm" onClick={onFix} disabled={validating || importing}>
+  1941→                <RefreshCw className="mr-1.5 h-4 w-4" /> Fix Data
+  1942→              </Button>
+  1943→              <Button
+  1944→                size="sm"
+  1945→                onClick={onConfirmClick}
+  1946→                disabled={!canImport}
+  1947→                className={cn("bg-emerald-600 hover:bg-emerald-700 text-white", !canImport && "opacity-50 cursor-not-allowed")}
+  1948→              >
+  1949→                {importing ? (
+  1950→                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+  1951→                ) : (
+  1952→                  <Upload className="mr-1.5 h-4 w-4" />
+  1953→                )}
+  1954→                Confirm Import
+  1955→              </Button>
+  1956→            </div>
+  1957→          </div>
+  1958→
+  1959→          {/* Helper note when errors block import */}
+  1960→          {hasErrors && (
+  1961→            <div className="rounded-md border border-rose-300/50 bg-rose-50 dark:bg-rose-950/20 p-2.5 text-xs text-rose-700 dark:text-rose-300 flex items-start gap-1.5">
+  1962→              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+  1963→              <span>
+  1964→                <strong>{summary.errorRows} error row(s)</strong> must be fixed before import.
+  1965→                Filter to ERROR above, expand rows to see details, edit your pasted data, then click Check Data again.
+  1966→              </span>
+  1967→            </div>
+  1968→          )}
+  1969→        </>
+  1970→      )}
+  1971→    </div>
+  1972→  );
+  1973→}
+  1974→
+  1975→// Small summary card for the bulk validation overview.
+  1976→function SummaryCard({
+  1977→  icon,
+  1978→  label,
+  1979→  value,
+  1980→  tint,
+  1981→  valueClass,
+  1982→}: {
+  1983→  icon: React.ReactNode;
+  1984→  label: string;
+  1985→  value: number;
+  1986→  tint: string;
+  1987→  valueClass?: string;
+  1988→}) {
+  1989→  return (
+  1990→    <div className={cn("rounded-lg border p-3", tint)}>
+  1991→      <div className="flex items-center justify-between">
+  1992→        <span className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</span>
+  1993→        {icon}
+  1994→      </div>
+  1995→      <div className={cn("mt-1 text-2xl font-bold tabular-nums", valueClass)}>{value}</div>
+  1996→    </div>
+  1997→  );
+  1998→}
+  1999→
+  2000→// Small stat box for grouped error details.
+
+[showing lines 1-2000 of 2025; use offset=2001 with limit to continue reading]

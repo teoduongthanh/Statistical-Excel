@@ -25,6 +25,8 @@ import {
   Upload,
   RefreshCw,
   Eye,
+  ShieldCheck,
+  Lightbulb,
 } from "lucide-react";
 import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
 import { api } from "@/lib/api-client";
@@ -74,6 +76,82 @@ const SHIPPING_OPTIONS = [
   { value: "4.Input", label: "4.Input", color: "bg-emerald-100 text-emerald-700" },
 ];
 
+// ────────────────────────────────────────────────────────────────────────────
+// SMART ENTRY DATA SYSTEM — helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+// normalizeSize — used when matching the user's typed Size against Master
+// Data sizes. Mirrors the server-side normalizeSize() in the smart-lookup
+// route. We only touch whitespace, never the T suffix: "M(10)" ≠ "M(10T)".
+function normalizeSize(s: string | null | undefined): string {
+  if (!s) return "";
+  return s
+    .replace(/\r?\n/g, " ") // remove line breaks (CR, LF)
+    .replace(/\s+/g, " ")   // collapse duplicate spaces / tabs
+    .trim();                 // trim leading/trailing whitespace
+}
+
+// Confidence badge meta — keyed by the 4 levels / NONE.
+// Colors per spec: emerald (HIGH), amber (MEDIUM), rose (LOW), no indigo/blue.
+const CONFIDENCE_META: Record<
+  string,
+  { label: string; level: number; color: string; ring: string; dot: string }
+> = {
+  HIGH: {
+    label: "HIGH — Exact Match",
+    level: 1,
+    color: "bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800",
+    ring: "ring-emerald-500/30",
+    dot: "bg-emerald-500",
+  },
+  MEDIUM: {
+    label: "MEDIUM — Partial Match",
+    level: 2,
+    color: "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800",
+    ring: "ring-amber-500/30",
+    dot: "bg-amber-500",
+  },
+  LOW: {
+    label: "LOW — Suggested Match",
+    level: 4,
+    color: "bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800",
+    ring: "ring-rose-500/30",
+    dot: "bg-rose-500",
+  },
+  NONE: {
+    label: "No Match",
+    level: 0,
+    color: "bg-muted text-muted-foreground border-border",
+    ring: "ring-transparent",
+    dot: "bg-muted-foreground",
+  },
+};
+
+function ConfidenceBadge({
+  confidence,
+  level,
+  className,
+}: {
+  confidence: "HIGH" | "MEDIUM" | "LOW" | "NONE";
+  level?: 0 | 1 | 2 | 3 | 4;
+  className?: string;
+}) {
+  const meta = CONFIDENCE_META[confidence];
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+        meta.color,
+        className
+      )}
+      title={`Match Level ${level ?? meta.level}`}
+    >
+      <span className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
+      {meta.label}
+    </span>
+  );
+}
+
 export function ProductDataEntryView() {
   const { currentProduct, bumpRefresh, refreshKey } = useAppStore();
   const theme = PRODUCT_THEME[currentProduct];
@@ -88,6 +166,21 @@ export function ProductDataEntryView() {
   // Auto-filled from Master Data (spec §6)
   const [autoFill, setAutoFill] = React.useState<any>(null);
   const [lookupLoading, setLookupLoading] = React.useState(false);
+
+  // ── SMART ENTRY DATA SYSTEM — 4-level matching state ───────────────────
+  // lookupLevel: 0 (no match) | 1 (exact) | 2 (fpo+po) | 3 (fpo only) | 4 (partial)
+  // lookupConfidence: HIGH (Level 1) | MEDIUM (Level 2/3) | LOW (Level 4) | NONE
+  // candidates: Level 4 list of Factory POs matching the suffix
+  // availableSizes: Level 2 list of sizes valid for this (factoryPO + poNo) combo
+  const [lookupLevel, setLookupLevel] = React.useState<0 | 1 | 2 | 3 | 4>(0);
+  const [lookupConfidence, setLookupConfidence] = React.useState<"HIGH" | "MEDIUM" | "LOW" | "NONE">("NONE");
+  const [candidates, setCandidates] = React.useState<any[]>([]);
+  const [availableSizes, setAvailableSizes] = React.useState<string[]>([]);
+
+  // Preview-Before-Save dialog (spec §4). When user clicks "Add Data" and
+  // validation passes, we open this dialog so they can review the auto-filled
+  // data + confidence badge before committing. Only [CONFIRM ENTRY] saves.
+  const [previewOpen, setPreviewOpen] = React.useState(false);
 
   // Preview / Confirm state — removed. Add Data saves directly (user request).
   // Review now happens later in the "Review & Merge with Master Data" view.
@@ -175,6 +268,11 @@ export function ProductDataEntryView() {
     setSize("");
     setQty("");
     setAutoFill(null);
+    // Clear the Smart Entry state so stale confidence / candidates don't leak.
+    setLookupLevel(0);
+    setLookupConfidence("NONE");
+    setCandidates([]);
+    setAvailableSizes([]);
     // Focus: jump to the first cleared field, or Size if context is kept.
     setTimeout(() => {
       if (keepStatusFlag && keepPoNoFlag && keepFactoryPOFlag) {
@@ -190,25 +288,48 @@ export function ProductDataEntryView() {
     }, 50);
   }
 
-  // Auto-lookup Master Data when factoryPO + size are set (spec §5, §6).
+  // ── SMART LOOKUP (4-LEVEL MATCHING ENGINE) ──────────────────────────────
+  // Replaces the previous debounced `lookupFactoryPO` call.
+  // Fires whenever the user has selected a Factory PO (with or without
+  // PO NO# / Size). The smart-lookup endpoint figures out the right level:
+  //   Level 1 — all 4 fields exact-match (HIGH)        → auto-fill everything
+  //   Level 2 — factoryPO + poNo co-occur (MEDIUM)      → show available sizes
+  //   Level 3 — factoryPO found, no poNo match (MEDIUM) → show group info + sizes
+  //   Level 4 — factoryPO not found, partial suffix match (LOW) → show candidates
+  //   Level 0 — no match at all (NONE)
   React.useEffect(() => {
-    if (!factoryPO || !size || !currentProduct) {
+    if (!factoryPO || !currentProduct) {
       setAutoFill(null);
+      setLookupLevel(0);
+      setLookupConfidence("NONE");
+      setCandidates([]);
+      setAvailableSizes([]);
       return;
     }
     let cancelled = false;
     setLookupLoading(true);
     const t = setTimeout(async () => {
       try {
-        const group = await api.lookupFactoryPO(factoryPO, currentProduct);
+        const result = await api.smartLookup({
+          productType: currentProduct,
+          poNo: poNo || undefined,
+          factoryPO,
+          size: size || undefined,
+        });
         if (cancelled) return;
-        if (group) {
-          setAutoFill(group);
-        } else {
-          setAutoFill(null);
-        }
+        setAutoFill(result.masterGroup ?? null);
+        setLookupLevel(result.level);
+        setLookupConfidence(result.confidence);
+        setCandidates(result.candidates ?? []);
+        setAvailableSizes(result.availableSizes ?? []);
       } catch {
-        if (!cancelled) setAutoFill(null);
+        if (!cancelled) {
+          setAutoFill(null);
+          setLookupLevel(0);
+          setLookupConfidence("NONE");
+          setCandidates([]);
+          setAvailableSizes([]);
+        }
       } finally {
         if (!cancelled) setLookupLoading(false);
       }
@@ -217,7 +338,19 @@ export function ProductDataEntryView() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [factoryPO, size, currentProduct]);
+  }, [factoryPO, poNo, size, currentProduct]);
+
+  // Clicking a Level 4 candidate: fill the Factory PO + PO NO# fields, then
+  // the lookup useEffect above will fire again and resolve to Level 1-3.
+  function applyCandidate(c: any) {
+    setFactoryPO(c.factoryPO || "");
+    if (c.poNo) setPoNo(c.poNo);
+    // Clear candidates immediately so the panel disappears while re-looking up.
+    setCandidates([]);
+    setLookupConfidence("NONE");
+    setLookupLevel(0);
+    setTimeout(() => sizeRef.current?.focus(), 120);
+  }
 
   // ===== Keyboard shortcuts (Data Entry) =====
   // Ctrl+Alt+Q: clear PO NO# field and jump focus to it (for fast PO switching).
@@ -240,10 +373,14 @@ export function ProductDataEntryView() {
         e.preventDefault();
         setFactoryPO("");
         // Clearing Factory PO invalidates the size dropdown (it depends on FPO
-        // lookup), so reset size + qty + autoFill too.
+        // lookup), so reset size + qty + autoFill + smart-lookup state too.
         setSize("");
         setQty("");
         setAutoFill(null);
+        setLookupLevel(0);
+        setLookupConfidence("NONE");
+        setCandidates([]);
+        setAvailableSizes([]);
         setTimeout(() => focusAutocomplete(factoryPORef.current), 0);
         return;
       }
@@ -267,14 +404,55 @@ export function ProductDataEntryView() {
 
   const canAdd = validationErrors.length === 0;
 
-  // ADD DATA — saves immediately via the confirm API (atomic transaction).
-  // No preview step: the user wants fast entry. Review/merge with Master Data
-  // is a separate function done later in the Review view.
-  async function handleAddData() {
+  // ── Derived size state for the Smart Entry System ───────────────────────
+  // sizeOptions: the list shown in the Size input dropdown + chips.
+  //   Priority: availableSizes (Level 1/2 — filtered by poNo) > autoFill.sizes (Level 3 fallback).
+  // sizeIsValid: whether the user's typed Size matches any of the Master Data
+  //   sizes for this Factory PO. Uses normalizeSize() so trailing spaces /
+  //   line breaks / double spaces don't cause false negatives.
+  const sizeOptions = React.useMemo<string[]>(() => {
+    if (availableSizes.length > 0) return availableSizes;
+    if (autoFill?.sizes && Array.isArray(autoFill.sizes)) return autoFill.sizes as string[];
+    return [];
+  }, [availableSizes, autoFill]);
+
+  const sizeIsValid = React.useMemo<boolean>(() => {
+    if (!size) return false;
+    if (sizeOptions.length === 0) return false;
+    const normInput = normalizeSize(size);
+    return sizeOptions.some((s) => normalizeSize(s) === normInput);
+  }, [size, sizeOptions]);
+
+  // ADD DATA — opens the Preview-Before-Save dialog (spec §4 of Smart Entry
+  // Data System). The actual save happens in `confirmEntryFromPreview()` only
+  // when the user clicks [CONFIRM ENTRY]. This preserves the previous "fast
+  // entry" feel: validation still runs up-front, but the user gets one last
+  // look at the auto-filled data + confidence badge before committing.
+  // Keyboard navigation still works: pressing Enter in the Qty field triggers
+  // this same preview step (via handleEnter → case "qty").
+  function handleAddData() {
     if (!canAdd) {
       toast.error("Please fix validation errors", { description: validationErrors[0] });
       return;
     }
+    // LOW confidence (Level 4 partial match) means the Factory PO wasn't found
+    // exactly — auto-save would create bad data. Refuse and tell the user.
+    if (lookupConfidence === "LOW") {
+      toast.error("Cannot save — Factory PO not in Master Data", {
+        description: "Pick a candidate from the suggestion panel below, or add it to Master Data first.",
+      });
+      return;
+    }
+    setPreviewOpen(true);
+  }
+
+  // Real save — called from the preview dialog's [CONFIRM ENTRY] button.
+  async function confirmEntryFromPreview() {
+    if (!canAdd) {
+      toast.error("Please fix validation errors", { description: validationErrors[0] });
+      return;
+    }
+    setPreviewOpen(false);
     setSaving(true);
     try {
       const r = await api.confirmEntry({
@@ -709,6 +887,35 @@ export function ProductDataEntryView() {
         </CardContent>
       </Card>
 
+      {/* ── KEEP CONTEXT indicator (spec §7) ────────────────────────────────
+          Shows the current carried-over context so the user always knows what
+          will be reused on the next entry. Only visible when at least one
+          keep-toggle is on AND its corresponding field is populated. */}
+      {(keepStatus && shippingStatus) || (keepPoNo && poNo) || (keepFactoryPO && factoryPO) ? (
+        <div className="flex items-center gap-2 rounded-md border border-emerald-300/60 bg-emerald-50 dark:bg-emerald-950/15 px-3 py-1.5 text-xs text-emerald-800 dark:text-emerald-300">
+          <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+          <span className="font-semibold uppercase tracking-wide text-[10px]">Keep Context</span>
+          <span className="text-emerald-700/80 dark:text-emerald-300/80">·</span>
+          <span className="flex flex-wrap items-center gap-1.5">
+            {keepStatus && shippingStatus && (
+              <Badge variant="outline" className={cn("text-[9px]", shippingColor)}>
+                {shippingStatus}
+              </Badge>
+            )}
+            {keepPoNo && poNo && (
+              <Badge variant="outline" className="text-[9px] font-mono">
+                PO: {poNo}
+              </Badge>
+            )}
+            {keepFactoryPO && factoryPO && (
+              <Badge variant="outline" className="text-[9px] font-mono">
+                FPO: {factoryPO}
+              </Badge>
+            )}
+          </span>
+        </div>
+      ) : null}
+
       {/* Entry mode toggle: Single vs Bulk */}
       <div className="flex items-center justify-center">
         <Tabs value={entryMode} onValueChange={(v) => setEntryMode(v as "single" | "bulk")}>
@@ -798,11 +1005,16 @@ export function ProductDataEntryView() {
               <div className="space-y-1.5">
                 <Label className="flex items-center justify-between text-xs">
                   <span>Factory PO <span className="text-destructive">*</span></span>
-                  {lookupLoading && (
-                    <span className="flex items-center gap-1 text-muted-foreground">
-                      <Loader2 className="h-3 w-3 animate-spin" /> Looking up…
-                    </span>
-                  )}
+                  <span className="flex items-center gap-2">
+                    {factoryPO && !lookupLoading && lookupConfidence !== "NONE" && (
+                      <ConfidenceBadge confidence={lookupConfidence} level={lookupLevel} />
+                    )}
+                    {lookupLoading && (
+                      <span className="flex items-center gap-1 text-muted-foreground">
+                        <Loader2 className="h-3 w-3 animate-spin" /> Looking up…
+                      </span>
+                    )}
+                  </span>
                 </Label>
                 <div ref={factoryPORef} onKeyDown={(e) => handleEnter(e, "factoryPO")}>
                   <SmartAutocomplete
@@ -816,21 +1028,39 @@ export function ProductDataEntryView() {
                     poNo={poNo || undefined}
                   />
                 </div>
-                {factoryPO && !lookupLoading && autoFill === null && (
+                {factoryPO && !lookupLoading && autoFill === null && candidates.length === 0 && (
                   <p className="text-xs text-amber-600 flex items-center gap-1">
                     <AlertTriangle className="h-3.5 w-3.5" />
                     Factory PO not in Master Data — you can add it to Master Data from the list below after saving.
                   </p>
                 )}
+                {factoryPO && !lookupLoading && lookupLevel === 3 && poNo && (
+                  <p className="text-xs text-amber-600 flex items-center gap-1">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    PO NO# doesn't match any row for this Factory PO — using Factory PO info only.
+                  </p>
+                )}
+                {factoryPO && !lookupLoading && lookupLevel === 2 && (
+                  <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Factory PO + PO NO# match — pick a Size from the filtered list below.
+                  </p>
+                )}
               </div>
 
-              {/* Step 4: Size (filtered by Factory PO, spec §13 of prev prompt) */}
+              {/* Step 4: Size (filtered by Factory PO, spec §13 of prev prompt).
+                  Size source priority:
+                    1. availableSizes (Level 1/2/3 — sizes filtered by poNo when present)
+                    2. autoFill?.sizes    (Level 3 fallback — all sizes for the Factory PO) */}
               <div className="space-y-1.5">
                 <Label className="flex items-center justify-between text-xs">
                   <span>Size <span className="text-destructive">*</span></span>
-                  {autoFill && (
+                  {sizeOptions.length > 0 && (
                     <Badge variant="secondary" className="text-[10px]">
-                      {autoFill.sizes?.length || 0} available
+                      {sizeOptions.length} available
+                      {availableSizes.length > 0 && poNo && (
+                        <span className="ml-1 opacity-70">· for {poNo}</span>
+                      )}
                     </Badge>
                   )}
                 </Label>
@@ -838,30 +1068,47 @@ export function ProductDataEntryView() {
                   ref={sizeRef}
                   value={size}
                   onChange={setSize}
-                  sizes={autoFill?.sizes || []}
+                  sizes={sizeOptions}
                   disabled={shippingDisabled || !factoryPO}
                   placeholder={shippingDisabled ? "Select Shipping Status first" : !factoryPO ? "Enter Factory PO first" : "Type 13, 08…"}
                   onEnter={() => qtyRef.current?.focus()}
                 />
-                {autoFill && autoFill.sizes?.length > 0 && (
+                {sizeOptions.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-1">
-                    {autoFill.sizes.slice(0, 8).map((s: string) => (
+                    {sizeOptions.slice(0, 8).map((s: string) => (
                       <button
                         key={s}
                         type="button"
                         onClick={() => { setSize(s); setTimeout(() => qtyRef.current?.focus(), 50); }}
                         className={cn(
                           "rounded-md border px-1.5 py-0.5 text-[10px] transition-colors hover:bg-accent",
-                          size === s ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground"
+                          normalizeSize(size) === normalizeSize(s)
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "text-muted-foreground"
                         )}
                       >
                         {s}
                       </button>
                     ))}
-                    {autoFill.sizes.length > 8 && (
-                      <span className="text-[10px] text-muted-foreground self-center">+{autoFill.sizes.length - 8} more</span>
+                    {sizeOptions.length > 8 && (
+                      <span className="text-[10px] text-muted-foreground self-center">+{sizeOptions.length - 8} more</span>
                     )}
                   </div>
+                )}
+                {/* Size-match status indicator (uses normalizeSize for comparison) */}
+                {size && autoFill && !lookupLoading && (
+                  <p className={cn(
+                    "text-[11px] flex items-center gap-1",
+                    sizeIsValid
+                      ? "text-emerald-700 dark:text-emerald-300"
+                      : "text-rose-600 dark:text-rose-400"
+                  )}>
+                    {sizeIsValid ? (
+                      <><CheckCircle2 className="h-3 w-3" /> Size valid for this Factory PO.</>
+                    ) : (
+                      <><AlertCircle className="h-3 w-3" /> Size not in Master Data — verify before saving.</>
+                    )}
+                  </p>
                 )}
               </div>
 
@@ -935,6 +1182,71 @@ export function ProductDataEntryView() {
                     </div>
                   </div>
                 ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* ── SUGGESTION PANEL (spec §3) ──────────────────────────────────
+              Shown when smart-lookup returns Level 4 candidates (the typed
+              Factory PO didn't match exactly, but the suffix matched others).
+              Each row is clickable: applying a candidate fills Factory PO +
+              PO NO# and triggers a fresh lookup (which should resolve to
+              Level 1-3). */}
+          {candidates.length > 0 && (
+            <Card className="border-rose-300/60 dark:border-rose-800/40">
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <Lightbulb className="h-4 w-4 text-rose-500" />
+                  Did you mean…
+                  <Badge variant="outline" className="ml-auto text-[10px]">
+                    {candidates.length} similar Factory PO{candidates.length === 1 ? "" : "s"}
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1.5">
+                <p className="text-[11px] text-muted-foreground mb-1">
+                  No exact match for <code className="font-mono bg-muted/60 px-1 rounded">{factoryPO}</code>.
+                  Click a candidate to fill the form and re-lookup:
+                </p>
+                <div className="max-h-72 overflow-y-auto scroll-thin space-y-1.5">
+                  {candidates.map((c) => (
+                    <button
+                      key={c.factoryPO}
+                      type="button"
+                      onClick={() => applyCandidate(c)}
+                      className="w-full text-left rounded-md border border-rose-200 dark:border-rose-900/50 bg-rose-50/60 dark:bg-rose-950/15 hover:bg-rose-100 dark:hover:bg-rose-950/30 hover:border-rose-300 dark:hover:border-rose-800 transition-colors px-2.5 py-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono font-semibold text-sm text-rose-700 dark:text-rose-300 truncate">
+                          {c.factoryPO}
+                        </span>
+                        {c.deadline && (
+                          <Badge variant="outline" className="text-[9px] shrink-0">
+                            {c.deadline}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+                        {c.poNo && <span>PO: <strong className="text-foreground">{c.poNo}</strong></span>}
+                        {c.model && <span>· {c.model}</span>}
+                        {c.sku && <span>· SKU {c.sku}</span>}
+                        {c.season && <span>· {c.season}</span>}
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                        {c.colorCode && <Badge variant="outline" className="text-[9px]">CC {c.colorCode}</Badge>}
+                        {c.colorCode2 && <Badge variant="outline" className="text-[9px]">CC2 {c.colorCode2}</Badge>}
+                        {c.painting && <Badge variant="outline" className="text-[9px]">Paint {c.painting}</Badge>}
+                        {c.printingColor && <Badge variant="outline" className="text-[9px]">Print {c.printingColor}</Badge>}
+                        {c.sizes?.length > 0 && (
+                          <span className="text-[9px] text-muted-foreground">
+                            {c.sizes.length} size{c.sizes.length === 1 ? "" : "s"}: {c.sizes.slice(0, 4).join(", ")}
+                            {c.sizes.length > 4 && ` +${c.sizes.length - 4}`}
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                </div>
               </CardContent>
             </Card>
           )}
@@ -1324,6 +1636,222 @@ export function ProductDataEntryView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ── PREVIEW-BEFORE-SAVE DIALOG (spec §4) ──────────────────────────
+          Shown when the user clicks "Add Data" and validation passes.
+          Lets them review entered + auto-filled data, the match confidence,
+          and per-field validation status. Only [CONFIRM ENTRY] commits the
+          row to the database; [EDIT] returns to the form (closes dialog,
+          keeps the data); [CANCEL] is the same as [EDIT] in this UI (the
+          form is still editable when the dialog is closed). */}
+      <Dialog open={previewOpen} onOpenChange={(o) => { if (!saving) setPreviewOpen(o); }}>
+        <DialogContent className="max-w-2xl max-h-[88vh] overflow-y-auto scroll-thin">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Eye className="h-4 w-4 text-primary" /> Preview Before Save
+              <ConfidenceBadge confidence={lookupConfidence} level={lookupLevel} className="ml-auto" />
+            </DialogTitle>
+            <DialogDescription>
+              Review the entry. Master Data auto-fill is shown below. Click
+              <strong> Confirm Entry </strong> to save, or <strong>Edit </strong>
+              to return to the form.
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Entered fields */}
+          <div className="space-y-2">
+            <div className="text-[10px] font-semibold uppercase text-muted-foreground">Entered</div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+              <PreviewField label="Shipping Status" value={shippingStatus} ok={!!shippingStatus} />
+              <PreviewField label="PO NO#" value={poNo} ok={!!poNo} mono />
+              <PreviewField label="Factory PO" value={factoryPO} ok={lookupConfidence !== "NONE" && lookupConfidence !== "LOW"} mono />
+              <PreviewField label="Size" value={size} ok={sizeIsValid || !autoFill} mono />
+              <PreviewField label="Qty" value={qty} ok={!!qty && !isNaN(Number(qty)) && Number(qty) > 0} mono />
+              <PreviewField
+                label="Q'ty 2 (computed)"
+                value={computeQty2Preview(shippingStatus, qty)}
+                ok={!!qty && !isNaN(Number(qty))}
+                mono
+                muted
+              />
+            </div>
+          </div>
+
+          {/* Auto-filled fields (from Master Data) */}
+          {autoFill ? (
+            <div className="space-y-2">
+              <div className="text-[10px] font-semibold uppercase text-muted-foreground flex items-center gap-1.5">
+                <Sparkles className="h-3 w-3" /> Auto-Filled From Master Data
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                <PreviewField label="MODEL" value={autoFill.model} ok={!!autoFill.model} />
+                <PreviewField label="SKU" value={autoFill.sku} ok={!!autoFill.sku} mono />
+                <PreviewField label="Season" value={autoFill.season} ok={!!autoFill.season} />
+                {/* ── Color Data Protection (spec §5) ────────────────────────
+                    colorCode, colorCode2, painting, and printingColor are
+                    SEPARATE columns in MasterData — they are NEVER derived
+                    from each other. The AutoFillGrid component renders each
+                    one as its own labeled cell, and the server's
+                    rebuildMasterGroups() picks the single shared value per
+                    Factory PO (or null if rows disagree). This preview
+                    mirrors that exact separation: each color field shows
+                    its own value or "—". */}
+                <PreviewField label="Color Code" value={autoFill.colorCode} ok={!!autoFill.colorCode} mono />
+                <PreviewField label="COLOR CODE" value={autoFill.colorCode2} ok={!!autoFill.colorCode2} mono />
+                <PreviewField label="PAINTING" value={autoFill.painting} ok={!!autoFill.painting} mono />
+                <PreviewField label="PRINTING COLOR" value={autoFill.printingColor} ok={!!autoFill.printingColor} mono />
+                <PreviewField
+                  label="Dead Line"
+                  value={autoFill.nearestDeadline || autoFill.deadline}
+                  ok={!!(autoFill.nearestDeadline || autoFill.deadline)}
+                  mono
+                />
+                <PreviewField
+                  label="Available Sizes"
+                  value={sizeOptions.length > 0 ? `${sizeOptions.length} size(s): ${sizeOptions.slice(0, 5).join(", ")}${sizeOptions.length > 5 ? ` +${sizeOptions.length - 5}` : ""}` : ""}
+                  ok={sizeOptions.length > 0}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-md border border-amber-300/60 bg-amber-50 dark:bg-amber-950/15 p-2.5 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-1.5">
+              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span>
+                <strong>No Master Data match.</strong> This entry will be
+                saved without auto-filled attributes. You can add it to Master
+                Data from the entries table after saving.
+              </span>
+            </div>
+          )}
+
+          {/* Validation status checklist */}
+          <div className="rounded-md border bg-muted/30 p-2.5 space-y-1">
+            <div className="text-[10px] font-semibold uppercase text-muted-foreground mb-1">
+              Validation Status
+            </div>
+            <ValidationCheck ok={!!shippingStatus} label="Shipping Status selected" />
+            <ValidationCheck ok={!!poNo} label="PO NO# entered" />
+            <ValidationCheck
+              ok={lookupConfidence === "HIGH" || lookupConfidence === "MEDIUM"}
+              warn={lookupConfidence === "NONE"}
+              label={
+                lookupConfidence === "HIGH"
+                  ? "Factory PO exact match (HIGH)"
+                  : lookupConfidence === "MEDIUM"
+                  ? `Factory PO found (Level ${lookupLevel} — MEDIUM)`
+                  : lookupConfidence === "LOW"
+                  ? "Factory PO NOT confirmed — pick from suggestions"
+                  : "Factory PO not in Master Data"
+              }
+            />
+            <ValidationCheck
+              ok={sizeIsValid}
+              warn={!!size && !sizeIsValid}
+              label={
+                sizeIsValid
+                  ? "Size valid for Factory PO"
+                  : size
+                  ? "Size not in Master Data — will save anyway"
+                  : "Size pending"
+              }
+            />
+            <ValidationCheck
+              ok={!!qty && !isNaN(Number(qty)) && Number(qty) > 0}
+              label="Qty is a positive number"
+            />
+            {shippingStatus === "2.Output" && (
+              <div className="pt-1 border-t mt-1 text-[11px] text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
+                <Info className="h-3 w-3" />
+                Output will also auto-create a paired Pending record (Q'ty 2 = -Qty).
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setPreviewOpen(false)} disabled={saving}>
+              <X className="h-4 w-4 mr-1.5" /> Cancel
+            </Button>
+            <Button variant="secondary" onClick={() => setPreviewOpen(false)} disabled={saving}>
+              <Pencil className="h-4 w-4 mr-1.5" /> Edit
+            </Button>
+            <Button
+              onClick={confirmEntryFromPreview}
+              disabled={saving || lookupConfidence === "LOW"}
+              className={cn(
+                "bg-emerald-600 hover:bg-emerald-700 text-white",
+                lookupConfidence === "LOW" && "opacity-50 cursor-not-allowed"
+              )}
+            >
+              {saving ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Save className="h-4 w-4 mr-1.5" />}
+              Confirm Entry
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// Small preview-field cell for the Preview-Before-Save dialog.
+// `ok` controls the leading check / cross / dash indicator.
+function PreviewField({
+  label,
+  value,
+  ok,
+  mono,
+  muted,
+}: {
+  label: string;
+  value: string | null | undefined;
+  ok?: boolean;
+  mono?: boolean;
+  muted?: boolean;
+}) {
+  const v = value ? String(value) : "";
+  return (
+    <div className="rounded-md border bg-background/60 p-2">
+      <div className="text-[9px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className={cn(
+        "mt-0.5 text-xs font-medium break-words",
+        mono && "font-mono",
+        muted && "text-muted-foreground",
+        !v && "text-muted-foreground/50"
+      )}>
+        {v || "—"}
+      </div>
+      {ok !== undefined && (
+        <div className="mt-1 flex items-center gap-1 text-[9px]">
+          {ok ? (
+            <><CheckCircle2 className="h-2.5 w-2.5 text-emerald-500" /><span className="text-emerald-700 dark:text-emerald-400">ok</span></>
+          ) : (
+            <><AlertCircle className="h-2.5 w-2.5 text-amber-500" /><span className="text-amber-700 dark:text-amber-400">pending</span></>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Validation checklist row for the Preview-Before-Save dialog.
+function ValidationCheck({ ok, warn, label }: { ok: boolean; warn?: boolean; label: string }) {
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      {ok ? (
+        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+      ) : warn ? (
+        <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+      ) : (
+        <AlertCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+      )}
+      <span className={cn(
+        ok
+          ? "text-foreground"
+          : warn
+          ? "text-amber-700 dark:text-amber-300"
+          : "text-muted-foreground"
+      )}>
+        {label}
+      </span>
     </div>
   );
 }
@@ -1493,12 +2021,22 @@ const SizeInput = React.forwardRef<HTMLInputElement, {
   );
 });
 
+// AutoFillGrid — renders the shared attributes pulled from MasterGroup.
+//
+// COLOR DATA PROTECTION (spec §5): colorCode, colorCode2, painting, and
+// printingColor are SEPARATE columns in MasterData (see prisma/schema.prisma).
+// They are NEVER derived from or overwritten by each other. The server's
+// rebuildMasterGroups() picks the single shared value per Factory PO (or
+// null if rows disagree) for each field independently. This component simply
+// renders each field as its own labeled cell — no cross-field copying happens
+// anywhere in the auto-fill pipeline.
 function AutoFillGrid({ group, factoryPO, size, qty, shippingStatus }: { group: any; factoryPO: string; size: string; qty: string; shippingStatus: string }) {
   const rows: { label: string; value: string | null; field: string }[] = [
     { label: "MODEL", value: group.model, field: "model" },
     { label: "SKU", value: group.sku, field: "sku" },
     { label: "ITEM", value: group.item, field: "item" },
     { label: "Season", value: group.season, field: "season" },
+    // Each of these 4 color fields is sourced from its own MasterData column:
     { label: "Color Code", value: group.colorCode, field: "colorCode" },
     { label: "COLOR CODE", value: group.colorCode2, field: "colorCode2" },
     { label: "PAINTING", value: group.painting, field: "painting" },

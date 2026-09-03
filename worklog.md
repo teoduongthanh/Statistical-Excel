@@ -1208,3 +1208,92 @@ Stage Summary:
 - 0 Pending rows in DB across all products (Pending = -Output, calculated dynamically).
 - All dashboards verified reflecting the new imported data.
 - Files: scripts/import-3files.ts (new script).
+
+---
+Task ID: SMART-ENTRY-2
+Agent: main (Z.ai Code)
+Task: Enhance the existing Data Entry view to implement a SMART ENTRY DATA SYSTEM — 4-level matching engine, confidence badge, suggestion panel, preview-before-save dialog, size normalization, KEEP CONTEXT indicator, color data protection comments. Add new `POST /api/master-data/smart-lookup` endpoint + `api.smartLookup()` client method.
+
+Work Log:
+- Read worklog + agent-ctx dir + existing product-data-entry-view.tsx (2024 lines) + master-service.ts + factory-po route + api-client.ts + prisma schema.
+- Created `src/app/api/master-data/smart-lookup/route.ts` (219 lines) — POST endpoint with 4-level matching engine:
+  * Level 1 (HIGH): all 4 fields (productType + poNo + factoryPO + size) match a MasterData row.
+  * Level 2 (MEDIUM): factoryPO + poNo co-occur, size missing/invalid → returns `availableSizes` subset.
+  * Level 3 (MEDIUM): factoryPO found in MasterGroup, poNo missing or no-match → returns full group + all sizes.
+  * Level 4 (LOW): factoryPO not found exactly → searches MasterGroup by `endsWith` on last 3-4 chars (fallback `contains`), returns up to 25 candidates with color/poNo/model/sku/season/deadline/sizes.
+  * Level 0 (NONE): nothing matched.
+  * Server-side `normalizeSize()` exported (trims, removes line breaks, collapses duplicate spaces; preserves T suffix so M(10) ≠ M(10T)).
+- Added `api.smartLookup()` method to `src/lib/api-client.ts` — typed wrapper returning `{ ok, level, confidence, masterGroup?, candidates?, availableSizes? }`. Inserted right after existing `lookupFactoryPO` (which is kept untouched for backward compat).
+- Updated `src/components/views/product-data-entry-view.tsx` (~+540 lines):
+  * Added `normalizeSize()` client-side helper at top of file (mirrors server one). Used in `sizeIsValid` derived state, size chip active check (was strict `===`), and size validation indicator.
+  * Added `CONFIDENCE_META` map + `ConfidenceBadge` component — emerald (HIGH), amber (MEDIUM), rose (LOW), muted (NONE).
+  * Added new state: `lookupLevel` (0-4), `lookupConfidence`, `candidates`, `availableSizes`, `previewOpen`.
+  * Replaced the debounced `lookupFactoryPO` useEffect with `api.smartLookup()` call. Now fires on any of `[factoryPO, poNo, size, currentProduct]` change (was `[factoryPO, size, currentProduct]`). Lookup fires as soon as Factory PO is typed → Level 3 by default.
+  * Added `applyCandidate(c)` handler — fills factoryPO + poNo from a Level 4 candidate, clears candidates, re-focuses Size field; the smartLookup useEffect re-fires and resolves to Level 1-3.
+  * Added `sizeOptions` + `sizeIsValid` derived state. `sizeOptions` prefers `availableSizes` (Level 1/2 — filtered by poNo) > `autoFill.sizes` (Level 3 — all sizes). Used in Size input + chips + count badge.
+  * Confidence badge shown inline next to Factory PO label. Conditional help text: Level 2 → "Factory PO + PO NO# match — pick a Size", Level 3 + poNo → "PO NO# doesn't match any row for this Factory PO", Level 0 + no candidates → "Factory PO not in Master Data" warning (hidden when candidates exist).
+  * Added Suggestion Panel (spec §3) — Card with rose tint below Recent Entries, shown when `candidates.length > 0`. Each candidate is a clickable row with Factory PO, deadline, PO NO#, Model, SKU, Season, color badges (CC/CC2/Paint/Print), and a size summary. Header: "Did you mean…? N similar Factory POs".
+  * Added Preview-Before-Save Dialog (spec §4) — `handleAddData()` now opens `previewOpen` dialog instead of saving immediately. Extracted the save logic into `confirmEntryFromPreview()`. Dialog shows: confidence badge in header, Entered fields grid, Auto-Filled From Master Data grid (with Color Data Protection comment block above the 4 color fields), Validation Status checklist (Shipping Status selected / PO NO# entered / Factory PO confirmed (level-aware) / Size valid (uses normalizeSize) / Qty positive), and 3 buttons: [Cancel] [Edit] [Confirm Entry]. Confirm Entry disabled when `lookupConfidence === "LOW"`. `handleAddData()` also short-circuits LOW confidence with a toast error pointing to the Suggestion Panel. Keyboard navigation still works: Enter in Qty → opens preview dialog.
+  * Added KEEP CONTEXT indicator (spec §7) — emerald-tinted bar above entry mode toggle, visible when at least one keep-toggle is on AND its field is populated. Shows carried-over context as badges: Status / PO:… / FPO:…. Uses `ShieldCheck` lucide icon.
+  * Added Color Data Protection comment (spec §5) — block comment above `AutoFillGrid` explaining colorCode, colorCode2, painting, printingColor are SEPARATE MasterData columns, never derived from each other; each color row in `rows` array annotated with `// Each of these 4 color fields is sourced from its own MasterData column:`. The Preview dialog mirrors this comment above the 4 color PreviewFields.
+  * Updated `resetForm()` and the `Ctrl+Alt+W` keyboard shortcut to clear the new smart-lookup state (`lookupLevel`, `lookupConfidence`, `candidates`, `availableSizes`).
+
+- Verification:
+  * `npx tsc --noEmit -p tsconfig.json 2>&1 | grep -E "smart-lookup|product-data-entry|api-client"` → 2 errors at lines 649/650 about `Property 'needsConfirm' does not exist` in `confirmDeleteEntry()`. Verified pre-existing via `git stash` (errors exist on unmodified file at lines 471/472). NOT related to smart entry — they're in the delete-entry flow. No new TS errors introduced.
+  * `npx eslint src/components/views/product-data-entry-view.tsx src/app/api/master-data/smart-lookup/route.ts src/lib/api-client.ts` → 0 warnings, 0 errors.
+  * API smoke tests (curl, dev server):
+    - Level 1 (all 4 fields): `MAFATE/MH25100234/H411040101/M(04)/W(05)` → level=1, confidence=HIGH ✓
+    - Level 1 fall-through (wrong size): same + size=INVALID → level=2, MEDIUM ✓
+    - Level 2: `MAFATE/MH25100234/H411040101` → level=2, availableSizes returned ✓
+    - Level 3: `MAFATE/MH25100234` → level=3, masterGroup + all sizes returned ✓
+    - Level 4: `MAFATE/XXXX0234` → level=4, candidates=[MH25100234, …] ✓
+    - Level 0: `MAFATE/ZZZZZZZZ999` → level=0, NONE ✓
+    - Empty body / missing productType / missing factoryPO → level=0, NONE ✓
+    - Invalid JSON → HTTP 400 with `error: "Invalid JSON body"` ✓
+    - Cross-product isolation: `MAFATE/LOSS` (LOSS exists in MAFATE too) → level=3, returns MAFATE's LOSS group ✓
+
+Stage Summary:
+- Smart Entry Data System fully implemented across backend (API route + service-layer normalizeSize) and frontend (view + api-client).
+- 4-level matching engine replaces the previous single-level lookupFactoryPO call in the data-entry view. LookupFactoryPO itself is unchanged — other consumers (statistics-view, output-slip-service, etc.) keep working.
+- Confidence badge (emerald/amber/rose) shown inline next to Factory PO field + in Preview dialog header.
+- Suggestion Panel appears below Recent Entries when Level 4 candidates exist; clicking applies the candidate and re-looks up.
+- Preview-Before-Save dialog now blocks every save; LOW confidence (Level 4) refuses to save entirely.
+- normalizeSize() used in both server-side size match (Level 1) and client-side size validity indicator.
+- KEEP CONTEXT indicator surfaces what will be reused on the next entry.
+- Color Data Protection invariant documented inline in AutoFillGrid + Preview dialog.
+- All existing functionality preserved: keyboard shortcuts (Ctrl+Alt+Q/W), bulk entry mode, entries table, edit/delete dialogs, add-to-master-data, AutoFillGrid, recent entries list, transaction-group paired deletes.
+- Files: src/app/api/master-data/smart-lookup/route.ts (new, 219 lines); src/lib/api-client.ts (+42 lines); src/components/views/product-data-entry-view.tsx (+~540 lines).
+- Pre-existing TS errors at lines 649/650 (deleteEntry narrowing) NOT in scope, NOT introduced by this task.
+
+---
+Task ID: SMART-ENTRY-VERIFY
+Agent: main (Z.ai Code)
+Task: Verify the SMART ENTRY DATA SYSTEM enhancements.
+
+Work Log:
+- Restarted dev server with fresh cache.
+- API tests (curl):
+  * Level 1 (exact match): POST /api/master-data/smart-lookup with {productType, poNo, factoryPO, size} → `level: 1, confidence: "HIGH", masterGroup` returned with all auto-fill fields (model, sku, colorCode, etc.) ✓
+  * Level 4 (partial match): POST with {productType, factoryPO: "046"} → `level: 4, confidence: "LOW", candidates` returned with list of matching Factory POs ✓
+- Agent Browser verification:
+  * Navigated to Data Entry view → renders "Product Data Entry · MAFATE" ✓
+  * "KEEP CONTEXT" indicator shows current context (4.Input, PO: H411351971, FPO: MH26111046) ✓
+  * Single Entry / Bulk Entry tabs present ✓
+  * Factory PO field shows confidence badge "MEDIUM — PARTIAL MATCH" ✓
+  * PO NO# autocomplete shows suggestions ("1 suggestion · sorted by deadline urgency + suffix match") ✓
+  * No page errors, no console errors ✓
+- TypeScript: 0 new errors (2 pre-existing errors in delete-entry flow are unrelated).
+- ESLint: clean.
+
+Stage Summary:
+- SMART ENTRY DATA SYSTEM enhanced with:
+  1. 4-level smart matching engine (exact, FPO+PO, FPO, partial)
+  2. Confidence scoring (HIGH/MEDIUM/LOW/NONE) with colored badge
+  3. Suggestion panel for multiple candidates ("Did you mean?")
+  4. Preview-before-save dialog with validation checklist
+  5. Color data protection (independent fields)
+  6. Size normalization (preserves T suffix)
+  7. KEEP CONTEXT indicator showing carried-over context
+- Files created: src/app/api/master-data/smart-lookup/route.ts
+- Files modified: src/lib/api-client.ts (added smartLookup method), src/components/views/product-data-entry-view.tsx (~+540 lines of enhancements)
+- All existing functionality preserved: keyboard shortcuts, bulk mode, entries table, edit/delete, add-to-master, AutoFillGrid.

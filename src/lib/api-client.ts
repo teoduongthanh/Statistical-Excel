@@ -187,6 +187,49 @@ export const api = {
     return jsonOrThrow(res);
   },
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // SMART ENTRY DATA SYSTEM — 4-LEVEL MATCHING ENGINE
+  // POST /api/master-data/smart-lookup
+  //
+  // Replaces the basic lookupFactoryPO call when richer matching is needed.
+  // Returns the matched MasterGroup (Levels 1-3), a list of candidate Factory
+  // POs (Level 4), or the available sizes for the (factoryPO + poNo) combo
+  // (Level 2). Confidence (HIGH/MEDIUM/LOW/NONE) tells the UI whether to
+  // auto-save, show a preview dialog, or refuse to save.
+  // ─────────────────────────────────────────────────────────────────────────
+  smartLookup: async (body: {
+    productType: string;
+    poNo?: string;
+    factoryPO?: string;
+    size?: string;
+  }): Promise<{
+    ok: boolean;
+    level: 0 | 1 | 2 | 3 | 4;
+    confidence: "HIGH" | "MEDIUM" | "LOW" | "NONE";
+    masterGroup?: MasterGroup;
+    candidates?: Array<{
+      factoryPO: string;
+      poNo: string;
+      model: string;
+      sku: string;
+      colorCode: string;
+      colorCode2: string;
+      painting: string;
+      printingColor: string;
+      season: string;
+      deadline: string | null;
+      sizes: string[];
+    }>;
+    availableSizes?: string[];
+  }> => {
+    const res = await fetch("/api/master-data/smart-lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
   // Entries
   listEntries: async (params: Record<string, string | number>) => {
     const q = new URLSearchParams(
