@@ -1297,3 +1297,31 @@ Stage Summary:
 - Files created: src/app/api/master-data/smart-lookup/route.ts
 - Files modified: src/lib/api-client.ts (added smartLookup method), src/components/views/product-data-entry-view.tsx (~+540 lines of enhancements)
 - All existing functionality preserved: keyboard shortcuts, bulk mode, entries table, edit/delete, add-to-master, AutoFillGrid.
+
+---
+Task ID: IMPORT-2FILES-9.3
+Agent: main (Z.ai Code)
+Task: Delete old MAFATE + ONYX data, import 2 new files: "FMT shipped out S-TECH mafate -2026 9.3.xlsx" and "FMT shipped out S-TECH Onyx-2026 9.3.xlsx". Skip Pending, dedup.
+
+Work Log:
+- Verified both new files exist:
+  * FMT shipped out S-TECH mafate -2026 9.3.xlsx (4.6 MB, 20 sheets, DATA sheet 42,900 rows)
+  * FMT shipped out S-TECH Onyx-2026 9.3.xlsx (0.9 MB, 14 sheets, DATA sheet 6,591 rows)
+- Stopped dev server to free memory.
+- Ran import (skip Pending + dedup within file):
+  * MAFATE: 42,900 parsed → 16,524 Pending skipped, 731 invalid, 95 dupes → 25,550 unique rows. Deleted 25,447 old rows, inserted 25,550 new. Rebuilt 496 groups.
+  * ONYX: 6,591 parsed → 2,638 Pending skipped, 0 invalid, 14 dupes → 3,939 unique rows. Deleted 3,853 old rows, inserted 3,939 new. Rebuilt 155 groups.
+- MIZUNO: unchanged (228 rows, 11 groups).
+- 0 Pending rows in DB for all products ✓
+- Restarted dev server, verified dashboards:
+  * MAFATE: orderQty=266,823, outputQty=261,282, inputQty=241,480, totalFactoryPOs=496
+  * ONYX: orderQty=73,132, outputQty=48,778, inputQty=44,248, totalFactoryPOs=155
+  * MIZUNO: unchanged
+
+Stage Summary:
+- Imported 29,489 total rows from 2 new files.
+- MAFATE: 25,550 rows (was 25,447), 496 groups. Source: "FMT shipped out S-TECH mafate -2026 9.3.xlsx"
+- ONYX: 3,939 rows (was 3,853), 155 groups. Source: "FMT shipped out S-TECH Onyx-2026 9.3.xlsx"
+- MIZUNO: unchanged (228 rows, 11 groups).
+- 0 Pending rows across all products.
+- All dashboards verified reflecting the new data.
