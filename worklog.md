@@ -1325,3 +1325,29 @@ Stage Summary:
 - MIZUNO: unchanged (228 rows, 11 groups).
 - 0 Pending rows across all products.
 - All dashboards verified reflecting the new data.
+
+---
+Task ID: IMPORT-MAFATE-9.9
+Agent: main (Z.ai Code)
+Task: Delete old MAFATE data, import new file "FMT shipped out S-TECH mafate -2026 9.9.xlsx". Skip Pending, dedup.
+
+Work Log:
+- File: FMT shipped out S-TECH mafate -2026 9.9.xlsx (5.6 MB, 21 sheets, DATA sheet 43,687 rows)
+- Status breakdown: Order=5615, Pending=16845, Output=11237, Input=9988
+- Stopped dev server, ran import:
+  * 43,685 rows parsed → 16,845 Pending skipped, 731 invalid, 97 dupes → 26,012 unique rows
+  * Deleted 25,555 old MAFATE rows
+  * Inserted 26,012 new rows
+  * Rebuilt 496 Factory PO groups
+- 0 Pending rows in DB ✓
+- ONYX + MIZUNO unchanged
+- Restarted dev server, verified:
+  * MAFATE: orderQty=266,823, outputQty=270,459, inputQty=248,380, totalFactoryPOs=496, totalRows=26,012, outputRate=101.4%, completionRate=93.1%
+  * Global Dashboard shows all 3 products correctly
+
+Stage Summary:
+- MAFATE updated to 26,012 rows (was 25,555), 496 groups. Source: "FMT shipped out S-TECH mafate -2026 9.9.xlsx"
+- ONYX: unchanged (3,939 rows, 155 groups)
+- MIZUNO: unchanged (228 rows, 11 groups)
+- 0 Pending rows across all products.
+- All dashboards verified reflecting the new data.
