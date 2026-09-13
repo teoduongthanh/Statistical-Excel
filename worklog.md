@@ -1423,3 +1423,58 @@ Stage Summary:
 - **Fix**: Move the Excel serial check BEFORE `new Date(s)` in both `parseDeadline()` (master-service.ts) and `formatDeadline()` (excel.ts). Pure-number strings are now correctly converted via the Excel epoch (1899-12-30) + serial days.
 - **Data fix**: 185 MasterGroup + 21 EntryData rows with bad "+04XXXXX-01" deadline values were converted to proper "yyyy-MM-dd" format.
 - Files modified: `src/lib/master-service.ts` (parseDeadline), `src/lib/excel.ts` (formatDeadline).
+
+---
+Task ID: DASHBOARD-INSIGHTS-1
+Agent: main (Z.ai Code)
+Task: Self-proposed improvement — add 4 dashboard insight modules (Health Score, Deadline Alert Center, Data Quality Summary, Quick Stats & Actions) to enhance production management visibility.
+
+Work Log:
+- **Analysis**: Identified that the current dashboard shows KPIs + charts + alerts but lacks:
+  1. A single composite score showing overall production health
+  2. A centralized deadline alert view (overdue / due today / this week)
+  3. Data quality visibility (missing deadlines, qty mismatches)
+  4. Quick stats + quick navigation shortcuts
+
+- **Built `GET /api/dashboard-insights`** (`src/app/api/dashboard-insights/route.ts`):
+  1. **Production Health Score** (0-100):
+     - 40% completion rate (input/order)
+     - 30% output rate (output/order)
+     - 20% deadline health (overdue count penalty, -2 per overdue, max -20)
+     - 10% data quality (missing deadline penalty, max -10)
+     - Status: EXCELLENT (≥85) / GOOD (≥65) / WARNING (≥40) / CRITICAL (<40)
+  2. **Deadline Alert Center**: counts overdue / due today / due this week / upcoming; returns top 15 most urgent alerts with poNo, factoryPO, size, deadline, daysUntilDeadline, missing qty, priority
+  3. **Data Quality Summary**: missing deadline count + percent, output exceeds order count, input exceeds output count, quality score (0-100)
+  4. **Quick Stats**: entries today count, active factory POs, remaining output, remaining input, processing qty
+
+- **Enhanced `product-dashboard-view.tsx`**:
+  - Added `insightsQ` useQuery (fetches dashboard-insights API, 30s stale time, refreshKey in query key)
+  - Inserted 4 new Cards between KPI cards and charts:
+    1. **Production Health Score**: large circular score badge (emerald/teal/amber/rose by status), status badge, completion/output %, 4-bar breakdown (completion/output/deadline/dataQuality)
+    2. **Deadline Alert Center**: 4 stat boxes (overdue/due today/this week/upcoming) + scrollable alert list with priority badges + days-until-deadline + missing qty
+    3. **Data Quality Summary**: quality score badge, 2x2 grid (missing deadline, output>order, input>output, total rows)
+    4. **Quick Stats & Actions**: 2x2 grid (entries today, active FPOs, remaining output, remaining input) + 4 quick navigation buttons (Data Entry, Bulk Check, Output Slip, Reconcile)
+  - Added icons: ShieldCheck, Zap, PenLine, ClipboardCheck, FileOutput, GitCompare
+  - Added `setView` from useAppStore for quick navigation
+
+- **Verification** (API test):
+  * MAFATE Health Score: 98/100 — EXCELLENT (completion: 96.8%, output: 101.4%)
+  * Deadline Center: 0 overdue, 0 due today, 0 this week, 500 upcoming
+  * Data Quality: 60% score, 18,220 missing deadlines (70%), 37 output>order, 75 input>output
+  * Quick Stats: 2 entries today, 496 active FPOs, 0 remaining output, 12,079 remaining input
+
+- **Agent Browser verification**: All 4 sections render correctly:
+  * "Production Health Score" + "EXCELLENT" badge ✓
+  * "Deadline Alert Center" with Overdue/Due Today/This Week/Upcoming ✓
+  * "Data Quality Summary" with quality score ✓
+  * "Quick Stats & Actions" with stat boxes + navigation buttons ✓
+  * No page/console errors ✓
+
+Stage Summary:
+- Added 4 self-proposed dashboard insight modules that improve production management:
+  1. **Production Health Score** — composite 0-100 score with 4 weighted components, giving users an at-a-glance view of production health
+  2. **Deadline Alert Center** — centralized deadline tracking with overdue/today/week breakdown + alert list with missing quantities
+  3. **Data Quality Summary** — surfaces data integrity issues (missing deadlines, qty mismatches) that affect reports/exports
+  4. **Quick Stats & Actions** — today's activity + quick navigation to common workflows
+- Files created: src/app/api/dashboard-insights/route.ts
+- Files modified: src/lib/api-client.ts (added getDashboardInsights method), src/components/views/product-dashboard-view.tsx (added insights query + 4 new Cards + imports)

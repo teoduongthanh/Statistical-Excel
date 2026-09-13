@@ -21,6 +21,12 @@ import {
   Tag,
   Shirt,
   Layers,
+  ShieldCheck,
+  Zap,
+  PenLine,
+  ClipboardCheck,
+  FileOutput,
+  GitCompare,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -388,7 +394,7 @@ function EmptyState({ message, icon: Icon }: { message: string; icon: React.Comp
 // ----------------------------------------------------------------------------
 
 export function ProductDashboardView() {
-  const { currentProduct, refreshKey, bumpRefresh } = useAppStore();
+  const { currentProduct, refreshKey, bumpRefresh, setView } = useAppStore();
   const theme = PRODUCT_THEME[currentProduct];
 
   // ---- Filter state (local form, committed on Apply) ----
@@ -475,6 +481,15 @@ export function ProductDashboardView() {
     queryFn: () => api.getByDimension(currentProduct, "model", appliedFilters),
     staleTime: 30_000,
   });
+
+  // ---- Dashboard Insights (Health Score + Deadline Alerts + Data Quality + Quick Stats) ----
+  const insightsQ = useQuery({
+    queryKey: ["dashboard-insights", currentProduct, refreshKey],
+    queryFn: () => api.getDashboardInsights(currentProduct),
+    staleTime: 30_000,
+  });
+  const insights = insightsQ.data;
+  const insightsLoading = insightsQ.isLoading || insightsQ.isFetching;
 
   // ---- Derived values ----
   const kpis = kpiQ.data;
@@ -813,6 +828,268 @@ export function ProductDashboardView() {
             loading={isLoadingKpis}
           />
         ))}
+      </div>
+
+      {/* ---------------- Dashboard Insights: Health Score + Deadline Alerts + Data Quality + Quick Stats ---------------- */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* 1. Production Health Score */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Activity className="h-4 w-4 text-primary" />
+              Production Health Score
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Overall production health based on completion, output, deadlines, and data quality.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {insightsLoading ? (
+              <div className="flex h-24 items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : insights ? (
+              <div className="space-y-3">
+                <div className="flex items-center gap-4">
+                  <div className={cn(
+                    "flex h-20 w-20 flex-col items-center justify-center rounded-full text-2xl font-bold",
+                    insights.healthScore.status === "EXCELLENT" && "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400",
+                    insights.healthScore.status === "GOOD" && "bg-teal-100 text-teal-700 dark:bg-teal-950/40 dark:text-teal-400",
+                    insights.healthScore.status === "WARNING" && "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400",
+                    insights.healthScore.status === "CRITICAL" && "bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400",
+                  )}>
+                    {insights.healthScore.score}
+                    <span className="text-[10px] font-normal opacity-70">/ 100</span>
+                  </div>
+                  <div className="flex-1 space-y-1">
+                    <Badge className={cn(
+                      insights.healthScore.status === "EXCELLENT" && "bg-emerald-100 text-emerald-700 border-emerald-200",
+                      insights.healthScore.status === "GOOD" && "bg-teal-100 text-teal-700 border-teal-200",
+                      insights.healthScore.status === "WARNING" && "bg-amber-100 text-amber-700 border-amber-200",
+                      insights.healthScore.status === "CRITICAL" && "bg-rose-100 text-rose-700 border-rose-200",
+                    )}>
+                      {insights.healthScore.status}
+                    </Badge>
+                    <div className="text-xs text-muted-foreground">
+                      Completion: {insights.healthScore.completionRate}% · Output: {insights.healthScore.outputRate}%
+                    </div>
+                  </div>
+                </div>
+                {/* Score breakdown */}
+                <div className="space-y-1.5">
+                  {[
+                    { label: "Completion (40%)", value: insights.healthScore.components.completion, max: 40, tone: "bg-emerald-500" },
+                    { label: "Output Rate (30%)", value: insights.healthScore.components.output, max: 30, tone: "bg-teal-500" },
+                    { label: "Deadline Health (20%)", value: insights.healthScore.components.deadline, max: 20, tone: "bg-amber-500" },
+                    { label: "Data Quality (10%)", value: insights.healthScore.components.dataQuality, max: 10, tone: "bg-violet-500" },
+                  ].map((comp) => (
+                    <div key={comp.label} className="flex items-center gap-2">
+                      <span className="w-32 text-[10px] text-muted-foreground">{comp.label}</span>
+                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+                        <div className={cn("h-full rounded-full", comp.tone)} style={{ width: `${(comp.value / comp.max) * 100}%` }} />
+                      </div>
+                      <span className="w-8 text-right text-[10px] tabular-nums">{comp.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="py-6 text-center text-xs text-muted-foreground">No insights available</div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* 2. Deadline Alert Center */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              Deadline Alert Center
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Orders with upcoming or past deadlines that still have missing quantity.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {insightsLoading ? (
+              <div className="flex h-24 items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : insights && insights.deadlineCenter ? (
+              <div className="space-y-2">
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="rounded-lg bg-rose-50 p-2 text-center dark:bg-rose-950/30">
+                    <div className="text-lg font-bold tabular-nums text-rose-600 dark:text-rose-400">{insights.deadlineCenter.overdue}</div>
+                    <div className="text-[10px] text-rose-600 dark:text-rose-400">Overdue</div>
+                  </div>
+                  <div className="rounded-lg bg-rose-50 p-2 text-center dark:bg-rose-950/30">
+                    <div className="text-lg font-bold tabular-nums text-rose-600 dark:text-rose-400">{insights.deadlineCenter.dueToday}</div>
+                    <div className="text-[10px] text-rose-600 dark:text-rose-400">Due Today</div>
+                  </div>
+                  <div className="rounded-lg bg-amber-50 p-2 text-center dark:bg-amber-950/30">
+                    <div className="text-lg font-bold tabular-nums text-amber-600 dark:text-amber-400">{insights.deadlineCenter.dueThisWeek}</div>
+                    <div className="text-[10px] text-amber-600 dark:text-amber-400">This Week</div>
+                  </div>
+                  <div className="rounded-lg bg-emerald-50 p-2 text-center dark:bg-emerald-950/30">
+                    <div className="text-lg font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{insights.deadlineCenter.upcoming}</div>
+                    <div className="text-[10px] text-emerald-600 dark:text-emerald-400">Upcoming</div>
+                  </div>
+                </div>
+                {insights.deadlineCenter.alerts.length > 0 && (
+                  <div className="max-h-40 space-y-1 overflow-y-auto scroll-thin">
+                    {insights.deadlineCenter.alerts.slice(0, 8).map((a, i) => (
+                      <div key={i} className={cn(
+                        "flex items-center gap-2 rounded border px-2 py-1 text-xs",
+                        a.priority === "HIGH" && a.daysUntilDeadline < 0
+                          ? "border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30"
+                          : a.priority === "HIGH"
+                          ? "border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30"
+                          : "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30"
+                      )}>
+                        <Badge variant="outline" className={cn(
+                          "text-[9px]",
+                          a.daysUntilDeadline < 0 ? "border-rose-400 text-rose-600" : "border-amber-400 text-amber-600"
+                        )}>
+                          {a.daysUntilDeadline < 0 ? `${Math.abs(a.daysUntilDeadline)}d late` : `${a.daysUntilDeadline}d`}
+                        </Badge>
+                        <span className="font-mono text-[10px]">{a.factoryPO}</span>
+                        <span className="text-muted-foreground">{a.size}</span>
+                        <span className="ml-auto font-medium tabular-nums">Missing: {a.missing.toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="py-6 text-center text-xs text-muted-foreground">No deadline data</div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* 3. Data Quality Summary */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+              Data Quality Summary
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Data integrity issues that may affect reports and exports.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {insightsLoading ? (
+              <div className="flex h-24 items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : insights && insights.dataQuality ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Quality Score</span>
+                  <Badge className={cn(
+                    insights.dataQuality.qualityScore >= 90 ? "bg-emerald-100 text-emerald-700 border-emerald-200" :
+                    insights.dataQuality.qualityScore >= 70 ? "bg-amber-100 text-amber-700 border-amber-200" :
+                    "bg-rose-100 text-rose-700 border-rose-200"
+                  )}>
+                    {insights.dataQuality.qualityScore}%
+                  </Badge>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded border p-2">
+                    <div className="text-muted-foreground">Missing Deadline</div>
+                    <div className="text-lg font-bold tabular-nums">
+                      {insights.dataQuality.missingDeadline.toLocaleString()}
+                      <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+                        ({insights.dataQuality.missingDeadlinePercent}%)
+                      </span>
+                    </div>
+                  </div>
+                  <div className="rounded border p-2">
+                    <div className="text-muted-foreground">Output &gt; Order</div>
+                    <div className="text-lg font-bold tabular-nums text-amber-600 dark:text-amber-400">
+                      {insights.dataQuality.outputExceedsOrder}
+                    </div>
+                  </div>
+                  <div className="rounded border p-2">
+                    <div className="text-muted-foreground">Input &gt; Output</div>
+                    <div className="text-lg font-bold tabular-nums text-rose-600 dark:text-rose-400">
+                      {insights.dataQuality.inputExceedsOutput}
+                    </div>
+                  </div>
+                  <div className="rounded border p-2">
+                    <div className="text-muted-foreground">Total Rows</div>
+                    <div className="text-lg font-bold tabular-nums">
+                      {insights.dataQuality.totalRows.toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="py-6 text-center text-xs text-muted-foreground">No quality data</div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* 4. Quick Stats + Quick Actions */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Zap className="h-4 w-4 text-primary" />
+              Quick Stats &amp; Actions
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Today's activity and quick navigation shortcuts.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {insightsLoading ? (
+              <div className="flex h-24 items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : insights && insights.quickStats ? (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded border p-2">
+                    <div className="text-muted-foreground">Entries Today</div>
+                    <div className="text-lg font-bold tabular-nums">{insights.quickStats.entryCountToday}</div>
+                  </div>
+                  <div className="rounded border p-2">
+                    <div className="text-muted-foreground">Active Factory POs</div>
+                    <div className="text-lg font-bold tabular-nums">{insights.quickStats.activeFactoryPOs}</div>
+                  </div>
+                  <div className="rounded border p-2">
+                    <div className="text-muted-foreground">Remaining Output</div>
+                    <div className="text-lg font-bold tabular-nums text-amber-600 dark:text-amber-400">
+                      {insights.quickStats.remainingOutput.toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="rounded border p-2">
+                    <div className="text-muted-foreground">Remaining Input</div>
+                    <div className="text-lg font-bold tabular-nums text-rose-600 dark:text-rose-400">
+                      {insights.quickStats.remainingInput.toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setView("product-data-entry")}>
+                    <PenLine className="h-3 w-3" /> Data Entry
+                  </Button>
+                  <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setView("product-bulk-check")}>
+                    <ClipboardCheck className="h-3 w-3" /> Bulk Check
+                  </Button>
+                  <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setView("product-output-slip")}>
+                    <FileOutput className="h-3 w-3" /> Output Slip
+                  </Button>
+                  <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setView("product-reconciliation")}>
+                    <GitCompare className="h-3 w-3" /> Reconcile
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="py-6 text-center text-xs text-muted-foreground">No stats available</div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {/* ---------------- Charts row: Order vs Output vs Input  +  Production by Date ---------------- */}

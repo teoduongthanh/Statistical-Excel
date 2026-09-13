@@ -733,6 +733,64 @@ export const api = {
     return jsonOrThrow<{ ok: boolean; slip?: any; error?: string }>(res);
   },
 
+  // ===== Dashboard Insights (Health Score + Deadline Alerts + Data Quality) =====
+  getDashboardInsights: async (productType: string) => {
+    const res = await fetch(`/api/dashboard-insights?productType=${encodeURIComponent(productType)}`);
+    return jsonOrThrow<{
+      ok: boolean;
+      healthScore: {
+        score: number;
+        status: "EXCELLENT" | "GOOD" | "WARNING" | "CRITICAL";
+        completionRate: number;
+        outputRate: number;
+        deadlinePenalty: number;
+        dataQualityPenalty: number;
+        components: { completion: number; output: number; deadline: number; dataQuality: number };
+      };
+      deadlineCenter: {
+        overdue: number;
+        dueToday: number;
+        dueThisWeek: number;
+        upcoming: number;
+        alerts: Array<{
+          poNo: string;
+          factoryPO: string;
+          size: string;
+          deadline: string;
+          deadlineStatus: string;
+          missing: number;
+          orderQty: number;
+          inputQty: number;
+          daysUntilDeadline: number;
+          priority: string;
+        }>;
+      };
+      dataQuality: {
+        totalRows: number;
+        missingDeadline: number;
+        missingDeadlinePercent: number;
+        outputExceedsOrder: number;
+        inputExceedsOutput: number;
+        totalIssues: number;
+        qualityScore: number;
+      };
+      quickStats: {
+        entryCountToday: number;
+        activeFactoryPOs: number;
+        remainingOutput: number;
+        remainingInput: number;
+        processing: number;
+      };
+      kpis: {
+        orderQty: number;
+        outputQty: number;
+        inputQty: number;
+        factoryPOCount: number;
+        poNoCount: number;
+      };
+    }>(res);
+  },
+
   // Production Report & Data Validation
   getReportGroups: async (productType: string, filters?: Record<string, string>) => {
     const params = new URLSearchParams({ productType, ...(filters || {}) });
