@@ -74,20 +74,34 @@ export function masterRowToObj(row: {
 }
 
 // Parse a deadline string into a Date for comparison. Handles Excel serials and yyyy-MM-dd.
+// IMPORTANT: Excel serials (e.g. "46298") must be detected BEFORE Date() parsing,
+// because `new Date("46298")` succeeds in JS (interpreted as year 46298) but
+// produces a bogus date "+046298-01-01T00:00:00Z". That bogus ISO string then
+// gets stored as the deadline in EntryData, breaking Excel exports ("1/1/46298").
 function parseDeadline(dateStr: string | null | undefined): Date | null {
   if (!dateStr) return null;
   const s = String(dateStr).trim();
   if (!s) return null;
-  // Try yyyy-MM-dd or yyyy/MM/dd
+
+  // If the string is a pure number (e.g. "46298"), treat it as an Excel serial
+  // date — DO NOT pass it to `new Date(string)` which would interpret it as a
+  // year and produce a bogus +046298-01-01 ISO string.
+  const asNum = Number(s);
+  if (!isNaN(asNum) && s !== "" && /^-?\d+(\.\d+)?$/.test(s)) {
+    // Excel serial: number of days since 1899-12-30
+    if (asNum > 1000 && asNum < 100000) {
+      const epoch = new Date(Date.UTC(1899, 11, 30));
+      epoch.setDate(epoch.getDate() + Math.floor(asNum));
+      return epoch;
+    }
+    // Small numbers that aren't Excel serials → not a valid date
+    return null;
+  }
+
+  // Try yyyy-MM-dd or yyyy/MM/dd (and other ISO formats)
   const d = new Date(s);
   if (!isNaN(d.getTime())) return d;
-  // Try Excel serial (number of days since 1900-01-01)
-  const n = Number(s);
-  if (!isNaN(n) && n > 1000) {
-    const epoch = new Date(Date.UTC(1899, 11, 30));
-    epoch.setDate(epoch.getDate() + n);
-    return epoch;
-  }
+
   return null;
 }
 

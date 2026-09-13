@@ -92,6 +92,9 @@ export function applyMapping(
 // Format a deadline/date string to M/D/YYYY (e.g. "2026-08-15" → "8/15/2026").
 // Handles: yyyy-MM-dd, yyyy/MM/dd, dd/MM/yyyy, Excel serial numbers, and
 // already-formatted M/D/YYYY strings (returned as-is).
+// IMPORTANT: Excel serials (e.g. "46298") must be checked BEFORE `new Date(s)`,
+// because `new Date("46298")` succeeds in JS (interpreted as year 46298) and
+// produces "1/1/46298" instead of the correct "9/19/2026".
 export function formatDeadline(raw: string | number | null | undefined): string {
   if (raw === null || raw === undefined || raw === "") return "";
   const s = String(raw).trim();
@@ -118,23 +121,28 @@ export function formatDeadline(raw: string | number | null | undefined): string 
     if (m >= 1 && m <= 12 && d >= 1 && d <= 31) return `${m}/${d}/${y}`;
   }
 
+  // Excel serial (pure number like "46298") — MUST be checked BEFORE `new Date(s)`.
+  // `new Date("46298")` interprets it as year 46298, producing "1/1/46298".
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const n = Number(s);
+    if (n > 1000 && n < 100000) {
+      const epoch = new Date(Date.UTC(1899, 11, 30));
+      epoch.setDate(epoch.getDate() + Math.floor(n));
+      const y = epoch.getFullYear();
+      const m = epoch.getMonth() + 1;
+      const d = epoch.getDate();
+      return `${m}/${d}/${y}`;
+    }
+    // Small numbers aren't valid dates — return as-is
+    return s;
+  }
+
   // Try generic Date parse (ISO, etc.) → reformat.
   const parsed = new Date(s);
   if (!isNaN(parsed.getTime())) {
     const y = parsed.getFullYear();
     const m = parsed.getMonth() + 1;
     const d = parsed.getDate();
-    return `${m}/${d}/${y}`;
-  }
-
-  // Excel serial (number of days since 1899-12-30).
-  const n = Number(s);
-  if (!isNaN(n) && n > 1000) {
-    const epoch = new Date(Date.UTC(1899, 11, 30));
-    epoch.setDate(epoch.getDate() + n);
-    const y = epoch.getFullYear();
-    const m = epoch.getMonth() + 1;
-    const d = epoch.getDate();
     return `${m}/${d}/${y}`;
   }
 

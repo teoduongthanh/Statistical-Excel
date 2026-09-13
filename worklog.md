@@ -1385,3 +1385,41 @@ Stage Summary:
 - When multiple deadlines exist for the same (factoryPO + size), the engine returns `deadlineOptions` for the user to pick — no random auto-fill.
 - The `masterGroup.deadline` is overridden with the precise deadline from the 1.Order row at Level 1.
 - Files modified: `src/app/api/master-data/smart-lookup/route.ts` (added lookupDeadline + DeadlineInfo), `src/lib/api-client.ts` (added deadlineInfo type).
+
+---
+Task ID: FIX-DEADLINE-FORMAT-1
+Agent: main (Z.ai Code)
+Task: Fix deadline format issue — Excel serial "46298" was being parsed as year 46298, producing "1/1/46298" in exports instead of "10/3/2026".
+
+Work Log:
+- **Root cause identified**: JavaScript's `new Date("46298")` succeeds (not NaN) because it interprets pure-number strings as **years**. This means "46298" → year 46298, January 1 → `+046298-01-01T00:00:00Z`. When `.toISOString().slice(0, 10)` was called on this bogus date, it produced `"+046298-01"` which got stored as the deadline in:
+  1. MasterGroup.nearestDeadline (computed in `rebuildMasterGroups()`)
+  2. EntryData.deadline (inherited from MasterGroup in `confirmEntry()`)
+  3. Excel exports (via `formatDeadline()` which also had `new Date(s)` before the Excel serial check)
+
+- **Fix 1: `src/lib/master-service.ts` `parseDeadline()`**:
+  * Added a pure-number regex check (`/^-?\d+(\.\d+)?$/`) BEFORE the `new Date(s)` call
+  * If the string is a pure number in the Excel serial range (1000-100000), convert to Date via the Excel epoch (1899-12-30) + serial days
+  * Only fall through to `new Date(s)` for non-numeric strings (yyyy-MM-dd, dd/MM/yyyy, etc.)
+- **Fix 2: `src/lib/excel.ts` `formatDeadline()`**:
+  * Same fix: moved the Excel serial check BEFORE `new Date(s)`
+  * Pure-number strings are now correctly converted to M/D/YYYY format
+- **Fix 3: Existing bad data in DB**:
+  * Found 185 MasterGroup rows with `nearestDeadline = "+046298-01"` (and similar)
+  * Found 21 EntryData rows with `deadline = "+046298-01"` (and similar)
+  * Fixed all: extracted the serial number from the `+04XXXXX-01` pattern, converted to proper `yyyy-MM-dd` format, updated the DB
+  * After fix: MasterGroup.nearestDeadline = "2026-08-29", "2026-09-05", etc. ✓
+  * After fix: EntryData.deadline = "2026-09-05", "2026-09-29", etc. ✓
+- **Verification**:
+  * `formatDeadline("46298")` = "10/3/2026" ✓ (was "1/1/46298")
+  * `formatDeadline("46273")` = "9/8/2026" ✓ (was "1/1/46273")
+  * `formatDeadline("2026-08-15")` = "8/15/2026" ✓
+  * API test: smart-lookup returns `deadline: "46273", deadlineSource: "1.Order", deadlineConfidence: 100` ✓
+  * MasterGroup.nearestDeadline now correctly stored as "2026-09-08" (yyyy-MM-dd) ✓
+  * Export API returns 3.6MB Excel file (working) ✓
+
+Stage Summary:
+- **Root cause**: `new Date("46298")` interprets the string as year 46298, not as an Excel serial date. The Excel serial check was placed AFTER the `new Date(s)` call, so it was never reached for pure-number strings.
+- **Fix**: Move the Excel serial check BEFORE `new Date(s)` in both `parseDeadline()` (master-service.ts) and `formatDeadline()` (excel.ts). Pure-number strings are now correctly converted via the Excel epoch (1899-12-30) + serial days.
+- **Data fix**: 185 MasterGroup + 21 EntryData rows with bad "+04XXXXX-01" deadline values were converted to proper "yyyy-MM-dd" format.
+- Files modified: `src/lib/master-service.ts` (parseDeadline), `src/lib/excel.ts` (formatDeadline).
