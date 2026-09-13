@@ -221,6 +221,14 @@ export const api = {
       sizes: string[];
     }>;
     availableSizes?: string[];
+    deadlineInfo?: {
+      deadline: string | null;
+      deadlineSource: "1.Order" | "other" | "multiple" | "none";
+      deadlineSourceRecordId?: string;
+      deadlineConfidence: number;
+      deadlineMatchLevel: 1 | 2 | 3 | 4 | 5;
+      deadlineOptions?: Array<{ poNo: string; size: string; deadline: string | null; recordId: string }>;
+    };
   }> => {
     const res = await fetch("/api/master-data/smart-lookup", {
       method: "POST",

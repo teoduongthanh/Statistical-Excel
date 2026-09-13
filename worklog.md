@@ -1351,3 +1351,37 @@ Stage Summary:
 - MIZUNO: unchanged (228 rows, 11 groups)
 - 0 Pending rows across all products.
 - All dashboards verified reflecting the new data.
+
+---
+Task ID: SMART-DEADLINE-1
+Agent: main (Z.ai Code)
+Task: Fix Deadline being wrong when exporting data — build Smart Deadline Lookup Engine that prioritizes Shipping Status = 1.Order.
+
+Work Log:
+- **Root cause identified**: The old `lookupFactoryPO()` (used by smart-lookup) returned `MasterGroup` whose `nearestDeadline` was computed from ALL rows in the group (1.Order + 2.Output + 3.Pending + 4.Input), not specifically from 1.Order. This meant the deadline could come from any status, and when multiple PO NO# / Sizes shared the same Factory PO, the wrong deadline could be picked.
+- **Built Smart Deadline Lookup Engine** in `src/app/api/master-data/smart-lookup/route.ts`:
+  * New `lookupDeadline()` function with 5 priority levels:
+    - Level 1 (100%): Exact (poNo + factoryPO + size) in 1.Order rows
+    - Level 2 (95%): Exact (poNo + factoryPO + size) in any status (prefers 1.Order if exists)
+    - Level 3 (90%): (factoryPO + size) in 1.Order rows
+    - Level 4 (85%): (factoryPO + size) in any status, single deadline
+    - Level 5 (60%): Multiple deadlines for same (factoryPO + size) → returns deadlineOptions for user to pick
+  * Returns `DeadlineInfo`: `{ deadline, deadlineSource: "1.Order"|"other"|"multiple"|"none", deadlineSourceRecordId, deadlineConfidence, deadlineMatchLevel, deadlineOptions? }`
+  * At Level 1, the `masterGroup.deadline` is overridden with the precise deadline from the 1.Order row
+  * At Level 3, if size is provided, deadline lookup runs by (factoryPO + size) even without PO NO#
+- **Updated api-client.ts**: added `deadlineInfo` type to `smartLookup()` return type.
+- **API tests** (curl):
+  * Level 1 (exact match): `deadline: "46273", deadlineSource: "1.Order", deadlineConfidence: 100, deadlineMatchLevel: 1, deadlineSourceRecordId: "cmttfum6j..."` ✓
+  * Level 3 (Factory PO + Size, no PO NO#): `deadline: "46273", deadlineSource: "1.Order", deadlineConfidence: 90` ✓
+- **Agent Browser verification**:
+  * Filled PO NO#=H411351971, Factory PO=MH26111046, Size=M(12) → "HIGH — EXACT MATCH" confidence badge ✓
+  * Auto-fill shows: MAFATE5 MS (Model), SAPPHIRE BLUE / WHITE (SLWH) (Color Code), DEAD LINE: 46273 ✓
+  * No page/console errors ✓
+- TypeScript: 0 new errors (2 pre-existing errors in delete-entry flow are unrelated).
+
+Stage Summary:
+- **Deadline Lookup Engine** built with 5 priority levels, prioritizing Shipping Status = 1.Order as the master source.
+- Each deadline now has: `deadlineSource` (which status it came from), `deadlineSourceRecordId` (traceability), `deadlineConfidence` (0-100), `deadlineMatchLevel` (1-5).
+- When multiple deadlines exist for the same (factoryPO + size), the engine returns `deadlineOptions` for the user to pick — no random auto-fill.
+- The `masterGroup.deadline` is overridden with the precise deadline from the 1.Order row at Level 1.
+- Files modified: `src/app/api/master-data/smart-lookup/route.ts` (added lookupDeadline + DeadlineInfo), `src/lib/api-client.ts` (added deadlineInfo type).
