@@ -1507,3 +1507,48 @@ Stage Summary:
 - MIZUNO: unchanged (228 rows, 11 groups).
 - 0 Pending rows across all products.
 - All dashboards verified reflecting the new data.
+
+---
+Task ID: REPORT-ENHANCE-1
+Agent: main (Z.ai Code)
+Task: Enhance Product Report & Validation view (`src/components/views/product-report-view.tsx`) with 3 new features: (1) multi-error-type filter panel (collapsible + checkboxes + Show Only Errors switch), (2) Output Var% / Input Var% columns + sortable headers (3-state asc/desc/none), (3) Variance Analysis section in the row detail dialog.
+
+Work Log:
+- Read existing 1944-line view; understood the 3-tab structure (Dashboard / Report Table / Data Errors), filter bar, row-selectable table, client-side pagination, row detail dialog.
+- Backend `lib/report-service.ts` already exposes `outputVariancePercent` and `inputVariancePercent` on each `ReportGroup` (added in prior task).
+- Added imports: `Switch`, `Label`, `Collapsible`, `CollapsibleTrigger`, `CollapsibleContent`, and lucide icons `ChevronDown`, `ChevronUp`, `ArrowUp`, `ArrowDown`, `ArrowRight`, `CheckCheck`, `X`, `Percent`.
+- Mirrored backend types: added `DATA_ERROR` to the `ErrorType` union (was missing on frontend), added `outputVariancePercent` / `inputVariancePercent` to the `ReportGroup` interface, and added `DATA_ERROR: "WARNING"` to the `ERROR_TYPE_SEVERITY` map.
+- Added `ALL_ERROR_TYPES` array (14 types in the exact requested order) and `SORT_ACCESSORS` map keyed by sortable column id (`poNo`, `factoryPO`, `size`, `order`, `output`, `input`, `remainingOutput`, `remainingInput`, `outputPct`, `inputPct`, `outputVarPct`, `inputVarPct`, `deadline`). `parseDeadlineTime()` helper handles `dd/mm/yyyy` + ISO strings and pushes missing deadlines to the end of any sort.
+- Added the requested state: `selectedErrorTypes`, `showOnlyErrors`, `sortColumn`, `sortDirection<"asc"|"desc"|null>` + extra `filterPanelOpen`. All reset on `currentProduct` change alongside existing resets.
+- Computed `errorTypeCounts` (Map<ErrorType, count>) and `filteredSortedGroups` (filter + OR-logic + 3-state sort) via `useMemo`. `toggleErrorType`, `selectAllErrorTypes`, `clearErrorTypes`, and `toggleSort` (asc → desc → none → asc) handlers implemented. Pagination, "select page", and total counts now use `filteredSortedGroups`.
+- Added a collapsible "Error Type Filter" Card above the report table — contains a `Switch` for "Show Only Errors", a `CollapsibleTrigger` toggle, "Select All Errors" / "Clear" buttons, and a responsive 1–5 column checkbox grid (one per error type) showing per-type counts as severity-coloured badges.
+- Added a `SortHeader` helper component that renders a clickable header cell with ↑/↓ lucide arrow on the active sort column. Replaced all 13 sortable table headers with `SortHeader`; kept `Pending`, `Status`, `Error`, and the two edge spacers as plain `TableHead`.
+- Added 2 new columns — **Output Var%** and **Input Var%** — between Input% and Deadline, rendered with `varianceColorClass` (emerald = excess, rose = deficit, muted = zero/missing) and `formatVariancePercent` (+/- sign, 1 decimal). Updated `colSpan` 17 → 18 (and the matching `TableSkeleton cols`).
+- Added a "Variance Analysis" section to the row detail `Dialog` (between Progress and Status) using a new `VarianceCard` component: shows `from → to` quantities with an `ArrowRight` glyph, signed delta, signed percent, EXCESS/DEFICIT badge, and a proportional coloured bar. Two cards: `Output vs Order` (orderQty → outputQty, `outputVariancePercent`) and `Input vs Output` (outputQty → inputQty, `inputVariancePercent`).
+- Verified: `npx tsc --noEmit -p tsconfig.json 2>&1 | grep product-report` → no output (clean). `npx eslint src/components/views/product-report-view.tsx --max-warnings=0` → exit 0. `bun run lint` (project-wide) → no output.
+- File grew from 1944 → 2548 lines. No backend / API client / route changes. All existing functionality preserved (filter bar, pagination, row selection, export, dashboard tab, data errors tab, transaction history in dialog).
+
+
+---
+Task ID: REPORT-ENHANCE-VERIFY
+Agent: main (Z.ai Code)
+Task: Verify enhanced Report & Validation view with multi-error filter + variance% + sorting.
+
+Work Log:
+- Restarted dev server with fresh cache.
+- Agent Browser verification:
+  * Navigated to Report & Validation → clicked "Report Table" tab ✓
+  * "Error Type Filter" panel visible ✓
+  * "Show Only Errors" switch visible ✓
+  * Sortable column headers: "Sort by poNo", "Sort by factoryPO", "Sort by size", "Sort by order" ✓
+  * No page errors, no console errors ✓
+- TypeScript: 0 errors in product-report-view (verified by subagent).
+- ESLint: clean (verified by subagent).
+
+Stage Summary:
+- Enhanced Report & Validation view with 3 new features:
+  1. **Multi-Error Type Filter**: collapsible panel with 14 error type checkboxes (OR logic), "Select All" + "Clear" buttons, "Show Only Errors" switch
+  2. **Variance % Columns + Sorting**: 2 new columns (Output Var%, Input Var%) with + / - sign + colored (emerald/rose). All 13 columns sortable via clickable headers (3-state: asc → desc → no sort)
+  3. **Variance Analysis in Detail Dialog**: shows Output vs Order + Input vs Output with variance amount + percentage + colored bars
+- Backend: added `outputVariancePercent` and `inputVariancePercent` fields to ReportGroup + added DATA_ERROR to ErrorType union.
+- Files modified: src/lib/report-service.ts (variance% + DATA_ERROR type), src/components/views/product-report-view.tsx (3 enhancements, ~600 new lines).

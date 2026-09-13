@@ -36,6 +36,8 @@ export interface ReportGroup {
   inputPercentage: number;  // Input / Output × 100
   outputVariance: number;   // Output - Order (positive = excess)
   inputVariance: number;    // Input - Output (positive = excess)
+  outputVariancePercent: number;  // (Output - Order) / Order × 100
+  inputVariancePercent: number;   // (Input - Output) / Output × 100
   productionStatus: ProductionStatus;
   errorType: ErrorType | null;
   rowCount: number;
@@ -70,7 +72,8 @@ export type ErrorType =
   | "DUPLICATE_OUTPUT"
   | "DUPLICATE_INPUT"
   | "INVALID_PO_FACTORY_COMBINATION"
-  | "MISSING_DEADLINE";
+  | "MISSING_DEADLINE"
+  | "DATA_ERROR";
 
 export interface TransactionRecord {
   date: string;
@@ -291,6 +294,8 @@ export async function getReportGroups(
       remainingOutput, remainingInput,
       outputProgress, inputProgress, inputPercentage,
       outputVariance, inputVariance,
+      outputVariancePercent: orderQty > 0 ? Math.round(((outputQty - orderQty) / orderQty) * 1000) / 10 : 0,
+      inputVariancePercent: outputQty > 0 ? Math.round(((inputQty - outputQty) / outputQty) * 1000) / 10 : 0,
       productionStatus, errorType,
       rowCount: Number(r.rowCount) || 0,
       transactions,
