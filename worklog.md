@@ -1478,3 +1478,32 @@ Stage Summary:
   4. **Quick Stats & Actions** — today's activity + quick navigation to common workflows
 - Files created: src/app/api/dashboard-insights/route.ts
 - Files modified: src/lib/api-client.ts (added getDashboardInsights method), src/components/views/product-dashboard-view.tsx (added insights query + 4 new Cards + imports)
+
+---
+Task ID: IMPORT-2FILES-12.9
+Agent: main (Z.ai Code)
+Task: Delete old MAFATE + ONYX data, import 2 new files: "FMT shipped out S-TECH mafate -2026 12.9.xlsx" and "FMT shipped out S-TECH Onyx-2026 12.9.xlsx". Only DATA sheet, skip Pending, dedup.
+
+Work Log:
+- Verified both files exist:
+  * FMT shipped out S-TECH mafate -2026 12.9.xlsx (5.7 MB, 21 sheets, DATA sheet 44,333 rows)
+  * FMT shipped out S-TECH Onyx-2026 12.9.xlsx (1.2 MB, 14 sheets, DATA sheet 7,735 rows)
+- MAFATE status: Order=5615, Pending=17096, Output=11488, Input=10094
+- ONYX status: Order=1118, Pending=3021, Output=1904, Input=1691
+- Stopped dev server, ran import (only DATA sheet, skip Pending, dedup):
+  * MAFATE: 44,296 rows parsed → 17,096 Pending skipped, 734 invalid, 100 dupes → 26,366 unique rows. Deleted 26,013 old rows, inserted 26,366 new. Rebuilt 496 groups.
+  * ONYX: 7,734 rows parsed → 3,021 Pending skipped, 55 invalid, 18 dupes → 4,640 unique rows. Deleted 3,939 old rows, inserted 4,640 new. Rebuilt 160 groups.
+- MIZUNO: unchanged (228 rows, 11 groups).
+- 0 Pending rows in DB for all products ✓
+- Restarted dev server, verified dashboards:
+  * MAFATE: orderQty=266,823, outputQty=276,370, inputQty=251,719, totalFactoryPOs=496, outputRate=103.6%, completionRate=94.3%
+  * ONYX: orderQty=73,132, outputQty=57,334, inputQty=48,223, totalFactoryPOs=160, outputRate=78.4%, completionRate=65.9%
+  * MIZUNO: unchanged
+
+Stage Summary:
+- Imported 31,006 total rows from 2 new files.
+- MAFATE: 26,366 rows (was 26,013), 496 groups. Source: "FMT shipped out S-TECH mafate -2026 12.9.xlsx"
+- ONYX: 4,640 rows (was 3,939), 160 groups. Source: "FMT shipped out S-TECH Onyx-2026 12.9.xlsx"
+- MIZUNO: unchanged (228 rows, 11 groups).
+- 0 Pending rows across all products.
+- All dashboards verified reflecting the new data.
