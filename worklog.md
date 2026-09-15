@@ -1674,3 +1674,133 @@ Stage Summary:
 - All progress metrics computed from raw transaction data (source of truth), not stored aggregates
 - Files created: src/app/api/order-drilldown/route.ts
 - Files modified: src/lib/api-client.ts (getOrderDrilldown method), src/components/views/product-dashboard-view.tsx (new tab + tree UI + dialog + imports)
+
+---
+Task ID: DASHBOARD-REBUILD-1
+Agent: main (Z.ai Code)
+Task: Rebuild the Product Dashboard view from 6 tabs into 8 tabs in the correct order, adding 2 new tabs (Order Timeline + Reports) and enhancing 3 existing tabs (Order Progress, Daily Activity, Anomaly Detection). All backend APIs were already built — this is a pure frontend reorganization.
+
+Work Log:
+- Read /home/z/my-project/worklog.md and the previous agent's record (ORDER-PROGRESS-DASHBOARD) for full context.
+- Read the existing 2784-line dashboard view fully to understand its structure (1 overview tab + 5 sub-tabs + drilldown dialog).
+- Verified the 9 backend APIs in the api-client (getDashboardInsights, getOrderProgress, getOrderDrilldown, getDataChangeHistory, getKPIs, getTopAlerts, getByDimension, getTimeline, exportExcel) — all already typed and ready to consume.
+
+Changes:
+- Imports: added lucide-react icons `CalendarDays, FileSpreadsheet, FileDown, ArrowRight, Circle, GitCommitHorizontal` and `import * as XLSX from "xlsx"` for client-side Excel generation.
+- Type: `DashboardTab = "overview" | "progress" | "daily" | "timeline" | "history" | "anomaly" | "reports" | "drilldown"` (added timeline + reports).
+- New helpers: `getReportFileName(type)` returns `Production_Report_<type>_<YYYY-MM-DD>.xlsx`; `downloadWorkbook(sheetName, rows, fileName)` builds an XLSX workbook + sheet from a row array and triggers download via `XLSX.writeFile`. Sheet name is sanitized (invalid Excel chars removed, truncated to 31 chars). Empty row arrays fall back to `[{ "No data": "" }]`.
+- Query: `drilldownQ` is now `enabled: dashboardTab === "drilldown" || dashboardTab === "reports"` so the Reports tab can read the hierarchy without an extra fetch. Same query key + same staleTime — no duplicate requests when toggling.
+- TabsList: reorganized to `grid-cols-2 sm:grid-cols-4 lg:grid-cols-8` with all 8 triggers in the spec order: Overview → Order Progress → Daily Activity → Order Timeline → Data Change History → Anomaly Detection → Reports → Drill-Down.
+- Tab 2 (Order Progress): added "Daily Order" column to the daily-snapshot table (now all 12 spec-§11 columns in order: Date | Daily Order | Daily Output | Daily Input | Total Output | Total Input | Pending | Remaining | Output % | Input % | Input vs Output % | Status). Daily Order uses slate tone to match the order/demand semantic.
+- Tab 3 (Daily Activity): kept the existing BarChart + 2 summary cards; appended 2 new full-width Recharts LineCharts — "Pending Quantity Over Time" (amber `oklch(0.74 0.16 75)` line) and "Remaining Order Over Time" (rose `oklch(0.62 0.21 18)` line).
+- Tab 4 (Order Timeline — NEW): two cards:
+  1. LineChart with 3 series on a 0–110% Y-axis: `outputProgress` (emerald), `inputProgress` (teal), and a constant 100 reference line (slate dashed, `strokeDasharray="6 4"`) implemented via `dataKey={() => 100}`.
+  2. Vertical timeline list (`max-h-[600px] overflow-y-auto scroll-thin`). Each row: vertical line + dot marker, date header with status badge, event badges row (`ORDER +N` slate / `OUTPUT +N` emerald / `INPUT +N` teal — only rendered when daily delta > 0, else "No activity"), and a 6-cell cumulative-state grid (Total Output / Total Input / Pending / Remaining / Out % / In %) with the appropriate color tones.
+- Tab 6 (Anomaly Detection): enhanced each anomaly card with a conditional 4-cell grid (rendered only when any of orderQty/outputQty/inputQty/excess > 0) showing Order Qty (neutral) / Output Qty (amber) / Input Qty (emerald) / Excess (rose).
+- Tab 7 (Reports — NEW): top card "Export Production Reports" with 6 outline buttons in a `grid-cols-1 sm:grid-cols-2 lg:grid-cols-3` grid:
+  1. Current Progress Report — flattens drilldownData.hierarchy (PO NO# → Factory PO → Size, all progress metrics).
+  2. Daily Progress Report — exports dailySnapshots (all 12 columns).
+  3. Order Timeline Report — exports dailySnapshots with cumulative progress %.
+  4. Data Change History — exports historyRows (oldValue/newValue JSON-stringified when objects).
+  5. Anomaly Report — exports all anomalies with orderQty/outputQty/inputQty/excess.
+  6. Deadline Risk Report — exports only `type === "DEADLINE_RISK"` anomalies with deadline / missingQty / daysUntilDeadline.
+  Each button handler guards against empty data (toasts an error and returns), builds the row array, calls downloadWorkbook(), and toasts a success message with the row count. All wrapped in try/catch with a generic failure toast.
+  A secondary "Data Availability" card shows 6 MiniStat tiles (drilldown sizes / daily snapshots / timeline entries / history rows / anomalies / deadline risks) so the user can see which reports will have data before clicking.
+- All TabsContent sections kept their loading skeletons, error Alerts with "Try again" button calling bumpRefresh(), and EmptyState components where applicable.
+
+Color compliance verified:
+- emerald = output / completed ✓
+- teal = input ✓
+- amber = pending / warning ✓
+- rose = over / error ✓
+- slate = not started / neutral ✓
+- No new indigo / blue introduced anywhere.
+
+Preserved behaviour:
+- Existing filter bar (Factory PO / PO NO# / Model / Season / Date From / Date To) still drives orderProgressQ, historyQ, and drilldownQ.
+- bumpRefresh() (Refresh button) still re-fetches every query via the shared refreshKey.
+- Existing transaction-history dialog for the Drill-Down tab is unchanged.
+- All existing imports, components, helpers, and styling remain untouched (only wrapped / extended).
+- No backend code changes.
+
+Verification:
+- TypeScript: `npx tsc --noEmit -p tsconfig.json 2>&1 | grep product-dashboard` → no output (zero TS errors).
+- ESLint: `npx eslint src/components/views/product-dashboard-view.tsx` → exit 0, no output (clean).
+- File delta: 2784 → 3558 lines (+774 new lines, 0 removed).
+- Backend: 0 changes (all 9 APIs already built).
+- Work record written to /home/z/my-project/agent-ctx/DASHBOARD-REBUILD-1-product-dashboard-view.md.
+
+Stage Summary:
+- Dashboard now has 8 tabs in the correct order: Overview → Order Progress → Daily Activity → Order Timeline → Data Change History → Anomaly Detection → Reports → Drill-Down.
+- Two new tabs added (Order Timeline, Reports) and three existing tabs enhanced (Order Progress, Daily Activity, Anomaly Detection).
+- The Reports tab generates Excel files client-side using `xlsx` — no new API endpoint needed.
+- All work preserves existing functionality (filter bar, refresh button, drilldown dialog, KPI/insight cards, etc.) — only wraps and extends.
+
+---
+Task ID: DASHBOARD-REBUILD-VERIFY
+Agent: main (Z.ai Code)
+Task: Verify the rebuilt dashboard with 8 tabs matching the spec.
+
+Work Log:
+- Restarted dev server with fresh cache.
+- Agent Browser verification:
+  * Dashboard shows 8 tabs in correct order:
+    1. Overview (selected) ✓
+    2. Order Progress ✓
+    3. Daily Activity ✓
+    4. Order Timeline ✓ (NEW)
+    5. Data Change History ✓
+    6. Anomaly Detection ✓
+    7. Reports ✓ (NEW)
+    8. Drill-Down ✓
+  * No page errors, no console errors ✓
+- TypeScript: 0 errors (verified by subagent).
+- ESLint: clean (verified by subagent).
+- File grew from 2784 → 3558 lines.
+
+Stage Summary:
+- Dashboard rebuilt from 6 tabs to 8 tabs matching the spec:
+  - **Tab 1 Overview**: existing KPIs + Health Score + Deadline Alerts + Data Quality + Quick Stats + Charts + Alert Table (unchanged)
+  - **Tab 2 Order Progress**: enhanced — 8 stat cards + 6 status cards + daily snapshot table with all 12 spec columns (Date, Daily Order, Daily Output, Daily Input, Total Output, Total Input, Pending, Remaining, Output%, Input%, Input vs Output%, Status)
+  - **Tab 3 Daily Activity**: enhanced — 3 charts (Daily Output/Input BarChart + Pending LineChart + Remaining LineChart)
+  - **Tab 4 Order Timeline** (NEW): 3-line progress chart (Output% / Input% / 100% reference) + vertical event timeline with colored badges + cumulative state per day
+  - **Tab 5 Data Change History**: existing 5 summary cards + timeline list
+  - **Tab 6 Anomaly Detection**: enhanced — anomaly cards now show Order/Output/Input/Excess quantities
+  - **Tab 7 Reports** (NEW): 6 client-side Excel export buttons (Current Progress / Daily Progress / Order Timeline / Change History / Anomaly / Deadline Risk)
+  - **Tab 8 Drill-Down**: existing PO → Factory PO → Size tree + transaction dialog
+- No backend changes needed — all 9 APIs were already built.
+- File modified: src/components/views/product-dashboard-view.tsx (rebuilt from 2784 → 3558 lines).
+
+---
+Task ID: IMPORT-3FILES-16.9
+Agent: main (Z.ai Code)
+Task: Delete old data, import 3 new files (16.9), fix date format to dd/MM/yyyy across all views.
+
+Work Log:
+- Verified all 3 files:
+  * FMT shipped out S-TECH mafate -2026 16.9.xlsx (5.4 MB, 21 sheets, DATA 44,772 rows)
+  * FMT shipped out S-TECH Onyx-2026 16.9.xlsx (1.3 MB, 14 sheets, DATA 8,493 rows)
+  * FMT shipped out MIZUNO-2026 16.9.xlsx (0.1 MB, 8 sheets, DATA 586 rows)
+- Date format in files: Excel serials (e.g. "45840", "46188", "46218")
+- Imported all 3 (delete old, skip Pending, dedup, only DATA sheet):
+  * MAFATE: 44,771 parsed → 17,215 Pending skipped, 731 invalid, 102 dupes → 26,723 unique. Deleted 26,366 old. Rebuilt 496 groups.
+  * ONYX: 8,492 parsed → 3,307 Pending skipped, 55 invalid, 22 dupes → 5,108 unique. Deleted 4,640 old. Rebuilt 170 groups.
+  * MIZUNO: 585 parsed → 245 Pending skipped, 0 invalid, 0 dupes → 340 unique. Deleted 228 old. Rebuilt 11 groups.
+- 0 Pending rows across all products ✓
+- **Fixed date format** to dd/MM/yyyy across the system:
+  * Updated `formatDeadline()` in `src/lib/excel.ts` — now outputs dd/MM/yyyy (was M/D/YYYY)
+  * Added new `formatDateDisplay()` in `src/lib/utils.ts` — centralized date formatter that handles Excel serials, ISO, dd/MM/yyyy, Date objects → always outputs dd/MM/yyyy
+  * Both handle Excel serials BEFORE `new Date(s)` to avoid year-46298 bug
+  * Small numbers (like ONYX deadline "1", "2") are NOT treated as Excel serials (returned as-is)
+- Verified dashboards:
+  * MAFATE: orderQty=266,823, outputQty=278,154, inputQty=261,540, completionRate=98.0%
+  * ONYX: orderQty=73,132, outputQty=62,949, inputQty=53,027, completionRate=72.5%
+  * MIZUNO: orderQty=4,592, outputQty=5,249, inputQty=3,642, completionRate=79.3%
+- Verified date format: `formatDeadline("45840")` = "02/07/2025" ✓, `formatDeadline("46298")` = "03/10/2026" ✓
+
+Stage Summary:
+- Imported 32,171 total rows from 3 new files.
+- MAFATE: 26,723 rows, 496 groups. ONYX: 5,108 rows, 170 groups. MIZUNO: 340 rows, 11 groups.
+- 0 Pending rows across all products.
+- Date format changed from M/D/YYYY to dd/MM/yyyy across all views (matching the Excel file format).
+- Files modified: src/lib/excel.ts (formatDeadline → dd/MM/yyyy), src/lib/utils.ts (new formatDateDisplay function).

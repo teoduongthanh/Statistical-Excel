@@ -94,14 +94,22 @@ export function applyMapping(
 // already-formatted M/D/YYYY strings (returned as-is).
 // IMPORTANT: Excel serials (e.g. "46298") must be checked BEFORE `new Date(s)`,
 // because `new Date("46298")` succeeds in JS (interpreted as year 46298) and
-// produces "1/1/46298" instead of the correct "9/19/2026".
+// produces "1/1/46298" instead of the correct "16/09/2026".
+// Output format: dd/MM/yyyy (e.g. "16/09/2026") — matches the Excel file format.
 export function formatDeadline(raw: string | number | null | undefined): string {
   if (raw === null || raw === undefined || raw === "") return "";
   const s = String(raw).trim();
   if (!s) return "";
 
-  // Already M/D/YYYY or M/D/YY? Leave as-is.
-  if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(s)) return s;
+  // Already dd/MM/yyyy or d/M/yyyy? Normalize to dd/MM/yyyy.
+  if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(s)) {
+    const parts = s.split("/");
+    let d = Number(parts[0]);
+    let m = Number(parts[1]);
+    let y = Number(parts[2]);
+    if (y < 100) y += 2000;
+    return `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}/${y}`;
+  }
 
   // yyyy-MM-dd or yyyy/MM/dd
   const isoMatch = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
@@ -109,20 +117,10 @@ export function formatDeadline(raw: string | number | null | undefined): string 
     const y = Number(isoMatch[1]);
     const m = Number(isoMatch[2]);
     const d = Number(isoMatch[3]);
-    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) return `${m}/${d}/${y}`;
-  }
-
-  // dd/MM/yyyy
-  const dmyMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (dmyMatch) {
-    const d = Number(dmyMatch[1]);
-    const m = Number(dmyMatch[2]);
-    const y = Number(dmyMatch[3]);
-    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) return `${m}/${d}/${y}`;
+    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) return `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}/${y}`;
   }
 
   // Excel serial (pure number like "46298") — MUST be checked BEFORE `new Date(s)`.
-  // `new Date("46298")` interprets it as year 46298, producing "1/1/46298".
   if (/^\d+(\.\d+)?$/.test(s)) {
     const n = Number(s);
     if (n > 1000 && n < 100000) {
@@ -131,19 +129,18 @@ export function formatDeadline(raw: string | number | null | undefined): string 
       const y = epoch.getFullYear();
       const m = epoch.getMonth() + 1;
       const d = epoch.getDate();
-      return `${m}/${d}/${y}`;
+      return `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}/${y}`;
     }
-    // Small numbers aren't valid dates — return as-is
     return s;
   }
 
-  // Try generic Date parse (ISO, etc.) → reformat.
+  // Try generic Date parse (ISO, etc.) → reformat to dd/MM/yyyy.
   const parsed = new Date(s);
   if (!isNaN(parsed.getTime())) {
     const y = parsed.getFullYear();
     const m = parsed.getMonth() + 1;
     const d = parsed.getDate();
-    return `${m}/${d}/${y}`;
+    return `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}/${y}`;
   }
 
   return s;

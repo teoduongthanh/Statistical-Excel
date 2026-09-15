@@ -47,7 +47,14 @@ import {
   PackageCheck as PackageCheck2,
   AlertOctagon,
   TimerReset,
+  CalendarDays,
+  FileSpreadsheet,
+  FileDown,
+  ArrowRight,
+  Circle,
+  GitCommitHorizontal,
 } from "lucide-react";
+import * as XLSX from "xlsx";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useAppStore, PRODUCT_THEME, type ProductType } from "@/store/app-store";
@@ -428,7 +435,7 @@ function EmptyState({ message, icon: Icon }: { message: string; icon: React.Comp
 // Order Progress / Anomaly / History helpers
 // ----------------------------------------------------------------------------
 
-type DashboardTab = "overview" | "progress" | "daily" | "anomaly" | "history" | "drilldown";
+type DashboardTab = "overview" | "progress" | "daily" | "timeline" | "history" | "anomaly" | "reports" | "drilldown";
 
 /** Badge classes for Order Progress daily-snapshot status values. */
 const PROGRESS_STATUS_BADGE: Record<string, string> = {
@@ -551,6 +558,29 @@ function formatShortDate(s: string | null | undefined): string {
     month: "short",
     day: "2-digit",
   });
+}
+
+// ----------------------------------------------------------------------------
+// XLSX (client-side) export helpers — used by the "Reports" tab.
+// Builds a workbook from already-fetched data and triggers a download.
+// Filename format: Production_Report_<type>_<YYYY-MM-DD>.xlsx
+// ----------------------------------------------------------------------------
+
+function getReportFileName(type: string): string {
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, "0");
+  const dd = String(today.getDate()).padStart(2, "0");
+  return `Production_Report_${type}_${yyyy}-${mm}-${dd}.xlsx`;
+}
+
+function downloadWorkbook(sheetName: string, rows: Record<string, unknown>[], fileName: string): void {
+  const wb = XLSX.utils.book_new();
+  // Truncate sheet name to 31 chars (Excel limit) and remove invalid chars.
+  const safeName = (sheetName || "Sheet1").replace(/[:\\/?*\[\]]/g, "").slice(0, 31) || "Sheet1";
+  const ws = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ "No data": "" }]);
+  XLSX.utils.book_append_sheet(wb, ws, safeName);
+  XLSX.writeFile(wb, fileName);
 }
 
 // ----------------------------------------------------------------------------
@@ -761,7 +791,8 @@ export function ProductDashboardView() {
   const drilldownQ = useQuery({
     queryKey: ["order-drilldown", currentProduct, refreshKey],
     queryFn: () => api.getOrderDrilldown({ productType: currentProduct }),
-    enabled: dashboardTab === "drilldown",
+    // Enabled on both drilldown + reports tabs (reports tab exports the hierarchy).
+    enabled: dashboardTab === "drilldown" || dashboardTab === "reports",
     staleTime: 30_000,
   });
   const drilldownData = drilldownQ.data;
@@ -1190,7 +1221,7 @@ export function ProductDashboardView() {
         onValueChange={(v) => setDashboardTab(v as DashboardTab)}
         className="space-y-4"
       >
-        <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-5">
+        <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-4 lg:grid-cols-8">
           <TabsTrigger value="overview" className="gap-1.5 py-1.5 text-xs">
             <LayoutDashboard className="h-3.5 w-3.5" /> Overview
           </TabsTrigger>
@@ -1200,11 +1231,17 @@ export function ProductDashboardView() {
           <TabsTrigger value="daily" className="gap-1.5 py-1.5 text-xs">
             <BarChart3 className="h-3.5 w-3.5" /> Daily Activity
           </TabsTrigger>
-          <TabsTrigger value="anomaly" className="gap-1.5 py-1.5 text-xs">
-            <Bug className="h-3.5 w-3.5" /> Anomaly Detection
+          <TabsTrigger value="timeline" className="gap-1.5 py-1.5 text-xs">
+            <CalendarDays className="h-3.5 w-3.5" /> Order Timeline
           </TabsTrigger>
           <TabsTrigger value="history" className="gap-1.5 py-1.5 text-xs">
             <HistoryIcon className="h-3.5 w-3.5" /> Data Change History
+          </TabsTrigger>
+          <TabsTrigger value="anomaly" className="gap-1.5 py-1.5 text-xs">
+            <Bug className="h-3.5 w-3.5" /> Anomaly Detection
+          </TabsTrigger>
+          <TabsTrigger value="reports" className="gap-1.5 py-1.5 text-xs">
+            <FileSpreadsheet className="h-3.5 w-3.5" /> Reports
           </TabsTrigger>
           <TabsTrigger value="drilldown" className="gap-1.5 py-1.5 text-xs">
             <ListTree className="h-3.5 w-3.5" /> Drill-Down
@@ -2086,6 +2123,7 @@ export function ProductDashboardView() {
                       <TableHeader className="sticky top-0 z-10 bg-card">
                         <TableRow>
                           <TableHead className="min-w-[110px]">Date</TableHead>
+                          <TableHead className="text-right">Daily Order</TableHead>
                           <TableHead className="text-right">Daily Output</TableHead>
                           <TableHead className="text-right">Daily Input</TableHead>
                           <TableHead className="text-right">Total Output</TableHead>
@@ -2103,6 +2141,9 @@ export function ProductDashboardView() {
                           <TableRow key={s.date} className="hover:bg-accent/40">
                             <TableCell className="text-xs tabular-nums">
                               {formatShortDate(s.date)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums text-slate-600 dark:text-slate-300">
+                              {fmt(s.dailyOrder)}
                             </TableCell>
                             <TableCell className="text-right tabular-nums text-amber-600 dark:text-amber-400">
                               {fmt(s.dailyOutput)}
@@ -2267,12 +2308,368 @@ export function ProductDashboardView() {
                 sub={`across ${dailySnapshots.length} day${dailySnapshots.length === 1 ? "" : "s"}`}
               />
             </div>
+
+            {/* Chart 2: Pending quantity over time (amber line) */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <Hourglass className="h-4 w-4 text-amber-500" />
+                  Pending Quantity Over Time
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Daily pending (output − input) quantity for {currentProduct}.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={dailySnapshots}
+                      margin={{ top: 5, right: 20, left: -10, bottom: 0 }}
+                    >
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        className="stroke-muted"
+                        vertical={false}
+                      />
+                      <XAxis
+                        dataKey="date"
+                        tick={{ fontSize: 10 }}
+                        className="text-muted-foreground"
+                        minTickGap={16}
+                        tickFormatter={(v: string) => formatShortDate(v)}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 10 }}
+                        allowDecimals={false}
+                        width={64}
+                        tickFormatter={(v: number) => fmt(v)}
+                      />
+                      <Tooltip
+                        contentStyle={TOOLTIP_STYLE}
+                        formatter={(value: number) => [fmt(value), "Pending"]}
+                        labelFormatter={(label: string) => `Date: ${formatShortDate(label)}`}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="pending"
+                        name="Pending"
+                        stroke="oklch(0.74 0.16 75)"
+                        strokeWidth={2.5}
+                        dot={{ r: 2, fill: "oklch(0.74 0.16 75)", strokeWidth: 0 }}
+                        activeDot={{ r: 5 }}
+                        isAnimationActive={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Chart 3: Remaining order over time (rose line) */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <TimerReset className="h-4 w-4 text-rose-500" />
+                  Remaining Order Over Time
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Daily remaining (order − output) quantity for {currentProduct}.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={dailySnapshots}
+                      margin={{ top: 5, right: 20, left: -10, bottom: 0 }}
+                    >
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        className="stroke-muted"
+                        vertical={false}
+                      />
+                      <XAxis
+                        dataKey="date"
+                        tick={{ fontSize: 10 }}
+                        className="text-muted-foreground"
+                        minTickGap={16}
+                        tickFormatter={(v: string) => formatShortDate(v)}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 10 }}
+                        allowDecimals={false}
+                        width={64}
+                        tickFormatter={(v: number) => fmt(v)}
+                      />
+                      <Tooltip
+                        contentStyle={TOOLTIP_STYLE}
+                        formatter={(value: number) => [fmt(value), "Remaining"]}
+                        labelFormatter={(label: string) => `Date: ${formatShortDate(label)}`}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="remaining"
+                        name="Remaining"
+                        stroke="oklch(0.62 0.21 18)"
+                        strokeWidth={2.5}
+                        dot={{ r: 2, fill: "oklch(0.62 0.21 18)", strokeWidth: 0 }}
+                        activeDot={{ r: 5 }}
+                        isAnimationActive={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
           </>
         )}
       </TabsContent>
 
       {/* ================================================================== */}
-      {/* Tab 4: Anomaly Detection                                           */}
+      {/* Tab 4: Order Timeline (NEW — LineChart + vertical event timeline)  */}
+      {/* ================================================================== */}
+      <TabsContent value="timeline" className="space-y-4 outline-none">
+        {orderProgressLoading ? (
+          <div className="space-y-4">
+            <Skeleton className="h-80" />
+            <Skeleton className="h-96" />
+          </div>
+        ) : orderProgressError ? (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Failed to load order timeline</AlertTitle>
+            <AlertDescription>
+              {orderProgressError instanceof Error ? orderProgressError.message : "Unknown error."}{" "}
+              <button
+                type="button"
+                onClick={() => bumpRefresh()}
+                className="underline underline-offset-2 hover:opacity-80"
+              >
+                Try again
+              </button>
+            </AlertDescription>
+          </Alert>
+        ) : dailySnapshots.length === 0 ? (
+          <EmptyState
+            message={`No order timeline data for ${currentProduct} with the current filters.`}
+            icon={CalendarDays}
+          />
+        ) : (
+          <>
+            {/* Chart: 3-line progress chart (Output % / Input % / Order 100% ref) */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <CalendarDays className="h-4 w-4" style={{ color: theme.chart }} />
+                  Output / Input Progress Over Time
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Daily cumulative output &amp; input progress (%) vs the 100% order reference line.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="h-80">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={dailySnapshots}
+                      margin={{ top: 5, right: 20, left: -10, bottom: 0 }}
+                    >
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        className="stroke-muted"
+                        vertical={false}
+                      />
+                      <XAxis
+                        dataKey="date"
+                        tick={{ fontSize: 10 }}
+                        className="text-muted-foreground"
+                        minTickGap={16}
+                        tickFormatter={(v: string) => formatShortDate(v)}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 10 }}
+                        allowDecimals={false}
+                        width={48}
+                        domain={[0, 110]}
+                        tickFormatter={(v: number) => `${v}%`}
+                      />
+                      <Tooltip
+                        contentStyle={TOOLTIP_STYLE}
+                        formatter={(value: number, name: string) => [`${Number(value).toFixed(1)}%`, name]}
+                        labelFormatter={(label: string) => `Date: ${formatShortDate(label)}`}
+                      />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Line
+                        type="monotone"
+                        dataKey="outputProgress"
+                        name="Output %"
+                        stroke="oklch(0.6 0.13 162)"
+                        strokeWidth={2.5}
+                        dot={false}
+                        activeDot={{ r: 4 }}
+                        isAnimationActive={false}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="inputProgress"
+                        name="Input %"
+                        stroke="oklch(0.6 0.1 195)"
+                        strokeWidth={2.5}
+                        dot={false}
+                        activeDot={{ r: 4 }}
+                        isAnimationActive={false}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey={() => 100}
+                        name="Order (100%)"
+                        stroke="oklch(0.55 0.025 220)"
+                        strokeWidth={1.5}
+                        strokeDasharray="6 4"
+                        dot={false}
+                        isAnimationActive={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Vertical timeline list */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center justify-between gap-2 text-sm">
+                  <span className="flex items-center gap-2">
+                    <GitCommitHorizontal className="h-4 w-4" style={{ color: theme.chart }} />
+                    Daily Events Timeline
+                  </span>
+                  <Badge variant="secondary" className="text-[10px] tabular-nums">
+                    {dailySnapshots.length} days
+                  </Badge>
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Daily OUTPUT / INPUT / ORDER deltas with cumulative state after each date.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="max-h-[600px] space-y-3 overflow-y-auto scroll-thin pr-2">
+                  {dailySnapshots.map((s, i) => {
+                    const dOrder = Number(s.dailyOrder ?? 0) || 0;
+                    const dOutput = Number(s.dailyOutput ?? 0) || 0;
+                    const dInput = Number(s.dailyInput ?? 0) || 0;
+                    return (
+                      <div key={`${s.date}-${i}`} className="relative pl-6">
+                        {/* Vertical line + dot */}
+                        <div className="absolute left-[7px] top-1 h-full w-px bg-border" aria-hidden />
+                        <div
+                          className="absolute left-0 top-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full border-2 border-background bg-foreground/40"
+                          aria-hidden
+                        >
+                          <Circle className="h-1.5 w-1.5 fill-current text-foreground/60" />
+                        </div>
+
+                        {/* Date header */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <CalendarClock className="h-3.5 w-3.5 text-muted-foreground" />
+                            <span className="text-sm font-semibold tabular-nums">
+                              {formatShortDate(s.date)}
+                            </span>
+                            <Badge
+                              className={cn("border text-[9px]", progressStatusBadgeClass(s.status))}
+                              variant="outline"
+                            >
+                              {progressStatusLabel(s.status)}
+                            </Badge>
+                          </div>
+                        </div>
+
+                        {/* Events row */}
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                          {dOrder > 0 ? (
+                            <Badge
+                              variant="outline"
+                              className="border-slate-300 bg-slate-50 text-[10px] text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300"
+                            >
+                              <ArrowRight className="mr-0.5 h-2.5 w-2.5" />
+                              ORDER +{fmt(dOrder)}
+                            </Badge>
+                          ) : null}
+                          {dOutput > 0 ? (
+                            <Badge
+                              variant="outline"
+                              className="border-emerald-300 bg-emerald-50 text-[10px] text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                            >
+                              <ArrowRight className="mr-0.5 h-2.5 w-2.5" />
+                              OUTPUT +{fmt(dOutput)}
+                            </Badge>
+                          ) : null}
+                          {dInput > 0 ? (
+                            <Badge
+                              variant="outline"
+                              className="border-teal-300 bg-teal-50 text-[10px] text-teal-700 dark:border-teal-800 dark:bg-teal-950/40 dark:text-teal-300"
+                            >
+                              <ArrowRight className="mr-0.5 h-2.5 w-2.5" />
+                              INPUT +{fmt(dInput)}
+                            </Badge>
+                          ) : null}
+                          {dOrder === 0 && dOutput === 0 && dInput === 0 ? (
+                            <span className="text-[10px] text-muted-foreground">No activity</span>
+                          ) : null}
+                        </div>
+
+                        {/* Cumulative state */}
+                        <div className="mt-2 grid grid-cols-3 gap-1.5 sm:grid-cols-6">
+                          <div className="rounded bg-muted/50 px-2 py-1">
+                            <div className="text-[9px] uppercase text-muted-foreground">Total Output</div>
+                            <div className="text-[11px] font-semibold tabular-nums text-amber-600 dark:text-amber-400">
+                              {fmt(s.totalOutput)}
+                            </div>
+                          </div>
+                          <div className="rounded bg-muted/50 px-2 py-1">
+                            <div className="text-[9px] uppercase text-muted-foreground">Total Input</div>
+                            <div className="text-[11px] font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+                              {fmt(s.totalInput)}
+                            </div>
+                          </div>
+                          <div className="rounded bg-muted/50 px-2 py-1">
+                            <div className="text-[9px] uppercase text-muted-foreground">Pending</div>
+                            <div className="text-[11px] font-semibold tabular-nums text-amber-600 dark:text-amber-400">
+                              {fmt(s.pending)}
+                            </div>
+                          </div>
+                          <div className="rounded bg-muted/50 px-2 py-1">
+                            <div className="text-[9px] uppercase text-muted-foreground">Remaining</div>
+                            <div className="text-[11px] font-semibold tabular-nums">
+                              {fmt(s.remaining)}
+                            </div>
+                          </div>
+                          <div className="rounded bg-muted/50 px-2 py-1">
+                            <div className="text-[9px] uppercase text-muted-foreground">Out %</div>
+                            <div className={cn("text-[11px] font-semibold tabular-nums", rateTone(clampPct(s.outputProgress)))}>
+                              {fmtPct(s.outputProgress)}
+                            </div>
+                          </div>
+                          <div className="rounded bg-muted/50 px-2 py-1">
+                            <div className="text-[9px] uppercase text-muted-foreground">In %</div>
+                            <div className={cn("text-[11px] font-semibold tabular-nums", rateTone(clampPct(s.inputProgress)))}>
+                              {fmtPct(s.inputProgress)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          </>
+        )}
+      </TabsContent>
+
+      {/* ================================================================== */}
+      {/* Tab 5: Anomaly Detection                                           */}
       {/* ================================================================== */}
       <TabsContent value="anomaly" className="space-y-4 outline-none">
         {orderProgressLoading ? (
@@ -2358,6 +2755,11 @@ export function ProductDashboardView() {
                     {anomalies.map((a, i) => {
                       const tone = anomalyToneClass(a.severity);
                       const badge = anomalyBadgeClass(a.severity);
+                      const orderQty = Number(a.orderQty ?? 0) || 0;
+                      const outputQty = Number(a.outputQty ?? 0) || 0;
+                      const inputQty = Number(a.inputQty ?? 0) || 0;
+                      const excess = Number(a.excess ?? 0) || 0;
+                      const hasNumbers = orderQty > 0 || outputQty > 0 || inputQty > 0 || excess > 0;
                       return (
                         <div
                           key={a.key || `${a.type}-${i}`}
@@ -2397,6 +2799,26 @@ export function ProductDashboardView() {
                           <p className="mt-1.5 text-xs text-foreground/90">
                             {a.description || "No description provided."}
                           </p>
+                          {hasNumbers ? (
+                            <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                              <div className="rounded bg-card/70 px-2 py-1">
+                                <div className="text-[9px] uppercase text-muted-foreground">Order Qty</div>
+                                <div className="text-xs font-semibold tabular-nums">{fmt(orderQty)}</div>
+                              </div>
+                              <div className="rounded bg-card/70 px-2 py-1">
+                                <div className="text-[9px] uppercase text-muted-foreground">Output Qty</div>
+                                <div className="text-xs font-semibold tabular-nums text-amber-600 dark:text-amber-400">{fmt(outputQty)}</div>
+                              </div>
+                              <div className="rounded bg-card/70 px-2 py-1">
+                                <div className="text-[9px] uppercase text-muted-foreground">Input Qty</div>
+                                <div className="text-xs font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{fmt(inputQty)}</div>
+                              </div>
+                              <div className="rounded bg-card/70 px-2 py-1">
+                                <div className="text-[9px] uppercase text-muted-foreground">Excess</div>
+                                <div className="text-xs font-semibold tabular-nums text-rose-600 dark:text-rose-400">{fmt(excess)}</div>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
                       );
                     })}
@@ -2546,6 +2968,358 @@ export function ProductDashboardView() {
           </>
         )}
       </TabsContent>
+
+      {/* ================================================================== */}
+      {/* Tab 7: Reports (NEW — 6 client-side Excel export buttons)          */}
+      {/* ================================================================== */}
+      <TabsContent value="reports" className="space-y-4 outline-none">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <FileSpreadsheet className="h-4 w-4" style={{ color: theme.chart }} />
+              Export Production Reports
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Generate Excel files from the already-fetched data for {currentProduct}. Files are named{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-[10px]">
+                Production_Report_&lt;type&gt;_&lt;date&gt;.xlsx
+              </code>
+              .
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {/* 1. Current Progress Report (drilldown hierarchy) */}
+              <Button
+                variant="outline"
+                className="h-auto flex-col items-start gap-1 p-4 text-left"
+                onClick={() => {
+                  try {
+                    if (!drilldownData?.hierarchy || drilldownData.hierarchy.length === 0) {
+                      toast.error("No drilldown data available — open the Drill-Down tab first or wait for data to load.");
+                      return;
+                    }
+                    const rows: Record<string, unknown>[] = [];
+                    for (const po of drilldownData.hierarchy) {
+                      for (const fpo of po.factoryPOs) {
+                        for (const s of fpo.sizes) {
+                          rows.push({
+                            "PO NO#": po.poNo,
+                            "Factory PO": fpo.factoryPO,
+                            "Size": s.size,
+                            "Model": s.model || "",
+                            "SKU": s.sku || "",
+                            "Season": s.season || "",
+                            "Color Code": s.colorCode || "",
+                            "Order Qty": s.orderQty,
+                            "Output Qty": s.outputQty,
+                            "Input Qty": s.inputQty,
+                            "Pending": s.pending,
+                            "Remaining": s.remaining,
+                            "Output %": s.outputProgress,
+                            "Input %": s.inputProgress,
+                            "Input vs Output %": s.inputVsOutput,
+                            "Status": (s.status || []).join(", "),
+                            "Anomalies": (s.anomalies || []).join(", "),
+                          });
+                        }
+                      }
+                    }
+                    downloadWorkbook("Current Progress", rows, getReportFileName("CurrentProgress"));
+                    toast.success(`Exported ${rows.length} rows`);
+                  } catch (e) {
+                    toast.error("Failed to export current progress report");
+                  }
+                }}
+              >
+                <div className="flex w-full items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
+                    <ListTree className="h-4 w-4" />
+                  </div>
+                  <span className="text-sm font-semibold">Current Progress Report</span>
+                  <FileDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <p className="text-[11px] font-normal text-muted-foreground">
+                  Drilldown hierarchy (PO NO# → Factory PO → Size) with full progress metrics.
+                </p>
+              </Button>
+
+              {/* 2. Daily Progress Report (dailySnapshots) */}
+              <Button
+                variant="outline"
+                className="h-auto flex-col items-start gap-1 p-4 text-left"
+                onClick={() => {
+                  try {
+                    if (dailySnapshots.length === 0) {
+                      toast.error("No daily snapshot data available.");
+                      return;
+                    }
+                    const rows: Record<string, unknown>[] = dailySnapshots.map((s) => ({
+                      "Date": s.date,
+                      "Daily Order": s.dailyOrder,
+                      "Daily Output": s.dailyOutput,
+                      "Daily Input": s.dailyInput,
+                      "Total Output": s.totalOutput,
+                      "Total Input": s.totalInput,
+                      "Pending": s.pending,
+                      "Remaining": s.remaining,
+                      "Output %": s.outputProgress,
+                      "Input %": s.inputProgress,
+                      "Input vs Output %": s.inputVsOutput,
+                      "Status": s.status,
+                    }));
+                    downloadWorkbook("Daily Progress", rows, getReportFileName("DailyProgress"));
+                    toast.success(`Exported ${rows.length} days`);
+                  } catch (e) {
+                    toast.error("Failed to export daily progress report");
+                  }
+                }}
+              >
+                <div className="flex w-full items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                    <Layers className="h-4 w-4" />
+                  </div>
+                  <span className="text-sm font-semibold">Daily Progress Report</span>
+                  <FileDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <p className="text-[11px] font-normal text-muted-foreground">
+                  Daily snapshot table with all 12 columns (order / output / input / progress).
+                </p>
+              </Button>
+
+              {/* 3. Order Timeline Report */}
+              <Button
+                variant="outline"
+                className="h-auto flex-col items-start gap-1 p-4 text-left"
+                onClick={() => {
+                  try {
+                    if (dailySnapshots.length === 0) {
+                      toast.error("No order timeline data available.");
+                      return;
+                    }
+                    const rows: Record<string, unknown>[] = dailySnapshots.map((s) => ({
+                      "Date": s.date,
+                      "Daily Order": s.dailyOrder,
+                      "Daily Output": s.dailyOutput,
+                      "Daily Input": s.dailyInput,
+                      "Cumulative Output": s.totalOutput,
+                      "Cumulative Input": s.totalInput,
+                      "Pending": s.pending,
+                      "Remaining": s.remaining,
+                      "Output Progress %": s.outputProgress,
+                      "Input Progress %": s.inputProgress,
+                      "Input vs Output %": s.inputVsOutput,
+                      "Status": s.status,
+                    }));
+                    downloadWorkbook("Order Timeline", rows, getReportFileName("OrderTimeline"));
+                    toast.success(`Exported ${rows.length} timeline entries`);
+                  } catch (e) {
+                    toast.error("Failed to export order timeline report");
+                  }
+                }}
+              >
+                <div className="flex w-full items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-teal-100 text-teal-700 dark:bg-teal-950/50 dark:text-teal-300">
+                    <CalendarDays className="h-4 w-4" />
+                  </div>
+                  <span className="text-sm font-semibold">Order Timeline Report</span>
+                  <FileDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <p className="text-[11px] font-normal text-muted-foreground">
+                  Daily OUTPUT / INPUT deltas with cumulative progress %.
+                </p>
+              </Button>
+
+              {/* 4. Data Change History */}
+              <Button
+                variant="outline"
+                className="h-auto flex-col items-start gap-1 p-4 text-left"
+                onClick={() => {
+                  try {
+                    if (historyRows.length === 0) {
+                      toast.error("No change history available.");
+                      return;
+                    }
+                    const rows: Record<string, unknown>[] = historyRows.map((h) => ({
+                      "Timestamp": h.timestamp,
+                      "User": h.user,
+                      "Action": h.action,
+                      "Entity Type": h.entityType,
+                      "Entity ID": h.entityId ?? "",
+                      "Detail": h.detail ?? "",
+                      "Product Type": h.productType ?? "",
+                      "Old Value": typeof h.oldValue === "object" ? JSON.stringify(h.oldValue) : (h.oldValue ?? ""),
+                      "New Value": typeof h.newValue === "object" ? JSON.stringify(h.newValue) : (h.newValue ?? ""),
+                    }));
+                    downloadWorkbook("Change History", rows, getReportFileName("ChangeHistory"));
+                    toast.success(`Exported ${rows.length} history entries`);
+                  } catch (e) {
+                    toast.error("Failed to export data change history");
+                  }
+                }}
+              >
+                <div className="flex w-full items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-700 dark:bg-slate-800/60 dark:text-slate-300">
+                    <HistoryIcon className="h-4 w-4" />
+                  </div>
+                  <span className="text-sm font-semibold">Data Change History</span>
+                  <FileDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <p className="text-[11px] font-normal text-muted-foreground">
+                  Audit log entries (create / update / delete / import) with timestamps.
+                </p>
+              </Button>
+
+              {/* 5. Anomaly Report (all anomalies) */}
+              <Button
+                variant="outline"
+                className="h-auto flex-col items-start gap-1 p-4 text-left"
+                onClick={() => {
+                  try {
+                    if (anomalies.length === 0) {
+                      toast.error("No anomalies detected — nothing to export.");
+                      return;
+                    }
+                    const rows: Record<string, unknown>[] = anomalies.map((a) => ({
+                      "Type": a.type,
+                      "Severity": a.severity,
+                      "PO NO#": a.poNo,
+                      "Factory PO": a.factoryPO,
+                      "Size": a.size,
+                      "Description": a.description,
+                      "Order Qty": a.orderQty ?? "",
+                      "Output Qty": a.outputQty ?? "",
+                      "Input Qty": a.inputQty ?? "",
+                      "Excess": a.excess ?? "",
+                    }));
+                    downloadWorkbook("Anomaly Report", rows, getReportFileName("Anomalies"));
+                    toast.success(`Exported ${rows.length} anomalies`);
+                  } catch (e) {
+                    toast.error("Failed to export anomaly report");
+                  }
+                }}
+              >
+                <div className="flex w-full items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300">
+                    <Bug className="h-4 w-4" />
+                  </div>
+                  <span className="text-sm font-semibold">Anomaly Report</span>
+                  <FileDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <p className="text-[11px] font-normal text-muted-foreground">
+                  All detected anomalies (over output / input exceeds output / deadline risk) with details.
+                </p>
+              </Button>
+
+              {/* 6. Deadline Risk Report (DEADLINE_RISK anomalies only) */}
+              <Button
+                variant="outline"
+                className="h-auto flex-col items-start gap-1 p-4 text-left"
+                onClick={() => {
+                  try {
+                    const deadlineRisks = anomalies.filter(
+                      (a) => (a.type || "").toUpperCase() === "DEADLINE_RISK",
+                    );
+                    if (deadlineRisks.length === 0) {
+                      toast.error("No deadline-risk anomalies detected — nothing to export.");
+                      return;
+                    }
+                    const rows: Record<string, unknown>[] = deadlineRisks.map((a) => ({
+                      "Type": a.type,
+                      "Severity": a.severity,
+                      "PO NO#": a.poNo,
+                      "Factory PO": a.factoryPO,
+                      "Size": a.size,
+                      "Description": a.description,
+                      "Order Qty": a.orderQty ?? "",
+                      "Output Qty": a.outputQty ?? "",
+                      "Input Qty": a.inputQty ?? "",
+                      "Missing Qty": a.missing ?? "",
+                      "Deadline": a.deadline ?? "",
+                      "Days Until Deadline": a.daysUntilDeadline ?? "",
+                    }));
+                    downloadWorkbook("Deadline Risk", rows, getReportFileName("DeadlineRisk"));
+                    toast.success(`Exported ${rows.length} deadline-risk items`);
+                  } catch (e) {
+                    toast.error("Failed to export deadline risk report");
+                  }
+                }}
+              >
+                <div className="flex w-full items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                    <CalendarClock className="h-4 w-4" />
+                  </div>
+                  <span className="text-sm font-semibold">Deadline Risk Report</span>
+                  <FileDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <p className="text-[11px] font-normal text-muted-foreground">
+                  Only <code className="text-[10px]">DEADLINE_RISK</code> anomalies with deadline &amp; missing qty.
+                </p>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Helpful hints / data status */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Database className="h-4 w-4 text-primary" />
+              Data Availability
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Reports use already-fetched dashboard data. Click "Refresh" if a report shows as empty.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              <MiniStat
+                label="Drilldown Hierarchy"
+                value={fmt(drilldownData?.summary?.totalSizes ?? 0)}
+                icon={ListTree}
+                iconClass="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+                sub={drilldownLoading ? "loading…" : "sizes"}
+              />
+              <MiniStat
+                label="Daily Snapshots"
+                value={fmt(dailySnapshots.length)}
+                icon={Layers}
+                iconClass="bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+                sub="days"
+              />
+              <MiniStat
+                label="Timeline Entries"
+                value={fmt(dailySnapshots.length)}
+                icon={CalendarDays}
+                iconClass="bg-teal-100 text-teal-700 dark:bg-teal-950/50 dark:text-teal-300"
+                sub="days"
+              />
+              <MiniStat
+                label="History Rows"
+                value={fmt(historyRows.length)}
+                icon={HistoryIcon}
+                iconClass="bg-slate-100 text-slate-700 dark:bg-slate-800/60 dark:text-slate-300"
+                sub="entries"
+              />
+              <MiniStat
+                label="Anomalies"
+                value={fmt(anomalies.length)}
+                icon={Bug}
+                iconClass="bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"
+                sub="found"
+              />
+              <MiniStat
+                label="Deadline Risks"
+                value={fmt(anomalies.filter((a) => (a.type || "").toUpperCase() === "DEADLINE_RISK").length)}
+                icon={CalendarClock}
+                iconClass="bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+                sub="at risk"
+              />
+            </div>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
       {/* ---------------- Tab: Drill-Down (PO NO# → Factory PO → Size hierarchy) ---------------- */}
       <TabsContent value="drilldown" className="space-y-4 outline-none">
         {/* Summary + search */}

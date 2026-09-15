@@ -1,0 +1,759 @@
+     1→// BulkValidationService
+     2→// Implements the COPY → PASTE → VALIDATE → SIMULATE → SHOW ERRORS → FIX → CONFIRM flow.
+     3→//
+     4→// Key principle: NEVER write to the database during validation. The service
+     5→// builds a temporary simulation state from existing DB data + pasted rows,
+     6→// then sequentially validates each row against the accumulated state.
+     7→//
+     8→// Sequential validation is critical: if the user pastes multiple Output rows
+     9→// for the same (PO + FactoryPO + Size), each row must be checked against the
+    10→// running total (existing + all previously processed paste rows), NOT just
+    11→// the existing DB total. This catches cases like:
+    12→//   Row 1: Output 15 → 80+15=95 (valid)
+    13→//   Row 2: Output 15 → 95+15=110 (exceeds Order 100, ERROR)
+    14→
+    15→import { db } from "./db";
+    16→import { classifyShippingStatus, type ShippingStatus } from "./quantity-service";
+    17→import { lookupFactoryPO } from "./master-service";
+    18→import type { CanonicalField } from "./fields";
+    19→
+    20→// ===== Types =====
+    21→
+    22→export interface ParsedRow {
+    23→  excelRow: number;        // 1-based row number (row 1 = header, row 2 = first data)
+    24→  rawValues: string[];     // raw cell values from the clipboard
+    25→  headers: string[];       // column headers (same for all rows)
+    26→}
+    27→
+    28→export interface BulkRowInput {
+    29→  excelRow: number;
+    30→  shippingStatus: string;
+    31→  poNo: string;
+    32→  factoryPO: string;
+    33→  size: string;
+    34→  qty: string;
+    35→}
+    36→
+    37→export interface BulkValidationRequest {
+    38→  productType: string;
+    39→  rows: BulkRowInput[];
+    40→}
+    41→
+    42→export type ValidationSeverity = "CRITICAL" | "ERROR" | "WARNING" | "INFO";
+    43→
+    44→export interface ValidationIssue {
+    45→  severity: ValidationSeverity;
+    46→  code: string;             // e.g. "OUTPUT_EXCEEDS_ORDER"
+    47→  title: string;
+    48→  description: string;
+    49→  excess?: number;          // for quantity errors
+    50→}
+    51→
+    52→export interface GroupState {
+    53→  poNo: string;
+    54→  factoryPO: string;
+    55→  size: string;
+    56→  model: string;
+    57→  sku: string;
+    58→  colorCode: string;
+    59→  deadline: string;
+    60→  masterExists: boolean;
+    61→  sizeValid: boolean;
+    62→  // Current quantities (from DB)
+    63→  currentOrder: number;
+    64→  currentOutput: number;
+    65→  currentInput: number;
+    66→  // Simulated quantities (accumulated as rows are processed)
+    67→  simOrder: number;
+    68→  simOutput: number;
+    69→  simInput: number;
+    70→}
+    71→
+    72→export interface RowResult {
+    73→  excelRow: number;
+    74→  input: BulkRowInput;
+    75→  status: "valid" | "warning" | "error";
+    76→  issues: ValidationIssue[];
+    77→  // Auto-filled from Master Data (empty if not found)
+    78→  model: string;
+    79→  sku: string;
+    80→  colorCode: string;
+    81→  deadline: string;
+    82→  masterExists: boolean;
+    83→  // Current quantities (before this row)
+    84→  currentOrder: number;
+    85→  currentOutput: number;
+    86→  currentInput: number;
+    87→  // Simulated quantities (after this row is applied)
+    88→  simOrder: number;
+    89→  simOutput: number;
+    90→  simInput: number;
+    91→  groupKey: string;
+    92→}
+    93→
+    94→export interface GroupedError {
+    95→  groupKey: string;
+    96→  poNo: string;
+    97→  factoryPO: string;
+    98→  size: string;
+    99→  excelRows: number[];
+   100→  issue: ValidationIssue;
+   101→  currentOrder: number;
+   102→  currentOutput: number;
+   103→  currentInput: number;
+   104→  newQty: number;
+   105→  expectedQty: number;
+   106→}
+   107→
+   108→export interface BulkValidationSummary {
+   109→  totalRows: number;
+   110→  validRows: number;
+   111→  warningRows: number;
+   112→  errorRows: number;
+   113→  productGroupsAffected: number;
+   114→  duplicatePossible: number;
+   115→  quantityErrors: number;
+   116→  masterDataErrors: number;
+   117→}
+   118→
+   119→export interface BulkValidationResponse {
+   120→  ok: boolean;
+   121→  summary: BulkValidationSummary;
+   122→  rows: RowResult[];
+   123→  groupedErrors: GroupedError[];
+   124→  groups: GroupState[];
+   125→}
+   126→
+   127→// ===== Parse pasted data =====
+   128→
+   129→// Parse tab-separated clipboard text into headers + rows.
+   130→// Auto-detects whether the first row is a header (by checking if it contains
+   131→// known field names like "Status", "PO", "Factory", "Size", "Qty").
+   132→export function parsePastedData(text: string): { headers: string[]; rows: ParsedRow[]; hasHeader: boolean } {
+   133→  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter((l) => l.trim());
+   134→  if (lines.length === 0) return { headers: [], rows: [], hasHeader: false };
+   135→
+   136→  // Split each line by tab. If no tabs, try comma (CSV fallback).
+   137→  const splitLine = (line: string): string[] => {
+   138→    if (line.includes("\t")) return line.split("\t");
+   139→    if (line.includes(",")) return line.split(",");
+   140→    // Single column — return as-is.
+   141→    return [line];
+   142→  };
+   143→
+   144→  const firstRow = splitLine(lines[0]);
+   145→  // Check if the first row looks like a header.
+   146→  const headerKeywords = ["status", "po", "factory", "size", "qty", "quantity", "date", "deadline", "model", "sku", "color", "season"];
+   147→  const firstRowLower = firstRow.map((c) => c.toLowerCase().trim());
+   148→  const matchesCount = firstRowLower.filter((c) =>
+   149→    headerKeywords.some((kw) => c.includes(kw))
+   150→  ).length;
+   151→  const hasHeader = matchesCount >= 2; // at least 2 header-like cells
+   152→
+   153→  let headers: string[];
+   154→  let dataLines: string[];
+   155→
+   156→  if (hasHeader) {
+   157→    headers = firstRow.map((c, i) => (c || `Column_${i + 1}`).trim());
+   158→    dataLines = lines.slice(1);
+   159→  } else {
+   160→    // No header — generate generic column names.
+   161→    headers = firstRow.map((_, i) => `Column_${i + 1}`);
+   162→    dataLines = lines; // include the first row as data
+   163→  }
+   164→
+   165→  const rows: ParsedRow[] = dataLines.map((line, idx) => {
+   166→    const values = splitLine(line);
+   167→    return {
+   168→      excelRow: hasHeader ? idx + 2 : idx + 1, // 1-based: header is row 1, first data is row 2
+   169→      rawValues: values,
+   170→      headers,
+   171→    };
+   172→  });
+   173→
+   174→  return { headers, rows, hasHeader };
+   175→}
+   176→
+   177→// ===== Auto-detect columns =====
+   178→
+   179→const BULK_FIELD_ALIASES: Record<string, CanonicalField> = {
+   180→  // Shipping Status
+   181→  shippingstatus: "shippingStatus",
+   182→  shipstatus: "shippingStatus",
+   183→  status: "shippingStatus",
+   184→  shipping: "shippingStatus",
+   185→  // PO NO#
+   186→  pono: "poNo",
+   187→  po: "poNo",
+   188→  ponumber: "poNo",
+   189→  ponos: "poNo",
+   190→  // Factory PO
+   191→  factorypo: "factoryPO",
+   192→  facpo: "factoryPO",
+   193→  factory: "factoryPO",
+   194→  factorypono: "factoryPO",
+   195→  factoryponumber: "factoryPO",
+   196→  // Size
+   197→  size: "size",
+   198→  // Qty
+   199→  qty1: "qty1",
+   200→  qty: "qty1",
+   201→  quantity: "qty1",
+   202→  quantity1: "qty1",
+   203→  q1: "qty1",
+   204→  qty2: "qty2",
+   205→  quantity2: "qty2",
+   206→  q2: "qty2",
+   207→};
+   208→
+   209→// Map a header string to a canonical field. Returns "" if no match.
+   210→export function detectBulkColumn(header: string): CanonicalField | "" {
+   211→  const norm = header.toLowerCase().replace(/[^a-z0-9]/g, "");
+   212→  if (!norm) return "";
+   213→  // Direct alias match.
+   214→  if (BULK_FIELD_ALIASES[norm]) return BULK_FIELD_ALIASES[norm];
+   215→  // Partial match (e.g. "Factory PO#" → "factorypo").
+   216→  for (const [alias, field] of Object.entries(BULK_FIELD_ALIASES)) {
+   217→    if (norm.includes(alias) || alias.includes(norm)) {
+   218→      if (alias.length >= 3 || norm.length >= 3) return field;
+   219→    }
+   220→  }
+   221→  return "";
+   222→}
+   223→
+   224→// Build auto-mapping from headers to canonical fields.
+   225→export function buildBulkMapping(headers: string[]): Record<string, CanonicalField | ""> {
+   226→  const mapping: Record<string, CanonicalField | ""> = {};
+   227→  const assigned = new Set<CanonicalField>();
+   228→  // Pass 1: exact matches.
+   229→  for (const h of headers) {
+   230→    const field = detectBulkColumn(h);
+   231→    if (field && !assigned.has(field)) {
+   232→      mapping[h] = field;
+   233→      assigned.add(field);
+   234→    } else {
+   235→      mapping[h] = "";
+   236→    }
+   237→  }
+   238→  return mapping;
+   239→}
+   240→
+   241→// Required columns for bulk validation.
+   242→export const REQUIRED_BULK_COLUMNS: CanonicalField[] = [
+   243→  "shippingStatus",
+   244→  "poNo",
+   245→  "factoryPO",
+   246→  "size",
+   247→  "qty1",
+   248→];
+   249→
+   250→// Check if all required columns are mapped.
+   251→export function checkRequiredColumns(mapping: Record<string, CanonicalField | "">): {
+   252→  missing: CanonicalField[];
+   253→} {
+   254→  const mapped = new Set(Object.values(mapping).filter(Boolean) as CanonicalField[]);
+   255→  const missing = REQUIRED_BULK_COLUMNS.filter((f) => !mapped.has(f));
+   256→  return { missing };
+   257→}
+   258→
+   259→// ===== Core validation =====
+   260→
+   261→// Fetch all existing transactions for a set of (poNo, factoryPO, size) groups.
+   262→// Returns a map of groupKey → { order, output, input, masterInfo }.
+   263→async function fetchExistingState(
+   264→  productType: string,
+   265→  groupKeys: Set<string>
+   266→): Promise<Map<string, GroupState>> {
+   267→  const result = new Map<string, GroupState>();
+   268→  if (groupKeys.size === 0) return result;
+   269→
+   270→  // Fetch MasterData rows for the product that match any of the group keys.
+   271→  // We use a broad query (all rows for the product) then filter in JS.
+   272→  // For performance, we can use raw SQL with OR conditions.
+   273→  const masterRows = await db.masterData.findMany({
+   274→    where: { productType },
+   275→    select: {
+   276→      poNo: true, factoryPO: true, size: true, model: true, sku: true,
+   277→      colorCode: true, colorCode2: true, deadline: true, shippingStatus: true,
+   278→      qty1: true,
+   279→    },
+   280→  });
+   281→
+   282→  // Fetch EntryData rows for the product.
+   283→  const entryRows = await db.entryData.findMany({
+   284→    where: { productType },
+   285→    select: {
+   286→      poNo: true, factoryPO: true, size: true, shippingStatus: true,
+   287→      qty1: true, date: true,
+   288→    },
+   289→  });
+   290→
+   291→  // Build group states from both sources.
+   292→  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+   293→
+   294→  for (const gk of groupKeys) {
+   295→    // Parse the group key: "poNo|factoryPO|size"
+   296→    const [poNo, factoryPO, size] = gk.split("|");
+   297→    if (!poNo || !factoryPO || !size) continue;
+   298→
+   299→    const state: GroupState = {
+   300→      poNo, factoryPO, size,
+   301→      model: "", sku: "", colorCode: "", deadline: "",
+   302→      masterExists: false, sizeValid: false,
+   303→      currentOrder: 0, currentOutput: 0, currentInput: 0,
+   304→      simOrder: 0, simOutput: 0, simInput: 0,
+   305→    };
+   306→
+   307→    // Aggregate MasterData.
+   308→    let masterFound = false;
+   309→    let sizeFound = false;
+   310→    for (const r of masterRows) {
+   311→      if (norm(r.poNo || "") !== norm(poNo)) continue;
+   312→      if (norm(r.factoryPO || "") !== norm(factoryPO)) continue;
+   313→      masterFound = true;
+   314→      // Fill shared fields from first matching row.
+   315→      if (!state.model) state.model = r.model || "";
+   316→      if (!state.sku) state.sku = r.sku || "";
+   317→      if (!state.colorCode) state.colorCode = r.colorCode || "";
+   318→      if (!state.deadline) state.deadline = r.deadline || "";
+   319→      // Check size.
+   320→      if (norm(r.size || "") === norm(size)) {
+   321→        sizeFound = true;
+   322→        const qty = Number(r.qty1) || 0;
+   323→        const bucket = classifyShippingStatus(r.shippingStatus);
+   324→        if (bucket === "order") state.currentOrder += qty;
+   325→        else if (bucket === "output") state.currentOutput += qty;
+   326→        else if (bucket === "input") state.currentInput += qty;
+   327→      }
+   328→    }
+   329→    state.masterExists = masterFound;
+   330→    state.sizeValid = sizeFound;
+   331→
+   332→    // Aggregate EntryData (user-entered transactions).
+   333→    for (const r of entryRows) {
+   334→      if (norm(r.poNo || "") !== norm(poNo)) continue;
+   335→      if (norm(r.factoryPO || "") !== norm(factoryPO)) continue;
+   336→      if (norm(r.size || "") !== norm(size)) continue;
+   337→      const qty = Number(r.qty1) || 0;
+   338→      const bucket = classifyShippingStatus(r.shippingStatus);
+   339→      if (bucket === "order") {
+   340→        state.currentOrder += qty;
+   341→        state.simOrder += qty;
+   342→      } else if (bucket === "output") {
+   343→        state.currentOutput += qty;
+   344→        state.simOutput += qty;
+   345→      } else if (bucket === "input") {
+   346→        state.currentInput += qty;
+   347→        state.simInput += qty;
+   348→      }
+   349→    }
+   350→
+   351→    // Initialize simulation totals from current totals.
+   352→    state.simOrder = state.currentOrder;
+   353→    state.simOutput = state.currentOutput;
+   354→    state.simInput = state.currentInput;
+   355→
+   356→    result.set(gk, state);
+   357→  }
+   358→
+   359→  return result;
+   360→}
+   361→
+   362→// Check if a deadline has passed.
+   363→function isDeadlinePassed(deadline: string | null | undefined): boolean {
+   364→  if (!deadline) return false;
+   365→  const s = String(deadline).trim();
+   366→  if (!s) return false;
+   367→  // Try to parse as date.
+   368→  let d: Date | null = null;
+   369→  // Try Excel serial number.
+   370→  const n = Number(s);
+   371→  if (!isNaN(n) && n > 1000) {
+   372→    const epoch = new Date(Date.UTC(1899, 11, 30));
+   373→    epoch.setDate(epoch.getDate() + n);
+   374→    d = epoch;
+   375→  } else {
+   376→    const parsed = new Date(s);
+   377→    if (!isNaN(parsed.getTime())) d = parsed;
+   378→  }
+   379→  if (!d) return false;
+   380→  const now = new Date();
+   381→  now.setHours(0, 0, 0, 0);
+   382→  return d.getTime() < now.getTime();
+   383→}
+   384→
+   385→// Main validation function. Processes rows sequentially, accumulating
+   386→// simulation state per group.
+   387→export async function validateBulkData(
+   388→  req: BulkValidationRequest
+   389→): Promise<BulkValidationResponse> {
+   390→  const { productType, rows } = req;
+   391→  const rowResults: RowResult[] = [];
+   392→  const groupedErrors: GroupedError[] = [];
+   393→
+   394→  // Step 1: Collect all unique group keys.
+   395→  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+   396→  const groupKeys = new Set<string>();
+   397→  for (const r of rows) {
+   398→    if (r.poNo && r.factoryPO && r.size) {
+   399→      groupKeys.add(`${norm(r.poNo)}|${norm(r.factoryPO)}|${norm(r.size)}`);
+   400→    }
+   401→  }
+   402→
+   403→  // Step 2: Fetch existing state for all groups (batch).
+   404→  const groupStates = await fetchExistingState(productType, groupKeys);
+   405→
+   406→  // Step 3: Track duplicate signatures within pasted data.
+   407→  // Signature: date + status + poNo + factoryPO + size + qty
+   408→  const pasteSignatures = new Map<string, number[]>(); // signature → excelRows
+   409→  const today = new Date().toISOString().slice(0, 10);
+   410→
+   411→  // Step 4: Track existing entry signatures for duplicate-with-DB check.
+   412→  // (Fetched in fetchExistingState; we check here.)
+   413→  const existingEntries = await db.entryData.findMany({
+   414→    where: { productType },
+   415→    select: {
+   416→      id: true, date: true, shippingStatus: true,
+   417→      poNo: true, factoryPO: true, size: true, qty1: true,
+   418→    },
+   419→  });
+   420→  const entrySignatures = new Map<string, { id: string; date: string }>();
+   421→  for (const e of existingEntries) {
+   422→    const sig = `${e.date}|${e.shippingStatus}|${norm(e.poNo || "")}|${norm(e.factoryPO || "")}|${norm(e.size || "")}|${e.qty1}`;
+   423→    entrySignatures.set(sig, { id: e.id, date: e.date || "" });
+   424→  }
+   425→
+   426→  // Step 5: Process each row sequentially.
+   427→  for (const rowInput of rows) {
+   428→    const issues: ValidationIssue[] = [];
+   429→    const groupKey = `${norm(rowInput.poNo)}|${norm(rowInput.factoryPO)}|${norm(rowInput.size)}`;
+   430→    const state = groupStates.get(groupKey);
+   431→
+   432→    // --- Validate required fields ---
+   433→    if (!rowInput.shippingStatus) {
+   434→      issues.push({
+   435→        severity: "ERROR",
+   436→        code: "MISSING_REQUIRED_FIELD",
+   437→        title: "Missing Shipping Status",
+   438→        description: "Shipping Status is required.",
+   439→      });
+   440→    }
+   441→    if (!rowInput.poNo) {
+   442→      issues.push({
+   443→        severity: "ERROR",
+   444→        code: "MISSING_REQUIRED_FIELD",
+   445→        title: "Missing PO NO#",
+   446→        description: "PO NO# is required.",
+   447→      });
+   448→    }
+   449→    if (!rowInput.factoryPO) {
+   450→      issues.push({
+   451→        severity: "ERROR",
+   452→        code: "MISSING_REQUIRED_FIELD",
+   453→        title: "Missing Factory PO",
+   454→        description: "Factory PO is required.",
+   455→      });
+   456→    }
+   457→    if (!rowInput.size) {
+   458→      issues.push({
+   459→        severity: "ERROR",
+   460→        code: "MISSING_REQUIRED_FIELD",
+   461→        title: "Missing Size",
+   462→        description: "Size is required.",
+   463→      });
+   464→    }
+   465→    if (!rowInput.qty) {
+   466→      issues.push({
+   467→        severity: "ERROR",
+   468→        code: "MISSING_REQUIRED_FIELD",
+   469→        title: "Missing Qty",
+   470→        description: "Qty is required.",
+   471→      });
+   472→    }
+   473→
+   474→    // --- Validate shipping status ---
+   475→    const statusBucket = classifyShippingStatus(rowInput.shippingStatus);
+   476→    if (rowInput.shippingStatus && statusBucket === "other") {
+   477→      issues.push({
+   478→        severity: "ERROR",
+   479→        code: "INVALID_SHIPPING_STATUS",
+   480→        title: "Invalid Shipping Status",
+   481→        description: `"${rowInput.shippingStatus}" is not a valid status. Use 1.Order, 2.Output, 3.Pending, or 4.Input.`,
+   482→      });
+   483→    }
+   484→
+   485→    // --- Validate qty ---
+   486→    const qtyNum = Number(rowInput.qty);
+   487→    if (rowInput.qty && isNaN(qtyNum)) {
+   488→      issues.push({
+   489→        severity: "ERROR",
+   490→        code: "INVALID_QTY",
+   491→        title: "Invalid Qty",
+   492→        description: `Qty "${rowInput.qty}" is not a valid number.`,
+   493→      });
+   494→    }
+   495→    if (rowInput.qty && !isNaN(qtyNum) && qtyNum === 0) {
+   496→      issues.push({
+   497→        severity: "ERROR",
+   498→        code: "INVALID_QTY",
+   499→        title: "Invalid Qty",
+   500→        description: "Qty must be greater than 0.",
+   501→      });
+   502→    }
+   503→    if (rowInput.qty && !isNaN(qtyNum) && qtyNum < 0) {
+   504→      issues.push({
+   505→        severity: "ERROR",
+   506→        code: "INVALID_QTY",
+   507→        title: "Invalid Qty",
+   508→        description: "Qty must be greater than 0.",
+   509→      });
+   510→    }
+   511→
+   512→    // --- Check master data existence ---
+   513→    if (rowInput.factoryPO && rowInput.poNo && rowInput.size && state) {
+   514→      if (!state.masterExists) {
+   515→        issues.push({
+   516→          severity: "WARNING",
+   517→          code: "MISSING_MASTER_DATA",
+   518→          title: "Missing Master Data",
+   519→          description: `Factory PO "${rowInput.factoryPO}" with PO NO# "${rowInput.poNo}" not found in Master Data. Fields will be left blank.`,
+   520→        });
+   521→      } else if (!state.sizeValid) {
+   522→        issues.push({
+   523→          severity: "WARNING",
+   524→          code: "INVALID_SIZE",
+   525→          title: "Invalid Size",
+   526→          description: `Size "${rowInput.size}" does not belong to Factory PO "${rowInput.factoryPO}" with PO NO# "${rowInput.poNo}".`,
+   527→        });
+   528→      }
+   529→    }
+   530→
+   531→    // --- Check deadline ---
+   532→    if (state?.deadline && isDeadlinePassed(state.deadline)) {
+   533→      issues.push({
+   534→        severity: "WARNING",
+   535→        code: "DEADLINE_PASSED",
+   536→        title: "Deadline Passed",
+   537→        description: `Deadline (${state.deadline}) has already passed.`,
+   538→      });
+   539→    }
+   540→
+   541→    // --- Sequential quantity simulation ---
+   542→    // Only simulate if qty is valid and status is valid.
+   543→    if (state && !isNaN(qtyNum) && qtyNum > 0 && statusBucket !== "other") {
+   544→      const beforeOrder = state.simOrder;
+   545→      const beforeOutput = state.simOutput;
+   546→      const beforeInput = state.simInput;
+   547→
+   548→      // Apply this row to the simulation.
+   549→      switch (statusBucket) {
+   550→        case "order":
+   551→          state.simOrder += qtyNum;
+   552→          break;
+   553→        case "output":
+   554→          state.simOutput += qtyNum;
+   555→          break;
+   556→        case "input":
+   557→          state.simInput += qtyNum;
+   558→          break;
+   559→        case "pending":
+   560→          // Pending rows don't affect order/output/input totals.
+   561→          // But warn if pending without existing output.
+   562→          if (state.currentOutput === 0) {
+   563→            issues.push({
+   564→              severity: "WARNING",
+   565→              code: "PENDING_WITHOUT_OUTPUT",
+   566→              title: "Pending Without Output",
+   567→              description: "Cannot create Pending when no Output exists.",
+   568→            });
+   569→          }
+   570→          break;
+   571→      }
+   572→
+   573→      // --- Check quantity limits (after applying this row) ---
+   574→      if (statusBucket === "output") {
+   575→        // Output exceeds Order?
+   576→        if (state.simOrder > 0 && state.simOutput > state.simOrder) {
+   577→          const excess = state.simOutput - state.simOrder;
+   578→          issues.push({
+   579→            severity: "ERROR",
+   580→            code: "OUTPUT_EXCEEDS_ORDER",
+   581→            title: "Output Exceeds Order",
+   582→            description: `Output (${state.simOutput}) will exceed Order (${state.simOrder}) by ${excess}.`,
+   583→            excess,
+   584→          });
+   585→        }
+   586→        // Output without Order?
+   587→        if (state.simOrder === 0) {
+   588→          issues.push({
+   589→            severity: "WARNING",
+   590→            code: "OUTPUT_WITHOUT_ORDER",
+   591→            title: "Output Without Order",
+   592→            description: "Creating Output when no Order exists yet.",
+   593→          });
+   594→        }
+   595→      }
+   596→
+   597→      if (statusBucket === "input") {
+   598→        // Input exceeds Output?
+   599→        if (state.simOutput > 0 && state.simInput > state.simOutput) {
+   600→          const excess = state.simInput - state.simOutput;
+   601→          issues.push({
+   602→            severity: "ERROR",
+   603→            code: "INPUT_EXCEEDS_OUTPUT",
+   604→            title: "Input Exceeds Output",
+   605→            description: `Input (${state.simInput}) will exceed Output (${state.simOutput}) by ${excess}.`,
+   606→            excess,
+   607→          });
+   608→        }
+   609→        // Input exceeds Order?
+   610→        if (state.simOrder > 0 && state.simInput > state.simOrder) {
+   611→          const excess = state.simInput - state.simOrder;
+   612→          issues.push({
+   613→            severity: "ERROR",
+   614→            code: "INPUT_EXCEEDS_ORDER",
+   615→            title: "Input Exceeds Order",
+   616→            description: `Input (${state.simInput}) will exceed Order (${state.simOrder}) by ${excess}.`,
+   617→            excess,
+   618→          });
+   619→        }
+   620→        // Input without Output?
+   621→        if (state.simOutput === 0) {
+   622→          issues.push({
+   623→            severity: "WARNING",
+   624→            code: "INPUT_WITHOUT_OUTPUT",
+   625→            title: "Input Without Output",
+   626→            description: "Creating Input when no Output exists yet.",
+   627→          });
+   628→        }
+   629→        // Product already completed?
+   630→        if (
+   631→          state.currentOrder > 0 &&
+   632→          state.currentOutput === state.currentOrder &&
+   633→          state.currentInput === state.currentOutput
+   634→        ) {
+   635→          issues.push({
+   636→            severity: "WARNING",
+   637→            code: "PRODUCT_ALREADY_COMPLETED",
+   638→            title: "Product Already Completed",
+   639→            description: `Order=${state.currentOrder}, Output=${state.currentOutput}, Input=${state.currentInput}. Product is already fully completed.`,
+   640→          });
+   641→        }
+   642→      }
+   643→    }
+   644→
+   645→    // --- Check duplicate within pasted data ---
+   646→    if (rowInput.shippingStatus && rowInput.poNo && rowInput.factoryPO && rowInput.size && rowInput.qty) {
+   647→      const sig = `${today}|${rowInput.shippingStatus}|${norm(rowInput.poNo)}|${norm(rowInput.factoryPO)}|${norm(rowInput.size)}|${rowInput.qty}`;
+   648→      const existing = pasteSignatures.get(sig);
+   649→      if (existing) {
+   650→        existing.push(rowInput.excelRow);
+   651→        issues.push({
+   652→          severity: "WARNING",
+   653→          code: "POSSIBLE_DUPLICATE_BULK",
+   654→          title: "Possible Duplicate in Bulk Data",
+   655→          description: `This row matches row(s) ${existing.slice(0, -1).join(", ")} (same date, status, PO, Factory PO, size, qty).`,
+   656→        });
+   657→      } else {
+   658→        pasteSignatures.set(sig, [rowInput.excelRow]);
+   659→      }
+   660→
+   661→      // --- Check duplicate with existing entries ---
+   662→      const entrySig = `${today}|${rowInput.shippingStatus}|${norm(rowInput.poNo)}|${norm(rowInput.factoryPO)}|${norm(rowInput.size)}|${qtyNum}`;
+   663→      const existingEntry = entrySignatures.get(entrySig);
+   664→      if (existingEntry) {
+   665→        issues.push({
+   666→          severity: "WARNING",
+   667→          code: "POSSIBLE_DUPLICATE_TRANSACTION",
+   668→          title: "Possible Duplicate Transaction",
+   669→          description: `This row matches an existing entry (ID: ${existingEntry.id}, date: ${existingEntry.date}).`,
+   670→        });
+   671→      }
+   672→    }
+   673→
+   674→    // Determine row status.
+   675→    const hasError = issues.some((i) => i.severity === "ERROR" || i.severity === "CRITICAL");
+   676→    const hasWarning = issues.some((i) => i.severity === "WARNING");
+   677→    const status: "valid" | "warning" | "error" = hasError ? "error" : hasWarning ? "warning" : "valid";
+   678→
+   679→    rowResults.push({
+   680→      excelRow: rowInput.excelRow,
+   681→      input: rowInput,
+   682→      status,
+   683→      issues,
+   684→      model: state?.model || "",
+   685→      sku: state?.sku || "",
+   686→      colorCode: state?.colorCode || "",
+   687→      deadline: state?.deadline || "",
+   688→      masterExists: state?.masterExists ?? false,
+   689→      currentOrder: state?.currentOrder ?? 0,
+   690→      currentOutput: state?.currentOutput ?? 0,
+   691→      currentInput: state?.currentInput ?? 0,
+   692→      simOrder: state?.simOrder ?? 0,
+   693→      simOutput: state?.simOutput ?? 0,
+   694→      simInput: state?.simInput ?? 0,
+   695→      groupKey,
+   696→    });
+   697→  }
+   698→
+   699→  // Step 6: Build summary.
+   700→  const summary: BulkValidationSummary = {
+   701→    totalRows: rows.length,
+   702→    validRows: rowResults.filter((r) => r.status === "valid").length,
+   703→    warningRows: rowResults.filter((r) => r.status === "warning").length,
+   704→    errorRows: rowResults.filter((r) => r.status === "error").length,
+   705→    productGroupsAffected: groupKeys.size,
+   706→    duplicatePossible: rowResults.filter((r) =>
+   707→      r.issues.some((i) => i.code === "POSSIBLE_DUPLICATE_BULK" || i.code === "POSSIBLE_DUPLICATE_TRANSACTION")
+   708→    ).length,
+   709→    quantityErrors: rowResults.filter((r) =>
+   710→      r.issues.some((i) =>
+   711→        i.code === "OUTPUT_EXCEEDS_ORDER" ||
+   712→        i.code === "INPUT_EXCEEDS_OUTPUT" ||
+   713→        i.code === "INPUT_EXCEEDS_ORDER"
+   714→      )
+   715→    ).length,
+   716→    masterDataErrors: rowResults.filter((r) =>
+   717→      r.issues.some((i) => i.code === "MISSING_MASTER_DATA" || i.code === "INVALID_SIZE")
+   718→    ).length,
+   719→  };
+   720→
+   721→  // Step 7: Build grouped errors (aggregate rows with the same error for the same group).
+   722→  const errorMap = new Map<string, GroupedError>();
+   723→  for (const r of rowResults) {
+   724→    for (const issue of r.issues) {
+   725→      if (issue.severity !== "ERROR" && issue.severity !== "CRITICAL") continue;
+   726→      const key = `${r.groupKey}|${issue.code}`;
+   727→      const existing = errorMap.get(key);
+   728→      if (existing) {
+   729→        existing.excelRows.push(r.excelRow);
+   730→        existing.newQty += Number(r.input.qty) || 0;
+   731→        existing.expectedQty = r.simOutput; // latest simulation
+   732→      } else {
+   733→        errorMap.set(key, {
+   734→          groupKey: r.groupKey,
+   735→          poNo: r.input.poNo,
+   736→          factoryPO: r.input.factoryPO,
+   737→          size: r.input.size,
+   738→          excelRows: [r.excelRow],
+   739→          issue,
+   740→          currentOrder: r.currentOrder,
+   741→          currentOutput: r.currentOutput,
+   742→          currentInput: r.currentInput,
+   743→          newQty: Number(r.input.qty) || 0,
+   744→          expectedQty: r.simOutput,
+   745→        });
+   746→      }
+   747→    }
+   748→  }
+   749→  const groupedErrorsArray = [...errorMap.values()];
+   750→
+   751→  return {
+   752→    ok: true,
+   753→    summary,
+   754→    rows: rowResults,
+   755→    groupedErrors: groupedErrorsArray,
+   756→    groups: [...groupStates.values()],
+   757→  };
+   758→}
+   759→
