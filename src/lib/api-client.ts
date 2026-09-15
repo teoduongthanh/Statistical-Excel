@@ -886,6 +886,62 @@ export const api = {
     }>(res);
   },
 
+  // ===== Order Drill-Down (PO NO# → Factory PO → Size hierarchy + transactions) =====
+  getOrderDrilldown: async (params: {
+    productType: string;
+    poNo?: string;
+    factoryPO?: string;
+    size?: string;
+    mode?: "hierarchy" | "transactions";
+  }) => {
+    const q = new URLSearchParams({ productType: params.productType });
+    if (params.poNo) q.set("poNo", params.poNo);
+    if (params.factoryPO) q.set("factoryPO", params.factoryPO);
+    if (params.size) q.set("size", params.size);
+    q.set("mode", params.mode || "hierarchy");
+    const res = await fetch(`/api/order-drilldown?${q}`);
+    return jsonOrThrow<{
+      ok: boolean;
+      hierarchy?: Array<{
+        poNo: string;
+        orderQty: number; outputQty: number; inputQty: number;
+        pending: number; remaining: number;
+        outputProgress: number; inputProgress: number; inputVsOutput: number;
+        factoryPOCount: number;
+        factoryPOs: Array<{
+          factoryPO: string;
+          model: string; sku: string; colorCode: string; season: string;
+          orderQty: number; outputQty: number; inputQty: number;
+          pending: number; remaining: number;
+          outputProgress: number; inputProgress: number; inputVsOutput: number;
+          deadline: string | null;
+          sizeCount: number;
+          sizes: Array<{
+            size: string;
+            orderQty: number; outputQty: number; inputQty: number;
+            pending: number; remaining: number;
+            outputProgress: number; inputProgress: number; inputVsOutput: number;
+            deadline: string | null;
+            model: string; sku: string; colorCode: string; season: string;
+            status: string[];
+            anomalies: string[];
+          }>;
+        }>;
+      }>;
+      summary?: {
+        totalPOs: number; totalFactoryPOs: number; totalSizes: number;
+        totalOrderQty: number; totalOutputQty: number; totalInputQty: number;
+      };
+      transactions?: Array<{
+        date: string; shippingStatus: string; bucket: string; qty: number;
+        cumulativeOrder: number; cumulativeOutput: number; cumulativeInput: number;
+        pending: number; remaining: number;
+        outputProgress: number; inputProgress: number; inputVsOutput: number;
+      }>;
+      deadline?: string | null;
+    }>(res);
+  },
+
   // Production Report & Data Validation
   getReportGroups: async (productType: string, filters?: Record<string, string>) => {
     const params = new URLSearchParams({ productType, ...(filters || {}) });

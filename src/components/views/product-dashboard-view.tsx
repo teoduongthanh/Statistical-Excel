@@ -18,6 +18,9 @@ import {
   Loader2,
   CalendarClock,
   Hash,
+  ListTree,
+  ChevronRight,
+  ChevronDown,
   Tag,
   Shirt,
   Layers,
@@ -62,6 +65,14 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
   Table,
   TableHeader,
   TableBody,
@@ -87,6 +98,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
+import { toast } from "sonner";
 
 // ----------------------------------------------------------------------------
 // Types
@@ -416,7 +428,7 @@ function EmptyState({ message, icon: Icon }: { message: string; icon: React.Comp
 // Order Progress / Anomaly / History helpers
 // ----------------------------------------------------------------------------
 
-type DashboardTab = "overview" | "progress" | "daily" | "anomaly" | "history";
+type DashboardTab = "overview" | "progress" | "daily" | "anomaly" | "history" | "drilldown";
 
 /** Badge classes for Order Progress daily-snapshot status values. */
 const PROGRESS_STATUS_BADGE: Record<string, string> = {
@@ -737,6 +749,78 @@ export function ProductDashboardView() {
   const historyError = historyQ.error;
   const historyRows = historyData?.history ?? [];
   const historySummary = historyData?.summary;
+
+  // ---- Drill-Down (Tab 6) ----
+  const [drilldownSearch, setDrilldownSearch] = React.useState("");
+  const [expandedPOs, setExpandedPOs] = React.useState<Set<string>>(new Set());
+  const [expandedFPOs, setExpandedFPOs] = React.useState<Set<string>>(new Set());
+  const [sizeDetail, setSizeDetail] = React.useState<{ poNo: string; factoryPO: string; size: string } | null>(null);
+  const [sizeTransactions, setSizeTransactions] = React.useState<any[] | null>(null);
+  const [loadingTransactions, setLoadingTransactions] = React.useState(false);
+
+  const drilldownQ = useQuery({
+    queryKey: ["order-drilldown", currentProduct, refreshKey],
+    queryFn: () => api.getOrderDrilldown({ productType: currentProduct }),
+    enabled: dashboardTab === "drilldown",
+    staleTime: 30_000,
+  });
+  const drilldownData = drilldownQ.data;
+  const drilldownLoading = drilldownQ.isLoading || drilldownQ.isFetching;
+
+  // Filter hierarchy by search
+  const filteredHierarchy = React.useMemo(() => {
+    if (!drilldownData?.hierarchy) return [];
+    const q = drilldownSearch.trim().toLowerCase();
+    if (!q) return drilldownData.hierarchy;
+    return drilldownData.hierarchy
+      .map((po) => {
+        const poMatch = po.poNo.toLowerCase().includes(q);
+        const filteredFPOs = po.factoryPOs
+          .map((fpo) => {
+            const fpoMatch = fpo.factoryPO.toLowerCase().includes(q) || poMatch;
+            const filteredSizes = fpo.sizes.filter((s) =>
+              fpoMatch || s.size.toLowerCase().includes(q) || s.model.toLowerCase().includes(q) || s.sku.toLowerCase().includes(q)
+            );
+            if (filteredSizes.length === 0 && !fpoMatch) return null;
+            return { ...fpo, sizes: fpoMatch ? fpo.sizes : filteredSizes };
+          })
+          .filter(Boolean) as any[];
+        if (filteredFPOs.length === 0 && !poMatch) return null;
+        return { ...po, factoryPOs: poMatch ? po.factoryPOs : filteredFPOs };
+      })
+      .filter(Boolean) as any[];
+  }, [drilldownData, drilldownSearch]);
+
+  async function loadSizeTransactions(poNo: string, factoryPO: string, size: string) {
+    setSizeDetail({ poNo, factoryPO, size });
+    setSizeTransactions(null);
+    setLoadingTransactions(true);
+    try {
+      const res = await api.getOrderDrilldown({ productType: currentProduct, poNo, factoryPO, size, mode: "transactions" });
+      setSizeTransactions(res.transactions || []);
+    } catch (e) {
+      toast.error("Failed to load transactions");
+    } finally {
+      setLoadingTransactions(false);
+    }
+  }
+
+  function togglePO(poNo: string) {
+    setExpandedPOs((prev) => {
+      const next = new Set(prev);
+      if (next.has(poNo)) next.delete(poNo);
+      else next.add(poNo);
+      return next;
+    });
+  }
+  function toggleFPO(key: string) {
+    setExpandedFPOs((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   // Derived: anomaly counts by type for the Anomaly tab summary cards
   const anomalyTypeCounts = React.useMemo(() => {
@@ -1121,6 +1205,9 @@ export function ProductDashboardView() {
           </TabsTrigger>
           <TabsTrigger value="history" className="gap-1.5 py-1.5 text-xs">
             <HistoryIcon className="h-3.5 w-3.5" /> Data Change History
+          </TabsTrigger>
+          <TabsTrigger value="drilldown" className="gap-1.5 py-1.5 text-xs">
+            <ListTree className="h-3.5 w-3.5" /> Drill-Down
           </TabsTrigger>
         </TabsList>
 
@@ -2459,6 +2546,236 @@ export function ProductDashboardView() {
           </>
         )}
       </TabsContent>
+      {/* ---------------- Tab: Drill-Down (PO NO# → Factory PO → Size hierarchy) ---------------- */}
+      <TabsContent value="drilldown" className="space-y-4 outline-none">
+        {/* Summary + search */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex gap-4 text-xs">
+            <span className="text-muted-foreground">POs: <span className="font-bold tabular-nums text-foreground">{drilldownData?.summary?.totalPOs ?? 0}</span></span>
+            <span className="text-muted-foreground">Factory POs: <span className="font-bold tabular-nums text-foreground">{drilldownData?.summary?.totalFactoryPOs ?? 0}</span></span>
+            <span className="text-muted-foreground">Sizes: <span className="font-bold tabular-nums text-foreground">{drilldownData?.summary?.totalSizes ?? 0}</span></span>
+          </div>
+          <div className="relative w-full sm:w-72">
+            <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search PO NO#, Factory PO, Size, Model..."
+              value={drilldownSearch}
+              onChange={(e) => setDrilldownSearch(e.target.value)}
+              className="h-8 pl-7 text-xs"
+            />
+          </div>
+        </div>
+
+        {drilldownLoading ? (
+          <div className="flex h-40 items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        ) : filteredHierarchy.length === 0 ? (
+          <div className="py-12 text-center text-sm text-muted-foreground">
+            No data found. {drilldownSearch ? "Try a different search." : ""}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {/* PO NO# rows */}
+            {filteredHierarchy.slice(0, 200).map((po) => (
+              <div key={po.poNo} className="rounded-lg border">
+                {/* PO NO# header row */}
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/50"
+                  onClick={() => togglePO(po.poNo)}
+                >
+                  {expandedPOs.has(po.poNo) ? (
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <Badge className={cn("text-[10px]", theme.badge)}>{po.poNo}</Badge>
+                  <span className="text-xs text-muted-foreground">{po.factoryPOCount} Factory POs</span>
+                  <span className="ml-auto flex gap-3 text-xs tabular-nums">
+                    <span>Order: <strong>{po.orderQty.toLocaleString()}</strong></span>
+                    <span>Output: <strong className="text-emerald-600 dark:text-emerald-400">{po.outputQty.toLocaleString()}</strong></span>
+                    <span>Input: <strong className="text-teal-600 dark:text-teal-400">{po.inputQty.toLocaleString()}</strong></span>
+                    <span>Out%: <strong>{po.outputProgress}%</strong></span>
+                  </span>
+                </button>
+
+                {/* Factory PO rows (expanded) */}
+                {expandedPOs.has(po.poNo) && (
+                  <div className="border-t bg-muted/20">
+                    {po.factoryPOs.map((fpo: any) => {
+                      const fpoKey = `${po.poNo}|${fpo.factoryPO}`;
+                      return (
+                        <div key={fpoKey} className="border-b last:border-b-0">
+                          <button
+                            className="flex w-full items-center gap-2 px-6 py-1.5 text-left hover:bg-muted/30"
+                            onClick={() => toggleFPO(fpoKey)}
+                          >
+                            {expandedFPOs.has(fpoKey) ? (
+                              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            ) : (
+                              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            )}
+                            <span className="font-mono text-xs font-medium">{fpo.factoryPO}</span>
+                            <span className="text-[10px] text-muted-foreground">{fpo.model} · {fpo.season}</span>
+                            <span className="ml-auto flex gap-2 text-[10px] tabular-nums">
+                              <span>O: <strong>{fpo.orderQty.toLocaleString()}</strong></span>
+                              <span>Out: <strong className="text-emerald-600">{fpo.outputQty.toLocaleString()}</strong></span>
+                              <span>In: <strong className="text-teal-600">{fpo.inputQty.toLocaleString()}</strong></span>
+                              <span>Pend: <strong className="text-amber-600">{fpo.pending.toLocaleString()}</strong></span>
+                              <span>{fpo.outputProgress}%</span>
+                            </span>
+                          </button>
+
+                          {/* Size rows (expanded) */}
+                          {expandedFPOs.has(fpoKey) && (
+                            <div className="border-t border-dashed">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="border-b text-[10px] text-muted-foreground">
+                                    <th className="px-8 py-1 text-left">Size</th>
+                                    <th className="px-2 py-1 text-right">Order</th>
+                                    <th className="px-2 py-1 text-right">Output</th>
+                                    <th className="px-2 py-1 text-right">Input</th>
+                                    <th className="px-2 py-1 text-right">Pending</th>
+                                    <th className="px-2 py-1 text-right">Remaining</th>
+                                    <th className="px-2 py-1 text-right">Out%</th>
+                                    <th className="px-2 py-1 text-right">In%</th>
+                                    <th className="px-2 py-1 text-right">In/Out%</th>
+                                    <th className="px-2 py-1 text-center">Status</th>
+                                    <th className="px-2 py-1"></th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {fpo.sizes.map((s: any) => (
+                                    <tr
+                                      key={s.size}
+                                      className="border-b last:border-b-0 hover:bg-muted/30 cursor-pointer"
+                                      onClick={() => loadSizeTransactions(po.poNo, fpo.factoryPO, s.size)}
+                                    >
+                                      <td className="px-8 py-1 font-mono">{s.size}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums">{s.orderQty.toLocaleString()}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{s.outputQty.toLocaleString()}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums text-teal-600 dark:text-teal-400">{s.inputQty.toLocaleString()}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums text-amber-600 dark:text-amber-400">{s.pending.toLocaleString()}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums text-rose-600 dark:text-rose-400">{s.remaining.toLocaleString()}</td>
+                                      <td className={cn("px-2 py-1 text-right tabular-nums", s.outputProgress > 100 ? "text-rose-600" : "text-emerald-600")}>{s.outputProgress}%</td>
+                                      <td className="px-2 py-1 text-right tabular-nums">{s.inputProgress}%</td>
+                                      <td className="px-2 py-1 text-right tabular-nums">{s.inputVsOutput}%</td>
+                                      <td className="px-2 py-1 text-center">
+                                        {s.status.map((st: string) => (
+                                          <Badge key={st} variant="outline" className={cn("text-[8px] mr-0.5",
+                                            st === "OVER_OUTPUT" || st === "OVER_INPUT" ? "border-rose-300 text-rose-600" :
+                                            st === "OUTPUT_COMPLETED" || st === "INPUT_COMPLETED" ? "border-emerald-300 text-emerald-600" :
+                                            st === "NOT_STARTED" ? "border-slate-300 text-slate-500" :
+                                            "border-amber-300 text-amber-600"
+                                          )}>{st.replace(/_/g, " ")}</Badge>
+                                        ))}
+                                      </td>
+                                      <td className="px-2 py-1">
+                                        {s.anomalies.length > 0 && (
+                                          <AlertTriangle className="h-3 w-3 text-rose-500" />
+                                        )}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+            {filteredHierarchy.length > 200 && (
+              <div className="py-2 text-center text-xs text-muted-foreground">
+                Showing first 200 PO NO#s. Use search to narrow down.
+              </div>
+            )}
+          </div>
+        )}
+      </TabsContent>
+
+      {/* ---------------- Size Detail Dialog (Transaction History) ---------------- */}
+      <Dialog open={!!sizeDetail} onOpenChange={(o) => { if (!o) { setSizeDetail(null); setSizeTransactions(null); } }}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto scroll-thin">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <ListTree className="h-4 w-4 text-primary" />
+              Size Detail: {sizeDetail?.poNo} / {sizeDetail?.factoryPO} / {sizeDetail?.size}
+            </DialogTitle>
+            <DialogDescription>
+              Transaction history with cumulative progress at each step.
+            </DialogDescription>
+          </DialogHeader>
+
+          {loadingTransactions ? (
+            <div className="flex h-32 items-center justify-center">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : sizeTransactions && sizeTransactions.length > 0 ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                <div className="rounded border p-2 text-center">
+                  <div className="text-muted-foreground">Total Order</div>
+                  <div className="text-lg font-bold tabular-nums">{sizeTransactions[sizeTransactions.length - 1]?.cumulativeOrder.toLocaleString() ?? 0}</div>
+                </div>
+                <div className="rounded border p-2 text-center">
+                  <div className="text-muted-foreground">Total Output</div>
+                  <div className="text-lg font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{sizeTransactions[sizeTransactions.length - 1]?.cumulativeOutput.toLocaleString() ?? 0}</div>
+                </div>
+                <div className="rounded border p-2 text-center">
+                  <div className="text-muted-foreground">Total Input</div>
+                  <div className="text-lg font-bold tabular-nums text-teal-600 dark:text-teal-400">{sizeTransactions[sizeTransactions.length - 1]?.cumulativeInput.toLocaleString() ?? 0}</div>
+                </div>
+              </div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b text-[10px] text-muted-foreground">
+                    <th className="px-2 py-1 text-left">Date</th>
+                    <th className="px-2 py-1 text-left">Status</th>
+                    <th className="px-2 py-1 text-right">Qty</th>
+                    <th className="px-2 py-1 text-right">Cum. Output</th>
+                    <th className="px-2 py-1 text-right">Cum. Input</th>
+                    <th className="px-2 py-1 text-right">Pending</th>
+                    <th className="px-2 py-1 text-right">Out%</th>
+                    <th className="px-2 py-1 text-right">In%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sizeTransactions.map((t, i) => (
+                    <tr key={i} className="border-b last:border-b-0">
+                      <td className="px-2 py-1 font-mono">{t.date || "—"}</td>
+                      <td className="px-2 py-1">
+                        <Badge variant="outline" className={cn("text-[9px]",
+                          t.bucket === "order" ? "border-slate-300 text-slate-600" :
+                          t.bucket === "output" ? "border-emerald-300 text-emerald-600" :
+                          t.bucket === "input" ? "border-teal-300 text-teal-600" :
+                          "border-muted text-muted-foreground"
+                        )}>{t.shippingStatus}</Badge>
+                      </td>
+                      <td className="px-2 py-1 text-right tabular-nums font-medium">{t.qty.toLocaleString()}</td>
+                      <td className="px-2 py-1 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{t.cumulativeOutput.toLocaleString()}</td>
+                      <td className="px-2 py-1 text-right tabular-nums text-teal-600 dark:text-teal-400">{t.cumulativeInput.toLocaleString()}</td>
+                      <td className="px-2 py-1 text-right tabular-nums text-amber-600 dark:text-amber-400">{t.pending.toLocaleString()}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{t.outputProgress}%</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{t.inputProgress}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="py-8 text-center text-sm text-muted-foreground">No transactions found.</div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setSizeDetail(null); setSizeTransactions(null); }}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       </Tabs>
     </div>
   );

@@ -1632,3 +1632,45 @@ Stage Summary:
 - Files created: src/app/api/order-progress/route.ts, src/app/api/data-change-history/route.ts
 - Files modified: src/lib/api-client.ts (2 new methods), src/components/views/product-dashboard-view.tsx (~960 new lines, 5-tab system).
 - All existing functionality preserved — existing content wrapped in "Overview" tab.
+
+---
+Task ID: DRILLDOWN-1
+Agent: main (Z.ai Code)
+Task: Build Dashboard drill-down: PO NO# → Factory PO → Size with progress + transaction history.
+
+Work Log:
+- **API**: `GET /api/order-drilldown?productType=MAFATE&mode=hierarchy|transactions`
+  - **hierarchy mode**: returns 3-level tree (PO NO# → Factory PO → Size)
+    - Each Size leaf: orderQty, outputQty, inputQty, pending, remaining, outputProgress%, inputProgress%, inputVsOutput%, deadline, model, sku, colorCode, season, status[], anomalies[]
+    - Each Factory PO branch: aggregated totals from its children + sizeCount
+    - Each PO NO# root: aggregated totals from its Factory POs + factoryPOCount
+    - Summary: totalPOs, totalFactoryPOs, totalSizes, totalOrderQty, totalOutputQty, totalInputQty
+  - **transactions mode**: returns transaction history for a specific (poNo + factoryPO + size)
+    - Each transaction: date, shippingStatus, bucket, qty, cumulativeOrder, cumulativeOutput, cumulativeInput, pending, remaining, outputProgress%, inputProgress%, inputVsOutput%
+- **API client**: `api.getOrderDrilldown({ productType, poNo?, factoryPO?, size?, mode? })`
+- **UI**: new "Drill-Down" tab (6th tab) in dashboard
+  - Summary bar: POs count, Factory POs count, Sizes count
+  - Search input (filters by PO NO#, Factory PO, Size, Model, SKU)
+  - Expandable tree:
+    - Level 1: PO NO# rows (click to expand/collapse) showing aggregated Order/Output/Input/Out%
+    - Level 2: Factory PO rows (click to expand/collapse) showing aggregated totals
+    - Level 3: Size table with 11 columns: Size | Order | Output | Input | Pending | Remaining | Out% | In% | In/Out% | Status | Anomaly icon
+  - Status badges per size: NOT_STARTED/IN_PROGRESS/OUTPUT_COMPLETED/INPUT_COMPLETED/OVER_OUTPUT/OVER_INPUT
+  - Click any Size row → opens Dialog with transaction history:
+    - 3 stat cards: Total Order, Total Output, Total Input
+    - Transaction table: Date | Status | Qty | Cum. Output | Cum. Input | Pending | Out% | In%
+  - Pagination: shows first 200 PO NO#s (use search to narrow)
+- **API test** (curl):
+  * Summary: 37 POs, 502 Factory POs, 5,461 Sizes, Order=266,823, Output=276,370, Input=251,719
+  * Top PO: H411351971 with 71 Factory POs, Order=36,600, Output=33,532, Input=26,524, Out%=91.6, In%=72.5
+  * First Factory PO (MH26111141): Order=1, Output=1, 1 Size (M(11)), Status: OUTPUT_COMPLETED + INPUT_COMPLETED
+- **Agent Browser**: "Drill-Down" tab visible, no errors ✓
+- TypeScript: 0 errors. ESLint: clean.
+
+Stage Summary:
+- Dashboard now has 6 tabs: Overview, Order Progress, Daily Activity, Anomaly Detection, Data Change History, **Drill-Down**
+- The Drill-Down tab provides the full hierarchy: Product Type → PO NO# → Factory PO → Size → Order/Output/Input/Pending/Remaining/Progress%
+- Each Size is clickable → opens dialog with full transaction history (cumulative progress at each step)
+- All progress metrics computed from raw transaction data (source of truth), not stored aggregates
+- Files created: src/app/api/order-drilldown/route.ts
+- Files modified: src/lib/api-client.ts (getOrderDrilldown method), src/components/views/product-dashboard-view.tsx (new tab + tree UI + dialog + imports)
