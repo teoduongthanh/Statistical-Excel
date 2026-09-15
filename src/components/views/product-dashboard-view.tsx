@@ -27,6 +27,23 @@ import {
   ClipboardCheck,
   FileOutput,
   GitCompare,
+  LayoutDashboard,
+  BarChart3,
+  History as HistoryIcon,
+  Bug,
+  CheckCircle2,
+  Clock,
+  User as UserIcon,
+  Database,
+  PlusCircle,
+  PencilLine,
+  Trash2,
+  Download,
+  CircleDot,
+  Hourglass,
+  PackageCheck as PackageCheck2,
+  AlertOctagon,
+  TimerReset,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -52,6 +69,12 @@ import {
   TableRow,
   TableCell,
 } from "@/components/ui/table";
+import {
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  TabsContent,
+} from "@/components/ui/tabs";
 import {
   BarChart,
   Bar,
@@ -390,6 +413,186 @@ function EmptyState({ message, icon: Icon }: { message: string; icon: React.Comp
 }
 
 // ----------------------------------------------------------------------------
+// Order Progress / Anomaly / History helpers
+// ----------------------------------------------------------------------------
+
+type DashboardTab = "overview" | "progress" | "daily" | "anomaly" | "history";
+
+/** Badge classes for Order Progress daily-snapshot status values. */
+const PROGRESS_STATUS_BADGE: Record<string, string> = {
+  NOT_STARTED:
+    "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300",
+  IN_PROGRESS:
+    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300",
+  OUTPUT_COMPLETED:
+    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300",
+  INPUT_COMPLETED:
+    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300",
+  OVER_OUTPUT:
+    "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-300",
+  OVER_INPUT:
+    "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-300",
+  INPUT_IN_PROGRESS:
+    "border-teal-200 bg-teal-50 text-teal-700 dark:border-teal-900/50 dark:bg-teal-950/40 dark:text-teal-300",
+};
+
+function progressStatusBadgeClass(status: string): string {
+  return (
+    PROGRESS_STATUS_BADGE[(status || "").toUpperCase()] ??
+    "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300"
+  );
+}
+
+function progressStatusLabel(status: string): string {
+  const s = (status || "").replace(/_/g, " ").toLowerCase();
+  return s.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Anomaly severity → card tint + badge classes. */
+function anomalyToneClass(severity: string): string {
+  const s = (severity || "").toUpperCase();
+  if (s === "ERROR" || s === "HIGH")
+    return "border-rose-200 bg-rose-50 dark:border-rose-900/50 dark:bg-rose-950/40";
+  if (s === "MEDIUM" || s === "WARNING")
+    return "border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/40";
+  return "border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/40";
+}
+
+function anomalyBadgeClass(severity: string): string {
+  const s = (severity || "").toUpperCase();
+  if (s === "ERROR" || s === "HIGH")
+    return "border-rose-300 bg-rose-100 text-rose-700 dark:border-rose-800 dark:bg-rose-950/60 dark:text-rose-300";
+  if (s === "MEDIUM" || s === "WARNING")
+    return "border-amber-300 bg-amber-100 text-amber-700 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300";
+  return "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300";
+}
+
+/** Bucket a raw AuditLog action into one of CREATE/UPDATE/DELETE/IMPORT/EXPORT/OTHER. */
+function bucketAction(action: string): {
+  bucket: "CREATE" | "UPDATE" | "DELETE" | "IMPORT" | "EXPORT" | "OTHER";
+  label: string;
+  badgeClass: string;
+} {
+  const a = (action || "").toUpperCase();
+  if (a === "IMPORT")
+    return {
+      bucket: "IMPORT",
+      label: "IMPORT",
+      badgeClass:
+        "border-teal-300 bg-teal-100 text-teal-700 dark:border-teal-800 dark:bg-teal-950/60 dark:text-teal-300",
+    };
+  if (a === "EXPORT")
+    return {
+      bucket: "EXPORT",
+      label: "EXPORT",
+      badgeClass:
+        "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300",
+    };
+  if (a.includes("CREATE"))
+    return {
+      bucket: "CREATE",
+      label: a.includes("ENTRY") ? "ENTRY CREATE" : "CREATE",
+      badgeClass:
+        "border-emerald-300 bg-emerald-100 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300",
+    };
+  if (a.includes("DELETE"))
+    return {
+      bucket: "DELETE",
+      label: a.includes("ENTRY") ? "ENTRY DELETE" : "DELETE",
+      badgeClass:
+        "border-rose-300 bg-rose-100 text-rose-700 dark:border-rose-800 dark:bg-rose-950/60 dark:text-rose-300",
+    };
+  if (a.includes("EDIT") || a.includes("UPDATE"))
+    return {
+      bucket: "UPDATE",
+      label: a.includes("ENTRY") ? "ENTRY EDIT" : "UPDATE",
+      badgeClass:
+        "border-amber-300 bg-amber-100 text-amber-700 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300",
+    };
+  return {
+    bucket: "OTHER",
+    label: a || "OTHER",
+    badgeClass:
+      "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300",
+  };
+}
+
+function formatTimestamp(s: string | null | undefined): string {
+  if (!s) return "—";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return String(s);
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatShortDate(s: string | null | undefined): string {
+  if (!s) return "—";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return String(s);
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+  });
+}
+
+// ----------------------------------------------------------------------------
+// Small stat tile for the new tabs (more compact than the main StatCard)
+// ----------------------------------------------------------------------------
+
+interface MiniStatProps {
+  label: string;
+  value: string;
+  icon: React.ComponentType<{ className?: string }>;
+  iconClass: string;
+  loading?: boolean;
+  valueTone?: string;
+  sub?: string;
+}
+
+function MiniStat({ label, value, icon: Icon, iconClass, loading, valueTone, sub }: MiniStatProps) {
+  return (
+    <Card className="overflow-hidden">
+      <CardContent className="p-3">
+        <div className="flex items-center gap-2.5">
+          <div
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
+              iconClass,
+            )}
+          >
+            <Icon className="h-4 w-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              {label}
+            </p>
+            {loading ? (
+              <Skeleton className="mt-1 h-5 w-16" />
+            ) : (
+              <p
+                className={cn(
+                  "text-lg font-bold leading-tight tabular-nums",
+                  valueTone,
+                )}
+              >
+                {value}
+              </p>
+            )}
+            {sub ? <p className="mt-0.5 text-[10px] text-muted-foreground">{sub}</p> : null}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ----------------------------------------------------------------------------
 // Main view
 // ----------------------------------------------------------------------------
 
@@ -490,6 +693,88 @@ export function ProductDashboardView() {
   });
   const insights = insightsQ.data;
   const insightsLoading = insightsQ.isLoading || insightsQ.isFetching;
+
+  // ---- Dashboard tab state ----
+  const [dashboardTab, setDashboardTab] = React.useState<DashboardTab>("overview");
+
+  // ---- Order Progress (Tab 2/3/4) ----
+  // Re-uses the filter-bar's applied poNo/factoryPO/dateFrom/dateTo so the
+  // progress tab respects the same filters as the rest of the dashboard.
+  const orderProgressQ = useQuery({
+    queryKey: ["order-progress", currentProduct, appliedFilters, refreshKey],
+    queryFn: () =>
+      api.getOrderProgress({
+        productType: currentProduct,
+        poNo: applied.poNo,
+        factoryPO: applied.factoryPO,
+        dateFrom: applied.dateFrom,
+        dateTo: applied.dateTo,
+        mode: applied.dateFrom || applied.dateTo ? "range" : "current",
+      }),
+    staleTime: 30_000,
+  });
+  const orderProgress = orderProgressQ.data;
+  const orderProgressLoading = orderProgressQ.isLoading || orderProgressQ.isFetching;
+  const orderProgressError = orderProgressQ.error;
+  const progressSummary = orderProgress?.summary;
+  const dailySnapshots = orderProgress?.dailySnapshots ?? [];
+  const anomalies = orderProgress?.anomalies ?? [];
+
+  // ---- Data Change History (Tab 5) ----
+  const historyQ = useQuery({
+    queryKey: ["data-change-history", currentProduct, appliedFilters, refreshKey],
+    queryFn: () =>
+      api.getDataChangeHistory({
+        productType: currentProduct,
+        dateFrom: applied.dateFrom,
+        dateTo: applied.dateTo,
+        limit: 200,
+      }),
+    staleTime: 30_000,
+  });
+  const historyData = historyQ.data;
+  const historyLoading = historyQ.isLoading || historyQ.isFetching;
+  const historyError = historyQ.error;
+  const historyRows = historyData?.history ?? [];
+  const historySummary = historyData?.summary;
+
+  // Derived: anomaly counts by type for the Anomaly tab summary cards
+  const anomalyTypeCounts = React.useMemo(() => {
+    const counts = { OVER_OUTPUT: 0, INPUT_EXCEEDS_OUTPUT: 0, DEADLINE_RISK: 0 } as Record<string, number>;
+    for (const a of anomalies) {
+      const t = (a.type || "").toUpperCase();
+      counts[t] = (counts[t] ?? 0) + 1;
+    }
+    return counts;
+  }, [anomalies]);
+
+  // Derived: daily-activity totals for the Daily Activity tab summary
+  const dailyActivityTotals = React.useMemo(() => {
+    let totalOutput = 0;
+    let totalInput = 0;
+    for (const s of dailySnapshots) {
+      totalOutput += Number(s.dailyOutput ?? 0) || 0;
+      totalInput += Number(s.dailyInput ?? 0) || 0;
+    }
+    return { totalOutput, totalInput };
+  }, [dailySnapshots]);
+
+  // Derived: history by-action breakdown (re-bucketed into CREATE/UPDATE/DELETE/IMPORT/EXPORT/OTHER)
+  const historyBuckets = React.useMemo(() => {
+    const out = {
+      CREATE: 0,
+      UPDATE: 0,
+      DELETE: 0,
+      IMPORT: 0,
+      EXPORT: 0,
+      OTHER: 0,
+    } as Record<string, number>;
+    for (const h of historyRows) {
+      const { bucket } = bucketAction(h.action);
+      out[bucket] = (out[bucket] ?? 0) + 1;
+    }
+    return out;
+  }, [historyRows]);
 
   // ---- Derived values ----
   const kpis = kpiQ.data;
@@ -814,6 +1099,33 @@ export function ProductDashboardView() {
           </AlertDescription>
         </Alert>
       ) : null}
+
+      {/* ---------------- Dashboard Tabs ---------------- */}
+      <Tabs
+        value={dashboardTab}
+        onValueChange={(v) => setDashboardTab(v as DashboardTab)}
+        className="space-y-4"
+      >
+        <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-5">
+          <TabsTrigger value="overview" className="gap-1.5 py-1.5 text-xs">
+            <LayoutDashboard className="h-3.5 w-3.5" /> Overview
+          </TabsTrigger>
+          <TabsTrigger value="progress" className="gap-1.5 py-1.5 text-xs">
+            <TrendingUp className="h-3.5 w-3.5" /> Order Progress
+          </TabsTrigger>
+          <TabsTrigger value="daily" className="gap-1.5 py-1.5 text-xs">
+            <BarChart3 className="h-3.5 w-3.5" /> Daily Activity
+          </TabsTrigger>
+          <TabsTrigger value="anomaly" className="gap-1.5 py-1.5 text-xs">
+            <Bug className="h-3.5 w-3.5" /> Anomaly Detection
+          </TabsTrigger>
+          <TabsTrigger value="history" className="gap-1.5 py-1.5 text-xs">
+            <HistoryIcon className="h-3.5 w-3.5" /> Data Change History
+          </TabsTrigger>
+        </TabsList>
+
+      {/* ---------------- Tab: Overview (wraps ALL existing dashboard content) ---------------- */}
+      <TabsContent value="overview" className="space-y-6 outline-none">
 
       {/* ---------------- KPI cards (8) ---------------- */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4">
@@ -1500,6 +1812,654 @@ export function ProductDashboardView() {
           </CardContent>
         </Card>
       </div>
+
+      </TabsContent>
+      {/* ---------------- /Tab: Overview ---------------- */}
+
+      {/* ================================================================== */}
+      {/* Tab 2: Order Progress                                              */}
+      {/* ================================================================== */}
+      <TabsContent value="progress" className="space-y-4 outline-none">
+        {orderProgressLoading ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <Skeleton key={i} className="h-20" />
+              ))}
+            </div>
+            <Skeleton className="h-64" />
+          </div>
+        ) : orderProgressError ? (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Failed to load order progress</AlertTitle>
+            <AlertDescription>
+              {orderProgressError instanceof Error ? orderProgressError.message : "Unknown error."}{" "}
+              <button
+                type="button"
+                onClick={() => bumpRefresh()}
+                className="underline underline-offset-2 hover:opacity-80"
+              >
+                Try again
+              </button>
+            </AlertDescription>
+          </Alert>
+        ) : !progressSummary ? (
+          <EmptyState
+            message={`No order-progress data available for ${currentProduct}.`}
+            icon={TrendingUp}
+          />
+        ) : (
+          <>
+            {/* 8 stat cards: Total Order / Total Output / Total Input / Pending / Remaining / Avg Output % / Avg Input % / Input vs Output % */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+              <MiniStat
+                label="Total Order"
+                value={fmt(progressSummary.totalOrderQty)}
+                icon={ClipboardList}
+                iconClass="bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300"
+                sub={`${fmt(progressSummary.totalOrders)} orders`}
+              />
+              <MiniStat
+                label="Total Output"
+                value={fmt(progressSummary.totalOutputQty)}
+                icon={Truck}
+                iconClass="bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+              />
+              <MiniStat
+                label="Total Input"
+                value={fmt(progressSummary.totalInputQty)}
+                icon={PackageCheck}
+                iconClass="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+              />
+              <MiniStat
+                label="Pending"
+                value={fmt(progressSummary.pending)}
+                icon={Hourglass}
+                iconClass="bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+                sub="output − input"
+              />
+              <MiniStat
+                label="Remaining"
+                value={fmt(progressSummary.remaining)}
+                icon={TimerReset}
+                iconClass="bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300"
+                sub="order − output"
+              />
+              <MiniStat
+                label="Avg Output %"
+                value={fmtPct(progressSummary.avgOutputProgress)}
+                icon={TrendingUp}
+                iconClass={cn(
+                  "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300",
+                  clampPct(progressSummary.avgOutputProgress) >= 95 &&
+                    "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300",
+                  clampPct(progressSummary.avgOutputProgress) < 80 &&
+                    "bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300",
+                )}
+              />
+              <MiniStat
+                label="Avg Input %"
+                value={fmtPct(progressSummary.avgInputProgress)}
+                icon={Gauge}
+                iconClass={cn(
+                  "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300",
+                  clampPct(progressSummary.avgInputProgress) < 80 &&
+                    "bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300",
+                  clampPct(progressSummary.avgInputProgress) >= 80 &&
+                    clampPct(progressSummary.avgInputProgress) < 95 &&
+                    "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300",
+                )}
+              />
+              <MiniStat
+                label="Input vs Output %"
+                value={fmtPct(progressSummary.avgInputVsOutput)}
+                icon={GitCompare}
+                iconClass={cn(
+                  "bg-teal-100 text-teal-700 dark:bg-teal-950/50 dark:text-teal-300",
+                  clampPct(progressSummary.avgInputVsOutput) < 80 &&
+                    "bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300",
+                )}
+              />
+            </div>
+
+            {/* 4 status cards: Not Started / In Progress / Output Completed / Input Completed */}
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <MiniStat
+                label="Not Started"
+                value={fmt(progressSummary.notStarted)}
+                icon={CircleDot}
+                iconClass="bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300"
+              />
+              <MiniStat
+                label="In Progress"
+                value={fmt(progressSummary.inProgress)}
+                icon={Activity}
+                iconClass="bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+              />
+              <MiniStat
+                label="Output Completed"
+                value={fmt(progressSummary.outputCompleted)}
+                icon={CheckCircle2}
+                iconClass="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+              />
+              <MiniStat
+                label="Input Completed"
+                value={fmt(progressSummary.inputCompleted)}
+                icon={PackageCheck2}
+                iconClass="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+              />
+            </div>
+
+            {/* 2 over-status cards: Over Output / Over Input (rose colored) */}
+            <div className="grid grid-cols-2 gap-3">
+              <MiniStat
+                label="Over Output"
+                value={fmt(progressSummary.overOutput)}
+                icon={AlertOctagon}
+                iconClass="bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"
+                valueTone="text-rose-700 dark:text-rose-400"
+                sub="output > order"
+              />
+              <MiniStat
+                label="Over Input"
+                value={fmt(progressSummary.overInput)}
+                icon={AlertOctagon}
+                iconClass="bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"
+                valueTone="text-rose-700 dark:text-rose-400"
+                sub="input > output"
+              />
+            </div>
+
+            {/* Daily snapshot table */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center justify-between gap-2 text-sm">
+                  <span className="flex items-center gap-2">
+                    <Layers className="h-4 w-4" style={{ color: theme.chart }} />
+                    Daily Snapshots
+                  </span>
+                  <Badge variant="secondary" className="text-[10px] tabular-nums">
+                    {dailySnapshots.length} days
+                  </Badge>
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Daily output / input progress for {currentProduct}.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {dailySnapshots.length === 0 ? (
+                  <EmptyState
+                    message="No daily snapshots for the current filters."
+                    icon={Layers}
+                  />
+                ) : (
+                  <div className="max-h-[500px] overflow-y-auto scroll-thin">
+                    <Table>
+                      <TableHeader className="sticky top-0 z-10 bg-card">
+                        <TableRow>
+                          <TableHead className="min-w-[110px]">Date</TableHead>
+                          <TableHead className="text-right">Daily Output</TableHead>
+                          <TableHead className="text-right">Daily Input</TableHead>
+                          <TableHead className="text-right">Total Output</TableHead>
+                          <TableHead className="text-right">Total Input</TableHead>
+                          <TableHead className="text-right">Pending</TableHead>
+                          <TableHead className="text-right">Remaining</TableHead>
+                          <TableHead className="text-right">Output %</TableHead>
+                          <TableHead className="text-right">Input %</TableHead>
+                          <TableHead className="text-right">Input vs Output %</TableHead>
+                          <TableHead className="min-w-[120px]">Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {dailySnapshots.map((s) => (
+                          <TableRow key={s.date} className="hover:bg-accent/40">
+                            <TableCell className="text-xs tabular-nums">
+                              {formatShortDate(s.date)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums text-amber-600 dark:text-amber-400">
+                              {fmt(s.dailyOutput)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums text-emerald-600 dark:text-emerald-400">
+                              {fmt(s.dailyInput)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {fmt(s.totalOutput)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {fmt(s.totalInput)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums text-amber-600 dark:text-amber-400">
+                              {fmt(s.pending)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums text-slate-600 dark:text-slate-300">
+                              {fmt(s.remaining)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              <span className={rateTone(clampPct(s.outputProgress))}>
+                                {fmtPct(s.outputProgress)}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              <span className={rateTone(clampPct(s.inputProgress))}>
+                                {fmtPct(s.inputProgress)}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums text-teal-600 dark:text-teal-400">
+                              {fmtPct(s.inputVsOutput)}
+                            </TableCell>
+                            <TableCell>
+                              <Badge
+                                className={cn("border", progressStatusBadgeClass(s.status))}
+                                variant="outline"
+                              >
+                                {progressStatusLabel(s.status)}
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </>
+        )}
+      </TabsContent>
+
+      {/* ================================================================== */}
+      {/* Tab 3: Daily Activity                                              */}
+      {/* ================================================================== */}
+      <TabsContent value="daily" className="space-y-4 outline-none">
+        {orderProgressLoading ? (
+          <div className="space-y-4">
+            <Skeleton className="h-80" />
+            <div className="grid grid-cols-2 gap-3">
+              <Skeleton className="h-20" />
+              <Skeleton className="h-20" />
+            </div>
+          </div>
+        ) : orderProgressError ? (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Failed to load daily activity</AlertTitle>
+            <AlertDescription>
+              {orderProgressError instanceof Error ? orderProgressError.message : "Unknown error."}{" "}
+              <button
+                type="button"
+                onClick={() => bumpRefresh()}
+                className="underline underline-offset-2 hover:opacity-80"
+              >
+                Try again
+              </button>
+            </AlertDescription>
+          </Alert>
+        ) : dailySnapshots.length === 0 ? (
+          <EmptyState
+            message={`No daily activity for ${currentProduct} with the current filters.`}
+            icon={BarChart3}
+          />
+        ) : (
+          <>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <BarChart3 className="h-4 w-4" style={{ color: theme.chart }} />
+                  Daily Output vs Input
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Daily shipped output vs received input for {currentProduct}.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="h-80">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={dailySnapshots}
+                      margin={{ top: 5, right: 20, left: -10, bottom: 0 }}
+                    >
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        className="stroke-muted"
+                        vertical={false}
+                      />
+                      <XAxis
+                        dataKey="date"
+                        tick={{ fontSize: 10 }}
+                        className="text-muted-foreground"
+                        minTickGap={16}
+                        tickFormatter={(v: string) => formatShortDate(v)}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 10 }}
+                        allowDecimals={false}
+                        width={64}
+                        tickFormatter={(v: number) => fmt(v)}
+                      />
+                      <Tooltip
+                        contentStyle={TOOLTIP_STYLE}
+                        cursor={{ fill: "var(--muted)", opacity: 0.35 }}
+                        formatter={(value: number, name: string) => [fmt(value), name]}
+                        labelFormatter={(label: string) => `Date: ${formatShortDate(label)}`}
+                      />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar
+                        dataKey="dailyOutput"
+                        name="Daily Output"
+                        fill="oklch(0.6 0.13 162)"
+                        radius={[3, 3, 0, 0]}
+                        maxBarSize={48}
+                      />
+                      <Bar
+                        dataKey="dailyInput"
+                        name="Daily Input"
+                        fill="oklch(0.6 0.1 195)"
+                        radius={[3, 3, 0, 0]}
+                        maxBarSize={48}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <MiniStat
+                label="Total Daily Output (range)"
+                value={fmt(dailyActivityTotals.totalOutput)}
+                icon={Truck}
+                iconClass="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+                sub={`across ${dailySnapshots.length} day${dailySnapshots.length === 1 ? "" : "s"}`}
+              />
+              <MiniStat
+                label="Total Daily Input (range)"
+                value={fmt(dailyActivityTotals.totalInput)}
+                icon={PackageCheck}
+                iconClass="bg-teal-100 text-teal-700 dark:bg-teal-950/50 dark:text-teal-300"
+                sub={`across ${dailySnapshots.length} day${dailySnapshots.length === 1 ? "" : "s"}`}
+              />
+            </div>
+          </>
+        )}
+      </TabsContent>
+
+      {/* ================================================================== */}
+      {/* Tab 4: Anomaly Detection                                           */}
+      {/* ================================================================== */}
+      <TabsContent value="anomaly" className="space-y-4 outline-none">
+        {orderProgressLoading ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-20" />
+              ))}
+            </div>
+            <Skeleton className="h-64" />
+          </div>
+        ) : orderProgressError ? (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Failed to load anomalies</AlertTitle>
+            <AlertDescription>
+              {orderProgressError instanceof Error ? orderProgressError.message : "Unknown error."}{" "}
+              <button
+                type="button"
+                onClick={() => bumpRefresh()}
+                className="underline underline-offset-2 hover:opacity-80"
+              >
+                Try again
+              </button>
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <>
+            {/* Summary cards: Total Anomalies / Over Output / Input Exceeds Output / Deadline Risk */}
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <MiniStat
+                label="Total Anomalies"
+                value={fmt(progressSummary?.anomalyCount ?? anomalies.length)}
+                icon={Bug}
+                iconClass="bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300"
+              />
+              <MiniStat
+                label="Over Output"
+                value={fmt(anomalyTypeCounts.OVER_OUTPUT ?? 0)}
+                icon={AlertOctagon}
+                iconClass="bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"
+                valueTone="text-rose-700 dark:text-rose-400"
+              />
+              <MiniStat
+                label="Input Exceeds Output"
+                value={fmt(anomalyTypeCounts.INPUT_EXCEEDS_OUTPUT ?? 0)}
+                icon={AlertOctagon}
+                iconClass="bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"
+                valueTone="text-rose-700 dark:text-rose-400"
+              />
+              <MiniStat
+                label="Deadline Risk"
+                value={fmt(anomalyTypeCounts.DEADLINE_RISK ?? 0)}
+                icon={CalendarClock}
+                iconClass="bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+                valueTone="text-amber-700 dark:text-amber-400"
+              />
+            </div>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center justify-between gap-2 text-sm">
+                  <span className="flex items-center gap-2">
+                    <Bug className="h-4 w-4 text-rose-500" />
+                    Anomalies
+                  </span>
+                  <Badge variant="secondary" className="text-[10px] tabular-nums">
+                    {anomalies.length} found
+                  </Badge>
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Quantity and deadline anomalies detected for {currentProduct}.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {anomalies.length === 0 ? (
+                  <EmptyState
+                    message={`No anomalies detected for ${currentProduct}. Everything looks healthy.`}
+                    icon={CheckCircle2}
+                  />
+                ) : (
+                  <div className="max-h-[500px] space-y-2 overflow-y-auto scroll-thin pr-1">
+                    {anomalies.map((a, i) => {
+                      const tone = anomalyToneClass(a.severity);
+                      const badge = anomalyBadgeClass(a.severity);
+                      return (
+                        <div
+                          key={a.key || `${a.type}-${i}`}
+                          className={cn(
+                            "rounded-lg border p-3 shadow-sm",
+                            tone,
+                          )}
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge
+                              className={cn("border text-[10px]", badge)}
+                              variant="outline"
+                            >
+                              {a.severity || "INFO"}
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] font-mono"
+                            >
+                              {a.type || "ANOMALY"}
+                            </Badge>
+                            <span className="text-xs font-medium text-muted-foreground">
+                              PO NO#
+                            </span>
+                            <span className="font-mono text-xs">{a.poNo || "—"}</span>
+                            <span className="text-xs font-medium text-muted-foreground">
+                              Factory PO
+                            </span>
+                            <span className="font-mono text-xs">{a.factoryPO || "—"}</span>
+                            <span className="text-xs font-medium text-muted-foreground">
+                              Size
+                            </span>
+                            <Badge variant="outline" className="font-mono text-[10px]">
+                              {a.size || "—"}
+                            </Badge>
+                          </div>
+                          <p className="mt-1.5 text-xs text-foreground/90">
+                            {a.description || "No description provided."}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </>
+        )}
+      </TabsContent>
+
+      {/* ================================================================== */}
+      {/* Tab 5: Data Change History                                         */}
+      {/* ================================================================== */}
+      <TabsContent value="history" className="space-y-4 outline-none">
+        {historyLoading ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-20" />
+              ))}
+            </div>
+            <Skeleton className="h-64" />
+          </div>
+        ) : historyError ? (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Failed to load change history</AlertTitle>
+            <AlertDescription>
+              {historyError instanceof Error ? historyError.message : "Unknown error."}{" "}
+              <button
+                type="button"
+                onClick={() => bumpRefresh()}
+                className="underline underline-offset-2 hover:opacity-80"
+              >
+                Try again
+              </button>
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <>
+            {/* Summary cards: Total Changes + by-action breakdown */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <MiniStat
+                label="Total Changes"
+                value={fmt(historySummary?.total ?? historyRows.length)}
+                icon={HistoryIcon}
+                iconClass="bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300"
+              />
+              <MiniStat
+                label="Create"
+                value={fmt(historyBuckets.CREATE ?? 0)}
+                icon={PlusCircle}
+                iconClass="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+                valueTone="text-emerald-700 dark:text-emerald-400"
+              />
+              <MiniStat
+                label="Update"
+                value={fmt(historyBuckets.UPDATE ?? 0)}
+                icon={PencilLine}
+                iconClass="bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+                valueTone="text-amber-700 dark:text-amber-400"
+              />
+              <MiniStat
+                label="Delete"
+                value={fmt(historyBuckets.DELETE ?? 0)}
+                icon={Trash2}
+                iconClass="bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"
+                valueTone="text-rose-700 dark:text-rose-400"
+              />
+              <MiniStat
+                label="Import"
+                value={fmt(historyBuckets.IMPORT ?? 0)}
+                icon={Download}
+                iconClass="bg-teal-100 text-teal-700 dark:bg-teal-950/50 dark:text-teal-300"
+                valueTone="text-teal-700 dark:text-teal-400"
+              />
+            </div>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center justify-between gap-2 text-sm">
+                  <span className="flex items-center gap-2">
+                    <Database className="h-4 w-4" style={{ color: theme.chart }} />
+                    Change History Timeline
+                  </span>
+                  <Badge variant="secondary" className="text-[10px] tabular-nums">
+                    {historyRows.length} entries
+                  </Badge>
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Audit log of data changes for {currentProduct}.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {historyRows.length === 0 ? (
+                  <EmptyState
+                    message={`No change history for ${currentProduct} with the current filters.`}
+                    icon={HistoryIcon}
+                  />
+                ) : (
+                  <div className="max-h-[500px] space-y-2 overflow-y-auto scroll-thin pr-1">
+                    {historyRows.map((h) => {
+                      const bucketed = bucketAction(h.action);
+                      return (
+                        <div
+                          key={h.id}
+                          className="flex flex-col gap-2 rounded-lg border bg-card p-3 shadow-sm sm:flex-row sm:items-center"
+                        >
+                          <div className="flex flex-1 items-center gap-3">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                              <UserIcon className="h-4 w-4" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge
+                                  className={cn("border text-[10px]", bucketed.badgeClass)}
+                                  variant="outline"
+                                >
+                                  {bucketed.label}
+                                </Badge>
+                                <Badge variant="outline" className="text-[10px]">
+                                  {h.entityType || "—"}
+                                </Badge>
+                                <span className="text-xs font-medium">
+                                  {h.user || "system"}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {h.detail || `${h.entityType} ${h.entityId ?? ""}`.trim()}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 text-[11px] text-muted-foreground sm:flex-col sm:items-end">
+                            <span className="inline-flex items-center gap-1 tabular-nums">
+                              <Clock className="h-3 w-3" />
+                              {formatTimestamp(h.timestamp)}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </>
+        )}
+      </TabsContent>
+      </Tabs>
     </div>
   );
 }

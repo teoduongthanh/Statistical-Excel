@@ -791,6 +791,101 @@ export const api = {
     }>(res);
   },
 
+  // ===== Order Progress Monitoring (daily snapshot + cumulative + anomalies) =====
+  getOrderProgress: async (params: {
+    productType: string;
+    poNo?: string;
+    factoryPO?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    mode?: "current" | "asOf" | "range";
+    asOfDate?: string;
+  }) => {
+    const q = new URLSearchParams({ productType: params.productType });
+    if (params.poNo) q.set("poNo", params.poNo);
+    if (params.factoryPO) q.set("factoryPO", params.factoryPO);
+    if (params.dateFrom) q.set("dateFrom", params.dateFrom);
+    if (params.dateTo) q.set("dateTo", params.dateTo);
+    if (params.mode) q.set("mode", params.mode);
+    if (params.asOfDate) q.set("asOfDate", params.asOfDate);
+    const res = await fetch(`/api/order-progress?${q}`);
+    return jsonOrThrow<{
+      ok: boolean;
+      summary: {
+        totalOrderQty: number;
+        totalOutputQty: number;
+        totalInputQty: number;
+        pending: number;
+        remaining: number;
+        avgOutputProgress: number;
+        avgInputProgress: number;
+        avgInputVsOutput: number;
+        totalOrders: number;
+        notStarted: number;
+        inProgress: number;
+        outputCompleted: number;
+        inputCompleted: number;
+        overOutput: number;
+        overInput: number;
+        anomalyCount: number;
+      };
+      dailySnapshots: Array<{
+        date: string;
+        dailyOrder: number;
+        dailyOutput: number;
+        dailyInput: number;
+        totalOutput: number;
+        totalInput: number;
+        pending: number;
+        remaining: number;
+        outputProgress: number;
+        inputProgress: number;
+        inputVsOutput: number;
+        status: string;
+      }>;
+      anomalies: Array<{
+        type: string;
+        severity: string;
+        key: string;
+        poNo: string;
+        factoryPO: string;
+        size: string;
+        description: string;
+        [key: string]: any;
+      }>;
+    }>(res);
+  },
+
+  // ===== Data Change History (audit log filtered by product/date) =====
+  getDataChangeHistory: async (params: {
+    productType: string;
+    dateFrom?: string;
+    dateTo?: string;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams({ productType: params.productType });
+    if (params.dateFrom) q.set("dateFrom", params.dateFrom);
+    if (params.dateTo) q.set("dateTo", params.dateTo);
+    if (params.limit) q.set("limit", String(params.limit));
+    const res = await fetch(`/api/data-change-history?${q}`);
+    return jsonOrThrow<{
+      ok: boolean;
+      history: Array<{
+        id: string;
+        timestamp: string;
+        user: string;
+        action: string;
+        entityType: string;
+        entityId: string | null;
+        oldValue: any;
+        newValue: any;
+        detail: string | null;
+        productType: string | null;
+      }>;
+      summary: { total: number; byAction: Record<string, number> };
+    }>(res);
+  },
+
   // Production Report & Data Validation
   getReportGroups: async (productType: string, filters?: Record<string, string>) => {
     const params = new URLSearchParams({ productType, ...(filters || {}) });

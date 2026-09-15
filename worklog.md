@@ -1552,3 +1552,83 @@ Stage Summary:
   3. **Variance Analysis in Detail Dialog**: shows Output vs Order + Input vs Output with variance amount + percentage + colored bars
 - Backend: added `outputVariancePercent` and `inputVariancePercent` fields to ReportGroup + added DATA_ERROR to ErrorType union.
 - Files modified: src/lib/report-service.ts (variance% + DATA_ERROR type), src/components/views/product-report-view.tsx (3 enhancements, ~600 new lines).
+
+---
+Task ID: ORDER-PROGRESS-DASHBOARD
+Agent: general-purpose
+Task: Enhance Product Dashboard view (`src/components/views/product-dashboard-view.tsx`) with a 5-tab system. Wrap existing dashboard content in "Overview" tab; add 4 new tabs: Order Progress, Daily Activity, Anomaly Detection, Data Change History. Uses existing backend APIs `api.getOrderProgress` + `api.getDataChangeHistory`.
+
+Work Log:
+- Read `/home/z/my-project/worklog.md` to absorb prior context (Smart Excel Data Entry System; Next.js 16 + Prisma SQLite + shadcn/ui + react-query + recharts; emerald/teal/amber/rose colour palette; existing dashboard had 8 KPI cards + 4 insight cards + 5 charts + alerts table).
+- Verified backend APIs already built (no new API work needed):
+  * `api.getOrderProgress({ productType, poNo?, factoryPO?, dateFrom?, dateTo?, mode?, asOfDate? })` → returns `summary` (16 fields) + `dailySnapshots` (12 fields, status enum) + `anomalies` array.
+  * `api.getDataChangeHistory({ productType, dateFrom?, dateTo?, limit? })` → returns `history` array + `summary` ({ total, byAction }).
+- Verified anomaly types via `src/app/api/order-progress/route.ts`: `OVER_OUTPUT` (ERROR), `INPUT_EXCEEDS_OUTPUT` (ERROR), `DEADLINE_RISK` (HIGH | MEDIUM).
+- Verified AuditLog actions via `prisma/schema.prisma`: `IMPORT | EDIT | DELETE | EXPORT | ENTRY_CREATE | ENTRY_EDIT | ENTRY_DELETE`.
+- Confirmed shadcn `tabs.tsx` exists in `src/components/ui/` and that `PRODUCT_THEME[currentProduct]` exposes `.chart` oklch string (used for accent colours on new cards).
+
+Implementation:
+- Added imports: `Tabs, TabsList, TabsTrigger, TabsContent` from `@/components/ui/tabs`; lucide icons `LayoutDashboard, BarChart3, History as HistoryIcon, Bug, CheckCircle2, Clock, User as UserIcon, Database, PlusCircle, PencilLine, Trash2, Download, CircleDot, Hourglass, PackageCheck as PackageCheck2, AlertOctagon, TimerReset`. (Recharts `BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend` were already imported by the existing file — no change needed.)
+- Added helpers above `ProductDashboardView`:
+  * `type DashboardTab = "overview" | "progress" | "daily" | "anomaly" | "history"`.
+  * `PROGRESS_STATUS_BADGE` map + `progressStatusBadgeClass()` + `progressStatusLabel()` — exactly the 7-colour map requested (NOT_STARTED=slate, IN_PROGRESS=amber, OUTPUT_COMPLETED=emerald, INPUT_COMPLETED=emerald, OVER_OUTPUT=rose, OVER_INPUT=rose, INPUT_IN_PROGRESS=teal).
+  * `anomalyToneClass()` + `anomalyBadgeClass()` — ERROR/HIGH → rose, MEDIUM/WARNING → amber, else slate.
+  * `bucketAction()` — re-buckets raw AuditLog actions (ENTRY_CREATE / EDIT / DELETE / IMPORT / EXPORT) into CREATE / UPDATE / DELETE / IMPORT / EXPORT / OTHER with the requested colours (CREATE=emerald, UPDATE=amber, DELETE=rose, IMPORT=teal).
+  * `formatTimestamp()` + `formatShortDate()` — safe date formatting for ISO strings.
+  * `MiniStat` sub-component — compact stat tile (icon chip + label + value + optional tone + sub-text), used by all 4 new tabs.
+- Added state + queries inside `ProductDashboardView`:
+  * `const [dashboardTab, setDashboardTab] = React.useState<DashboardTab>("overview");`
+  * `orderProgressQ` useQuery (queryKey includes `currentProduct`, `appliedFilters`, `refreshKey`); passes filter-bar `applied.poNo/factoryPO/dateFrom/dateTo` and auto-selects `mode: "range"` when a date range is set, else `"current"`.
+  * `historyQ` useQuery (same query-key shape, `limit: 200`).
+  * Derived memos: `anomalyTypeCounts` (grouped by anomaly `type`), `dailyActivityTotals` (sum of `dailyOutput` + `dailyInput`), `historyBuckets` (CREATE/UPDATE/DELETE/IMPORT/EXPORT/OTHER counts via `bucketAction`).
+- Inserted `<Tabs>` immediately after the existing Error banner and before the KPI cards. `<TabsList>` uses `grid grid-cols-2 sm:grid-cols-5 w-full` (mobile: 2-col, desktop: 5-col single row).
+- Wrapped ALL existing dashboard content (KPI cards → Production by Dimension charts) inside `<TabsContent value="overview" className="space-y-6 outline-none">`. No existing code was modified — only wrapped.
+- Tab 2 "Order Progress": 8 stat cards (Total Order, Total Output, Total Input, Pending, Remaining, Avg Output %, Avg Input %, Input vs Output %), 4 status cards (Not Started / In Progress / Output Completed / Input Completed), 2 rose over-status cards (Over Output / Over Input), and a Daily Snapshots table (`max-h-[500px] overflow-y-auto scroll-thin`, 11 columns incl. status badge via `progressStatusBadgeClass()`).
+- Tab 3 "Daily Activity": Recharts `BarChart` (h-80) showing `dailyOutput` (emerald `oklch(0.6 0.13 162)`) vs `dailyInput` (teal `oklch(0.6 0.1 195)`) per date; below: 2 summary cards with totals via `dailyActivityTotals` memo.
+- Tab 4 "Anomaly Detection": 4 summary cards (Total Anomalies / Over Output / Input Exceeds Output / Deadline Risk) + scrollable anomaly card list (`max-h-[500px]`), each tinted by severity (rose/amber/slate) with type + PO NO# + Factory PO + Size + description.
+- Tab 5 "Data Change History": 5 summary cards (Total Changes + Create/Update/Delete/Import counts from `historyBuckets`) + timeline list (`max-h-[500px]`) with user avatar, action badge (via `bucketAction()`), entity-type badge, user name, detail, and timestamp pill.
+
+Stage Summary:
+- File grew 1507 → 2467 lines (~960 new lines: imports + helpers + state/queries + 4 new TabsContent sections).
+- 0 backend changes — both APIs were already built (verified via curl: `order-progress` returns 200 with 312 dailySnapshots + 50 anomalies; `data-change-history` returns 200 with 2 entries).
+- TypeScript: `npx tsc --noEmit -p tsconfig.json 2>&1 | grep product-dashboard` → no output (clean).
+- ESLint: `npx eslint src/components/views/product-dashboard-view.tsx` → exit 0 (clean).
+- Dev server compiled cleanly; new APIs are being invoked when switching tabs (`GET /api/order-progress?productType=MAFATE&mode=current 200`, `GET /api/data-change-history?productType=MAFATE&limit=200 200`).
+- All existing functionality preserved (filter bar still drives all queries; Refresh button re-fetches via shared `refreshKey`; no existing imports/components/styling removed).
+- Colour scheme enforced: emerald (input/completed), teal (input alt), amber (in-progress/warning), rose (over/error), slate (not started/neutral). No indigo / blue anywhere.
+- Work record saved to `/home/z/my-project/agent-ctx/ORDER-PROGRESS-DASHBOARD-product-dashboard-view.md`.
+
+---
+Task ID: ORDER-PROGRESS-VERIFY
+Agent: main (Z.ai Code)
+Task: Verify the ORDER CONTROL CENTER dashboard enhancement.
+
+Work Log:
+- Restarted dev server with fresh cache.
+- API tests (curl):
+  * GET /api/order-progress?productType=MAFATE&mode=current:
+    - Summary: Total Order=266,823, Output=276,370, Input=251,719, Pending=24,651, Remaining=0
+    - Progress: Avg Output 103.6%, Avg Input 94.3%, Input vs Output 91.1%
+    - Orders: 5,461 total (Not Started=326, In Progress=1,057, Output Completed=3,991, Input Completed=3,515, Over Output=947, Over Input=1,061)
+    - Daily Snapshots: 312 entries (latest 2026-09-12)
+    - Anomalies: 2,008 (over output + input exceeds output + deadline risk)
+  * GET /api/data-change-history?productType=MAFATE&limit=5:
+    - 2 history entries (Output Slip confirms)
+    - By action: ENTRY_CREATE: 2
+- Agent Browser verification:
+  * Dashboard shows 5 tabs: Overview (selected), Order Progress, Daily Activity, Anomaly Detection, Data Change History ✓
+  * No page errors, no console errors ✓
+- TypeScript: 0 errors (verified by subagent).
+- ESLint: clean (verified by subagent).
+
+Stage Summary:
+- Dashboard upgraded from simple statistics to ORDER CONTROL CENTER with 5 tabs:
+  1. **Overview** — existing KPIs + Health Score + Deadline Alerts + Data Quality + Quick Stats + Charts + Alert Table
+  2. **Order Progress** — 8 stat cards + 4 status cards + 2 over-status cards + Daily Snapshots table (11 columns with progress %)
+  3. **Daily Activity** — Recharts BarChart (daily Output vs Input) + summary cards
+  4. **Anomaly Detection** — 4 summary cards + scrollable anomaly list (severity-tinted)
+  5. **Data Change History** — 5 summary cards (by action) + timeline list with action badges
+- Backend: 2 new API routes (order-progress + data-change-history) with daily snapshot computation, cumulative progress, anomaly detection, and audit log querying.
+- Files created: src/app/api/order-progress/route.ts, src/app/api/data-change-history/route.ts
+- Files modified: src/lib/api-client.ts (2 new methods), src/components/views/product-dashboard-view.tsx (~960 new lines, 5-tab system).
+- All existing functionality preserved — existing content wrapped in "Overview" tab.
