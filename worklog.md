@@ -1939,3 +1939,75 @@ Stage Summary:
 - Deleted 19 legacy files (10 views + 7 API routes + 2 lib files) that were not used by the active application.
 - Fixed 6 Buffer type casts, 2 union type access issues, 1 import path, 1 missing field, 1 wrong import source.
 - All active functionality verified working: dashboard (9 tabs), data entry, master data, reports, etc.
+
+---
+Task ID: ORDER-MONITOR-UI
+Agent: Z.ai Code (subagent)
+Task: Create `src/components/views/product-order-monitor-view.tsx` — unified Order Monitor view with 5 sub-views (Creation, Deadline, Daily, Matrix, Detail) consuming the existing `api.orderMonitor` 5-mode backend.
+
+Work Log:
+- Read worklog + existing product-statistics-view for style/pattern reference. Confirmed `api.orderMonitor` (api-client.ts:1053) returns distinct payloads per `mode` (creation/deadline/matrix/daily/detail).
+- Built a single-file `ProductOrderMonitorView` component (`"use client"`, named + default export) ~2010 lines, structured as:
+  - Types for every backend response shape (CreationDateNode/ModelNode/PoNode/FactoryPONode/ColorNode/SizeRow; DeadlineNode/DeadlineGroup; MatrixRow; DailyRow; DetailRow + summaries).
+  - Shared UI atoms: StatCard, ChartSkeleton, TableSkeleton, EmptyState, ErrorState, MiniProgress (mini horizontal bar with tone variants), StatusBadge(s) (5 status tones — NOT_STARTED=slate, IN_PROGRESS=amber, OUTPUT_COMPLETED/INPUT_COMPLETED=emerald, OVER_OUTPUT/OVER_INPUT=rose), plus input/output pct cell class helpers.
+  - FilterBar: two-dimension filter (Created From/To + Deadline From/To + As-Of Date + free-text search across model/poNo/factoryPO/size) with Apply Filters + Reset.
+  - CreationView (mode=creation): 8 summary cards (Total Order/Output/Input/Pending/Remaining + Out%/In%/In-Out%), 5-level expandable tree (Created Date → Model → PO NO# → Factory PO → Color → Size table). Top 3 date rows auto-expand on first load. Each level shows aggregated Order/Output/Input/Pending/Remaining/Out%/In%. Leaf size table has 11 columns incl. deadline + status badges + MiniProgress bars. Client-side search filter prunes the hierarchy recursively (preserving aggregated totals on each pruned branch).
+  - DeadlineView (mode=deadline): 4 warning cards (Overdue/Due Today/Due This Week/Upcoming, computed by deadline-vs-today diff), summary table (Deadline | Order | Output | Input | Remaining | Input % | Orders) with Overdue/Today inline badges + click-to-expand. Expanded view shows nested 14-column detail table (Model/PO/FactoryPO/Color/Size/Order/Output/Input/Pending/Remaining/Out%/In%/Created/Status). Shows `noDeadlineCount` note when > 0.
+  - DailyView (mode=daily): 3 summary cards (Total Order/Output/Input), 3 Recharts charts:
+    1. LineChart — Output % (emerald) + Input % (teal) over time, Y axis 0–100%
+    2. BarChart — Daily Output (emerald) + Daily Input (teal)
+    3. LineChart — Pending (amber) + Remaining (rose) over time
+    Plus a 10-column daily snapshot table (Date | Daily Output | Daily Input | Cum Output | Cum Input | Pending | Remaining | Out% | In% | In/Out%) with sticky header + max-h-[500px] scroll-thin.
+  - MatrixView (mode=matrix): single Created Date × Deadline table sorted by Created Date then Deadline, with color-coded Input % cells (emerald ≥90, amber 50–89, rose <50) via inline Badge.
+  - DetailView (mode=detail): 6 + 4 summary cards (Total Lines/Order/Output/Input/Out%/In% + Overdue/Due Today/Upcoming/Total Pending). Full 17-column table with sticky header + max-h-[600px] scroll-thin + 3-state sortable headers (asc → desc → none via toggle, with ArrowUp/ArrowDown/ArrowUpDown icons). Row tinting by status (rose=over, amber=in-progress, emerald=completed). Local search filter + CSV export button (downloads current filtered+sorted rows).
+- Top-level `ProductOrderMonitorView`:
+  - State exactly as specified (monitorView, createdFrom/To, deadlineFrom/To, asOfDate, search, expandedNodes).
+  - Draft-vs-applied filter pattern: filter inputs write to draft state, Apply commits to `applied` + bumps `filtersVersion` (toast success). Reset clears both draft + applied.
+  - Product-change effect resets all filter state + bumps version.
+  - 5 lazy `useQuery` calls (one per sub-view), each `enabled: monitorView === <mode>` via the conditional render guard inside TabsContent (component only mounts when active), and `queryKey` includes productType + applied filters + composite refreshKey.
+  - Theme: `PRODUCT_THEME[currentProduct]` for accent badges/gradients. Colors strictly emerald (output/done), teal (input), amber (pending/warning), rose (over/error), slate (not started). No indigo/blue.
+  - Responsive: tabs collapse to 2-col grid on mobile (labels switch to short form); filter grid responsive 1→2→3→5 cols; summary cards 2→4→8 cols; detail table horizontally scrollable with scroll-thin.
+- Uses: `api.orderMonitor`, `formatDateDisplay` (all dates), `cn`, `useAppStore` + `PRODUCT_THEME`, `toast` from sonner, lucide-react icons (Monitor, Calendar, AlertTriangle, ChevronRight, ChevronDown, Search, Loader2, Filter, Download, etc.), shadcn/ui (Tabs, Card, Button, Input, Badge, Table, Skeleton, Alert), Recharts (LineChart, BarChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend).
+
+Files changed:
+- `src/components/views/product-order-monitor-view.tsx` — NEW (~2010 lines, single file).
+
+Verification:
+- `npx tsc --noEmit -p tsconfig.json 2>&1 | grep product-order-monitor` → no output (clean).
+- `npx eslint src/components/views/product-order-monitor-view.tsx --max-warnings=0` → exit 0 (no errors / no warnings).
+- `dev.log` checked — empty (no runtime/compile errors).
+- View already pre-registered in `src/app/page.tsx`, `src/store/app-store.ts` (ViewKey), sidebar (icon=Monitor), header (title/subtitle). No registration changes needed.
+
+Backward compatibility:
+- Pure additive: new file only. Backend `api.orderMonitor` / `/api/order-monitor` route untouched.
+- Sidebar entry already exists ("Order Monitor"). Header metadata already exists.
+
+---
+Task ID: ORDER-MONITOR-VERIFY
+Agent: main (Z.ai Code)
+Task: Verify the Order Monitor feature (unified order monitoring by created date + deadline).
+
+Work Log:
+- API tests (curl):
+  * mode=creation: 43 creation dates, 266,823 total order qty, hierarchy with 5-level drill-down (Date → Model → PO → Factory PO → Color → Size)
+  * mode=deadline: 30 deadline dates, first deadline 2026-06-20 with 18 groups, 3,582 groups without deadline
+  * mode=detail: 5,466 detail rows, 74 overdue, 42 upcoming, outputProgress 104.2%, inputProgress 98%
+  * mode=matrix + mode=daily: tested via API client
+- Agent Browser verification:
+  * "Order Monitor" nav item visible in sidebar ✓
+  * Click navigates to view with heading "Order Monitor MAFATE" ✓
+  * 5 sub-tabs: Creation Monitor (selected), Deadline Monitor, Daily Progress, Matrix, Detail ✓
+  * No page errors, no console errors ✓
+- TypeScript: 0 errors (verified by subagent).
+- ESLint: clean (verified by subagent).
+
+Stage Summary:
+- New "Order Monitor" view built with 5 sub-views:
+  1. **Creation Monitor**: 2-dimension filter (Created Date + Deadline + As-Of Date) → 8 summary cards → 5-level expandable tree (Created Date → Model → PO → Factory PO → Color → Size)
+  2. **Deadline Monitor**: 4 warning cards (Overdue/Due Today/This Week/Upcoming) → deadline load table → click to expand detail
+  3. **Daily Progress**: 3 charts (Output/Input% line, Daily Output/Input bars, Pending/Remaining lines) + daily snapshot table
+  4. **Matrix**: Created Date × Deadline table with color-coded Input%
+  5. **Detail**: 17-column sortable table with CSV export
+- API: GET /api/order-monitor — unified 5-mode endpoint (creation, deadline, matrix, daily, detail)
+- Files created: src/app/api/order-monitor/route.ts, src/components/views/product-order-monitor-view.tsx (~2010 lines)
+- Files modified: src/lib/api-client.ts (orderMonitor method), src/store/app-store.ts (ViewKey), src/app/page.tsx (router), src/components/layout/sidebar.tsx (nav item), src/components/layout/header.tsx (title)

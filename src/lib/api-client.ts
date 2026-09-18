@@ -1049,6 +1049,29 @@ export const api = {
     return jsonOrThrow<{ groups: any[]; errors: any[]; summary: any }>(res);
   },
 
+  // ===== Unified Order Monitor API =====
+  orderMonitor: async (params: {
+    productType: string;
+    mode: "creation" | "deadline" | "matrix" | "daily" | "detail";
+    createdFrom?: string; createdTo?: string;
+    deadlineFrom?: string; deadlineTo?: string;
+    asOfDate?: string;
+    model?: string; poNo?: string; factoryPO?: string; size?: string;
+  }) => {
+    const q = new URLSearchParams({ productType: params.productType, mode: params.mode });
+    if (params.createdFrom) q.set("createdFrom", params.createdFrom);
+    if (params.createdTo) q.set("createdTo", params.createdTo);
+    if (params.deadlineFrom) q.set("deadlineFrom", params.deadlineFrom);
+    if (params.deadlineTo) q.set("deadlineTo", params.deadlineTo);
+    if (params.asOfDate) q.set("asOfDate", params.asOfDate);
+    if (params.model) q.set("model", params.model);
+    if (params.poNo) q.set("poNo", params.poNo);
+    if (params.factoryPO) q.set("factoryPO", params.factoryPO);
+    if (params.size) q.set("size", params.size);
+    const res = await fetch(`/api/order-monitor?${q}`);
+    return jsonOrThrow<any>(res);
+  },
+
   exportReport: async (body: { productType: string; poNo?: string; factoryPO?: string; colorCode?: string; size?: string }): Promise<Blob> => {
     const res = await fetch("/api/report/export", {
       method: "POST",

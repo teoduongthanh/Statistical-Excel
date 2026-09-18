@@ -23,6 +23,7 @@ const VIEW_TITLES: Record<ViewKey, { title: string; subtitle: string; productSco
   "product-shipment": { title: "Daily Shipment Planning", subtitle: "Calculate remaining output, detect surplus, generate shipment sheets", productScoped: true },
   "product-report": { title: "Production Report & Validation", subtitle: "Track production, detect data anomalies, export reports", productScoped: true },
   "product-bulk-check": { title: "Bulk Data Validation", subtitle: "Copy & paste from Excel → validate → import", productScoped: true },
+  "product-order-monitor": { title: "Order Monitor", subtitle: "Order Creation + Deadline monitoring with drill-down", productScoped: true },
   "product-output-slip": { title: "Output Slip Generator", subtitle: "Bulk output slips by PO NO# + Factory PO", productScoped: true },
   "product-reconciliation": { title: "Data Reconciliation", subtitle: "Compare Excel vs Website data by date range", productScoped: true },
   "product-import": { title: "Import Excel", subtitle: "Upload, map columns & build Master Data", productScoped: true },
