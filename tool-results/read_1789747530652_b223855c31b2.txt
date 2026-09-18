@@ -1,0 +1,2002 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import { useQuery } from "@tanstack/react-query";
+     5→import {
+     6→  Boxes,
+     7→  ClipboardList,
+     8→  PackageCheck,
+     9→  Factory as FactoryIcon,
+    10→  TrendingUp,
+    11→  Truck,
+    12→  PackageX,
+    13→  Activity,
+    14→  Gauge,
+    15→  AlertTriangle,
+    16→  RefreshCw,
+    17→  Search,
+    18→  Loader2,
+    19→  CalendarClock,
+    20→  Hash,
+    21→  ListTree,
+    22→  ChevronRight,
+    23→  ChevronDown,
+    24→  Tag,
+    25→  Shirt,
+    26→  Layers,
+    27→  ShieldCheck,
+    28→  Zap,
+    29→  PenLine,
+    30→  ClipboardCheck,
+    31→  FileOutput,
+    32→  GitCompare,
+    33→  LayoutDashboard,
+    34→  BarChart3,
+    35→  History as HistoryIcon,
+    36→  Bug,
+    37→  CheckCircle2,
+    38→  Clock,
+    39→  User as UserIcon,
+    40→  Database,
+    41→  PlusCircle,
+    42→  PencilLine,
+    43→  Trash2,
+    44→  Download,
+    45→  CircleDot,
+    46→  Hourglass,
+    47→  PackageCheck as PackageCheck2,
+    48→  AlertOctagon,
+    49→  TimerReset,
+    50→  CalendarDays,
+    51→  FileSpreadsheet,
+    52→  FileDown,
+    53→  ArrowRight,
+    54→  Circle,
+    55→  GitCommitHorizontal,
+    56→} from "lucide-react";
+    57→import * as XLSX from "xlsx";
+    58→import { api } from "@/lib/api-client";
+    59→import { cn } from "@/lib/utils";
+    60→import { useAppStore, PRODUCT_THEME, type ProductType } from "@/store/app-store";
+    61→
+    62→import {
+    63→  Card,
+    64→  CardContent,
+    65→  CardHeader,
+    66→  CardTitle,
+    67→  CardDescription,
+    68→} from "@/components/ui/card";
+    69→import { Input } from "@/components/ui/input";
+    70→import { Button } from "@/components/ui/button";
+    71→import { Badge } from "@/components/ui/badge";
+    72→import { Skeleton } from "@/components/ui/skeleton";
+    73→import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+    74→import {
+    75→  Dialog,
+    76→  DialogContent,
+    77→  DialogHeader,
+    78→  DialogTitle,
+    79→  DialogDescription,
+    80→  DialogFooter,
+    81→} from "@/components/ui/dialog";
+    82→import {
+    83→  Table,
+    84→  TableHeader,
+    85→  TableBody,
+    86→  TableHead,
+    87→  TableRow,
+    88→  TableCell,
+    89→} from "@/components/ui/table";
+    90→import {
+    91→  Tabs,
+    92→  TabsList,
+    93→  TabsTrigger,
+    94→  TabsContent,
+    95→} from "@/components/ui/tabs";
+    96→import {
+    97→  BarChart,
+    98→  Bar,
+    99→  LineChart,
+   100→  Line,
+   101→  XAxis,
+   102→  YAxis,
+   103→  CartesianGrid,
+   104→  Tooltip,
+   105→  ResponsiveContainer,
+   106→  Legend,
+   107→} from "recharts";
+   108→import { toast } from "sonner";
+   109→
+   110→// ----------------------------------------------------------------------------
+   111→// Types
+   112→// ----------------------------------------------------------------------------
+   113→
+   114→interface KPIs {
+   115→  orderQty: number;
+   116→  outputQty: number;
+   117→  pendingQty: number;
+   118→  inputQty: number;
+   119→  outputRemaining: number;
+   120→  processing: number;
+   121→  inputRemaining: number;
+   122→  outputRate: number;
+   123→  completionRate: number;
+   124→  processingRate: number;
+   125→  missing: number;
+   126→  quantityStatus: string;
+   127→  totalPOs: number;
+   128→  totalFactoryPOs: number;
+   129→  totalModels: number;
+   130→  totalSKUs: number;
+   131→  totalRows: number;
+   132→}
+   133→
+   134→interface AlertRow {
+   135→  key: string;
+   136→  poNo: string;
+   137→  factoryPO: string;
+   138→  model: string;
+   139→  sku?: string;
+   140→  size: string;
+   141→  deadline: string | null;
+   142→  deadlineStatus: string;
+   143→  quantityStatus: string;
+   144→  orderQty: number;
+   145→  outputQty: number;
+   146→  inputQty: number;
+   147→  processing: number;
+   148→  missing: number;
+   149→  outputRemaining: number;
+   150→  completionRate: number;
+   151→  outputRate: number;
+   152→  alert: {
+   153→    priority: "HIGH" | "MEDIUM" | "LOW" | "INFO";
+   154→    deadlineStatus: string;
+   155→    quantityStatus: string;
+   156→    messages: string[];
+   157→  };
+   158→}
+   159→
+   160→interface AlertsResponse {
+   161→  total: number;
+   162→  high: number;
+   163→  medium: number;
+   164→  low: number;
+   165→  alerts: AlertRow[];
+   166→}
+   167→
+   168→interface DimensionRow {
+   169→  dim: string;
+   170→  orderQty: number;
+   171→  outputQty: number;
+   172→  inputQty: number;
+   173→  processing: number;
+   174→  missing: number;
+   175→  completionRate: number;
+   176→  outputRate: number;
+   177→  rowCount?: number;
+   178→}
+   179→
+   180→interface DimensionResponse {
+   181→  dimension: string;
+   182→  rows: DimensionRow[];
+   183→}
+   184→
+   185→interface TimelinePoint {
+   186→  date: string;
+   187→  qty: number;
+   188→}
+   189→
+   190→interface TimelineResponse {
+   191→  statusBucket: string;
+   192→  series: TimelinePoint[];
+   193→}
+   194→
+   195→interface DashboardFilters {
+   196→  factoryPO?: string;
+   197→  poNo?: string;
+   198→  model?: string;
+   199→  season?: string;
+   200→  dateFrom?: string;
+   201→  dateTo?: string;
+   202→}
+   203→
+   204→// Form state always has all fields as strings (empty string = unset).
+   205→// This is committed to `DashboardFilters` (optional fields) on Apply.
+   206→interface FilterFormState {
+   207→  factoryPO: string;
+   208→  poNo: string;
+   209→  model: string;
+   210→  season: string;
+   211→  dateFrom: string;
+   212→  dateTo: string;
+   213→}
+   214→
+   215→// ----------------------------------------------------------------------------
+   216→// Constants
+   217→// ----------------------------------------------------------------------------
+   218→
+   219→const TOOLTIP_STYLE = {
+   220→  borderRadius: 8,
+   221→  border: "1px solid var(--border)",
+   222→  background: "var(--popover)",
+   223→  color: "var(--popover-foreground)",
+   224→  fontSize: 12,
+   225→} as const;
+   226→
+   227→/**
+   228→ * Fixed quantity colors — independent of product theme so the
+   229→ * Order/Output/Input semantics are consistent across MAFATE / ONYX / MIZUNO.
+   230→ *  - order    -> slate (neutral demand)
+   231→ *  - output   -> amber (in-progress / sent out)
+   232→ *  - input    -> emerald (received / completed)
+   233→ *  - missing  -> rose   (shortfall / danger)
+   234→ */
+   235→const QTY_COLORS = {
+   236→  order: "oklch(0.55 0.025 220)", // slate
+   237→  output: "oklch(0.74 0.16 75)", // amber
+   238→  input: "oklch(0.6 0.13 162)", // emerald/teal
+   239→  missing: "oklch(0.62 0.21 18)", // rose
+   240→} as const;
+   241→
+   242→// ----------------------------------------------------------------------------
+   243→// Helpers
+   244→// ----------------------------------------------------------------------------
+   245→
+   246→function fmt(n: number | null | undefined): string {
+   247→  if (n === null || n === undefined || !Number.isFinite(n)) return "0";
+   248→  return Math.round(n).toLocaleString();
+   249→}
+   250→
+   251→function fmtPct(n: number | null | undefined, digits = 1): string {
+   252→  if (n === null || n === undefined || !Number.isFinite(n)) return "0.0%";
+   253→  return `${n.toFixed(digits)}%`;
+   254→}
+   255→
+   256→function clampPct(n: number): number {
+   257→  if (!Number.isFinite(n)) return 0;
+   258→  return Math.max(0, Math.min(100, n));
+   259→}
+   260→
+   261→function rateTone(rate: number): string {
+   262→  if (rate >= 95) return "text-emerald-600 dark:text-emerald-400";
+   263→  if (rate >= 80) return "text-amber-600 dark:text-amber-400";
+   264→  return "text-rose-600 dark:text-rose-400";
+   265→}
+   266→
+   267→function rateBadge(rate: number): string {
+   268→  if (rate >= 95)
+   269→    return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300";
+   270→  if (rate >= 80)
+   271→    return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300";
+   272→  return "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-300";
+   273→}
+   274→
+   275→const PRIORITY_BADGE: Record<
+   276→  AlertRow["alert"]["priority"],
+   277→  { label: string; dot: string; className: string }
+   278→> = {
+   279→  HIGH: {
+   280→    label: "HIGH",
+   281→    dot: "🔴",
+   282→    className:
+   283→      "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-300",
+   284→  },
+   285→  MEDIUM: {
+   286→    label: "MEDIUM",
+   287→    dot: "🟠",
+   288→    className:
+   289→      "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300",
+   290→  },
+   291→  LOW: {
+   292→    label: "LOW",
+   293→    dot: "🟡",
+   294→    className:
+   295→      "border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-900/50 dark:bg-yellow-950/40 dark:text-yellow-300",
+   296→  },
+   297→  INFO: {
+   298→    label: "INFO",
+   299→    dot: "ℹ️",
+   300→    className:
+   301→      "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300",
+   302→  },
+   303→};
+   304→
+   305→const DEADLINE_STATUS_BADGE: Record<string, string> = {
+   306→  OVERDUE:
+   307→    "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-300",
+   308→  DUE_TODAY:
+   309→    "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-300",
+   310→  DUE_TOMORROW:
+   311→    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300",
+   312→  DUE_THIS_WEEK:
+   313→    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300",
+   314→  UPCOMING:
+   315→    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300",
+   316→  COMPLETED:
+   317→    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300",
+   318→  NO_DEADLINE:
+   319→    "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400",
+   320→};
+   321→
+   322→function deadlineBadgeClass(status: string): string {
+   323→  return DEADLINE_STATUS_BADGE[status] ?? DEADLINE_STATUS_BADGE.NO_DEADLINE;
+   324→}
+   325→
+   326→function deadlineLabel(status: string): string {
+   327→  return status
+   328→    .replace(/_/g, " ")
+   329→    .toLowerCase()
+   330→    .replace(/\b\w/g, (c) => c.toUpperCase());
+   331→}
+   332→
+   333→function formatDeadline(s: string | null | undefined): string {
+   334→  if (!s) return "—";
+   335→  const str = String(s).trim();
+   336→  if (!str) return "—";
+   337→  // Try yyyy-MM-dd or ISO
+   338→  const d = new Date(str);
+   339→  if (!isNaN(d.getTime())) {
+   340→    return d.toLocaleDateString(undefined, {
+   341→      year: "numeric",
+   342→      month: "short",
+   343→      day: "2-digit",
+   344→    });
+   345→  }
+   346→  // Try dd/MM/yyyy
+   347→  const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+   348→  if (m) {
+   349→    const dt = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+   350→    if (!isNaN(dt.getTime())) {
+   351→      return dt.toLocaleDateString(undefined, {
+   352→        year: "numeric",
+   353→        month: "short",
+   354→        day: "2-digit",
+   355→      });
+   356→    }
+   357→  }
+   358→  return str;
+   359→}
+   360→
+   361→// ----------------------------------------------------------------------------
+   362→// Sub-components
+   363→// ----------------------------------------------------------------------------
+   364→
+   365→interface StatCardProps {
+   366→  label: string;
+   367→  value: string;
+   368→  icon: React.ComponentType<{ className?: string }>;
+   369→  iconClass: string;
+   370→  sub?: React.ReactNode;
+   371→  loading?: boolean;
+   372→}
+   373→
+   374→function StatCard({ label, value, icon: Icon, iconClass, sub, loading }: StatCardProps) {
+   375→  return (
+   376→    <Card className="overflow-hidden">
+   377→      <CardContent className="p-4">
+   378→        <div className="flex items-start justify-between gap-2">
+   379→          <div className="min-w-0">
+   380→            <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+   381→            {loading ? (
+   382→              <Skeleton className="mt-2 h-7 w-24" />
+   383→            ) : (
+   384→              <p className="mt-1 text-2xl font-bold tracking-tight tabular-nums">{value}</p>
+   385→            )}
+   386→            {sub ? <div className="mt-1 text-[11px] text-muted-foreground">{sub}</div> : null}
+   387→          </div>
+   388→          <div
+   389→            className={cn(
+   390→              "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+   391→              iconClass,
+   392→            )}
+   393→          >
+   394→            <Icon className="h-4 w-4" />
+   395→          </div>
+   396→        </div>
+   397→      </CardContent>
+   398→    </Card>
+   399→  );
+   400→}
+   401→
+   402→function ChartSkeleton({ height = "h-72" }: { height?: string }) {
+   403→  return (
+   404→    <div className={cn("flex w-full items-center justify-center", height)}>
+   405→      <Skeleton className={cn("w-full", height)} />
+   406→    </div>
+   407→  );
+   408→}
+   409→
+   410→function TableSkeleton() {
+   411→  return (
+   412→    <div className="space-y-2">
+   413→      {Array.from({ length: 6 }).map((_, i) => (
+   414→        <Skeleton key={i} className="h-9 w-full" />
+   415→      ))}
+   416→    </div>
+   417→  );
+   418→}
+   419→
+   420→function EmptyState({ message, icon: Icon }: { message: string; icon: React.ComponentType<{ className?: string }> }) {
+   421→  return (
+   422→    <Card className="border-dashed">
+   423→      <CardContent className="flex flex-col items-center justify-center py-10 text-center">
+   424→        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+   425→          <Icon className="h-6 w-6" />
+   426→        </div>
+   427→        <p className="mt-3 text-sm font-medium">No data</p>
+   428→        <p className="mt-1 max-w-sm text-xs text-muted-foreground">{message}</p>
+   429→      </CardContent>
+   430→    </Card>
+   431→  );
+   432→}
+   433→
+   434→// ----------------------------------------------------------------------------
+   435→// Order Progress / Anomaly / History helpers
+   436→// ----------------------------------------------------------------------------
+   437→
+   438→type DashboardTab = "overview" | "progress" | "daily" | "timeline" | "history" | "anomaly" | "reports" | "drilldown";
+   439→
+   440→/** Badge classes for Order Progress daily-snapshot status values. */
+   441→const PROGRESS_STATUS_BADGE: Record<string, string> = {
+   442→  NOT_STARTED:
+   443→    "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300",
+   444→  IN_PROGRESS:
+   445→    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300",
+   446→  OUTPUT_COMPLETED:
+   447→    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300",
+   448→  INPUT_COMPLETED:
+   449→    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300",
+   450→  OVER_OUTPUT:
+   451→    "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-300",
+   452→  OVER_INPUT:
+   453→    "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-300",
+   454→  INPUT_IN_PROGRESS:
+   455→    "border-teal-200 bg-teal-50 text-teal-700 dark:border-teal-900/50 dark:bg-teal-950/40 dark:text-teal-300",
+   456→};
+   457→
+   458→function progressStatusBadgeClass(status: string): string {
+   459→  return (
+   460→    PROGRESS_STATUS_BADGE[(status || "").toUpperCase()] ??
+   461→    "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300"
+   462→  );
+   463→}
+   464→
+   465→function progressStatusLabel(status: string): string {
+   466→  const s = (status || "").replace(/_/g, " ").toLowerCase();
+   467→  return s.replace(/\b\w/g, (c) => c.toUpperCase());
+   468→}
+   469→
+   470→/** Anomaly severity → card tint + badge classes. */
+   471→function anomalyToneClass(severity: string): string {
+   472→  const s = (severity || "").toUpperCase();
+   473→  if (s === "ERROR" || s === "HIGH")
+   474→    return "border-rose-200 bg-rose-50 dark:border-rose-900/50 dark:bg-rose-950/40";
+   475→  if (s === "MEDIUM" || s === "WARNING")
+   476→    return "border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/40";
+   477→  return "border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/40";
+   478→}
+   479→
+   480→function anomalyBadgeClass(severity: string): string {
+   481→  const s = (severity || "").toUpperCase();
+   482→  if (s === "ERROR" || s === "HIGH")
+   483→    return "border-rose-300 bg-rose-100 text-rose-700 dark:border-rose-800 dark:bg-rose-950/60 dark:text-rose-300";
+   484→  if (s === "MEDIUM" || s === "WARNING")
+   485→    return "border-amber-300 bg-amber-100 text-amber-700 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300";
+   486→  return "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300";
+   487→}
+   488→
+   489→/** Bucket a raw AuditLog action into one of CREATE/UPDATE/DELETE/IMPORT/EXPORT/OTHER. */
+   490→function bucketAction(action: string): {
+   491→  bucket: "CREATE" | "UPDATE" | "DELETE" | "IMPORT" | "EXPORT" | "OTHER";
+   492→  label: string;
+   493→  badgeClass: string;
+   494→} {
+   495→  const a = (action || "").toUpperCase();
+   496→  if (a === "IMPORT")
+   497→    return {
+   498→      bucket: "IMPORT",
+   499→      label: "IMPORT",
+   500→      badgeClass:
+   501→        "border-teal-300 bg-teal-100 text-teal-700 dark:border-teal-800 dark:bg-teal-950/60 dark:text-teal-300",
+   502→    };
+   503→  if (a === "EXPORT")
+   504→    return {
+   505→      bucket: "EXPORT",
+   506→      label: "EXPORT",
+   507→      badgeClass:
+   508→        "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300",
+   509→    };
+   510→  if (a.includes("CREATE"))
+   511→    return {
+   512→      bucket: "CREATE",
+   513→      label: a.includes("ENTRY") ? "ENTRY CREATE" : "CREATE",
+   514→      badgeClass:
+   515→        "border-emerald-300 bg-emerald-100 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300",
+   516→    };
+   517→  if (a.includes("DELETE"))
+   518→    return {
+   519→      bucket: "DELETE",
+   520→      label: a.includes("ENTRY") ? "ENTRY DELETE" : "DELETE",
+   521→      badgeClass:
+   522→        "border-rose-300 bg-rose-100 text-rose-700 dark:border-rose-800 dark:bg-rose-950/60 dark:text-rose-300",
+   523→    };
+   524→  if (a.includes("EDIT") || a.includes("UPDATE"))
+   525→    return {
+   526→      bucket: "UPDATE",
+   527→      label: a.includes("ENTRY") ? "ENTRY EDIT" : "UPDATE",
+   528→      badgeClass:
+   529→        "border-amber-300 bg-amber-100 text-amber-700 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300",
+   530→    };
+   531→  return {
+   532→    bucket: "OTHER",
+   533→    label: a || "OTHER",
+   534→    badgeClass:
+   535→      "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300",
+   536→  };
+   537→}
+   538→
+   539→function formatTimestamp(s: string | null | undefined): string {
+   540→  if (!s) return "—";
+   541→  const d = new Date(s);
+   542→  if (isNaN(d.getTime())) return String(s);
+   543→  return d.toLocaleString(undefined, {
+   544→    year: "numeric",
+   545→    month: "short",
+   546→    day: "2-digit",
+   547→    hour: "2-digit",
+   548→    minute: "2-digit",
+   549→  });
+   550→}
+   551→
+   552→function formatShortDate(s: string | null | undefined): string {
+   553→  if (!s) return "—";
+   554→  const d = new Date(s);
+   555→  if (isNaN(d.getTime())) return String(s);
+   556→  return d.toLocaleDateString(undefined, {
+   557→    year: "numeric",
+   558→    month: "short",
+   559→    day: "2-digit",
+   560→  });
+   561→}
+   562→
+   563→// ----------------------------------------------------------------------------
+   564→// XLSX (client-side) export helpers — used by the "Reports" tab.
+   565→// Builds a workbook from already-fetched data and triggers a download.
+   566→// Filename format: Production_Report_<type>_<YYYY-MM-DD>.xlsx
+   567→// ----------------------------------------------------------------------------
+   568→
+   569→function getReportFileName(type: string): string {
+   570→  const today = new Date();
+   571→  const yyyy = today.getFullYear();
+   572→  const mm = String(today.getMonth() + 1).padStart(2, "0");
+   573→  const dd = String(today.getDate()).padStart(2, "0");
+   574→  return `Production_Report_${type}_${yyyy}-${mm}-${dd}.xlsx`;
+   575→}
+   576→
+   577→function downloadWorkbook(sheetName: string, rows: Record<string, unknown>[], fileName: string): void {
+   578→  const wb = XLSX.utils.book_new();
+   579→  // Truncate sheet name to 31 chars (Excel limit) and remove invalid chars.
+   580→  const safeName = (sheetName || "Sheet1").replace(/[:\\/?*\[\]]/g, "").slice(0, 31) || "Sheet1";
+   581→  const ws = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ "No data": "" }]);
+   582→  XLSX.utils.book_append_sheet(wb, ws, safeName);
+   583→  XLSX.writeFile(wb, fileName);
+   584→}
+   585→
+   586→// ----------------------------------------------------------------------------
+   587→// Small stat tile for the new tabs (more compact than the main StatCard)
+   588→// ----------------------------------------------------------------------------
+   589→
+   590→interface MiniStatProps {
+   591→  label: string;
+   592→  value: string;
+   593→  icon: React.ComponentType<{ className?: string }>;
+   594→  iconClass: string;
+   595→  loading?: boolean;
+   596→  valueTone?: string;
+   597→  sub?: string;
+   598→}
+   599→
+   600→function MiniStat({ label, value, icon: Icon, iconClass, loading, valueTone, sub }: MiniStatProps) {
+   601→  return (
+   602→    <Card className="overflow-hidden">
+   603→      <CardContent className="p-3">
+   604→        <div className="flex items-center gap-2.5">
+   605→          <div
+   606→            className={cn(
+   607→              "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
+   608→              iconClass,
+   609→            )}
+   610→          >
+   611→            <Icon className="h-4 w-4" />
+   612→          </div>
+   613→          <div className="min-w-0 flex-1">
+   614→            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+   615→              {label}
+   616→            </p>
+   617→            {loading ? (
+   618→              <Skeleton className="mt-1 h-5 w-16" />
+   619→            ) : (
+   620→              <p
+   621→                className={cn(
+   622→                  "text-lg font-bold leading-tight tabular-nums",
+   623→                  valueTone,
+   624→                )}
+   625→              >
+   626→                {value}
+   627→              </p>
+   628→            )}
+   629→            {sub ? <p className="mt-0.5 text-[10px] text-muted-foreground">{sub}</p> : null}
+   630→          </div>
+   631→        </div>
+   632→      </CardContent>
+   633→    </Card>
+   634→  );
+   635→}
+   636→
+   637→// ----------------------------------------------------------------------------
+   638→// Main view
+   639→// ----------------------------------------------------------------------------
+   640→
+   641→export function ProductDashboardView() {
+   642→  const { currentProduct, refreshKey, bumpRefresh, setView } = useAppStore();
+   643→  const theme = PRODUCT_THEME[currentProduct];
+   644→
+   645→  // ---- Filter state (local form, committed on Apply) ----
+   646→  const [form, setForm] = React.useState<FilterFormState>({
+   647→    factoryPO: "",
+   648→    poNo: "",
+   649→    model: "",
+   650→    season: "",
+   651→    dateFrom: "",
+   652→    dateTo: "",
+   653→  });
+   654→  const [applied, setApplied] = React.useState<DashboardFilters>({});
+   655→
+   656→  const appliedFilters: Record<string, string> = React.useMemo(() => {
+   657→    const out: Record<string, string> = {};
+   658→    if (applied.factoryPO) out.factoryPO = applied.factoryPO;
+   659→    if (applied.poNo) out.poNo = applied.poNo;
+   660→    if (applied.model) out.model = applied.model;
+   661→    if (applied.season) out.season = applied.season;
+   662→    if (applied.dateFrom) out.dateFrom = applied.dateFrom;
+   663→    if (applied.dateTo) out.dateTo = applied.dateTo;
+   664→    return out;
+   665→  }, [applied]);
+   666→
+   667→  const hasFilters = Object.keys(appliedFilters).length > 0;
+   668→
+   669→  function handleApply() {
+   670→    setApplied({
+   671→      factoryPO: form.factoryPO.trim(),
+   672→      poNo: form.poNo.trim(),
+   673→      model: form.model.trim(),
+   674→      season: form.season.trim(),
+   675→      dateFrom: form.dateFrom,
+   676→      dateTo: form.dateTo,
+   677→    });
+   678→  }
+   679→
+   680→  function handleReset() {
+   681→    setForm({ factoryPO: "", poNo: "", model: "", season: "", dateFrom: "", dateTo: "" });
+   682→    setApplied({});
+   683→  }
+   684→
+   685→  function handleEnterKey(e: React.KeyboardEvent) {
+   686→    if (e.key === "Enter") {
+   687→      e.preventDefault();
+   688→      handleApply();
+   689→    }
+   690→  }
+   691→
+   692→  // ---- Queries ----
+   693→  // Every query is product-scoped: currentProduct is always the first arg.
+   694→  const kpiQ = useQuery<KPIs>({
+   695→    queryKey: ["product-kpis", currentProduct, appliedFilters, refreshKey],
+   696→    queryFn: () => api.getKPIs(currentProduct, appliedFilters),
+   697→    staleTime: 30_000,
+   698→  });
+   699→
+   700→  const alertsQ = useQuery<AlertsResponse>({
+   701→    queryKey: ["product-alerts", currentProduct, appliedFilters, refreshKey],
+   702→    queryFn: () => api.getAlerts(currentProduct, 20),
+   703→    staleTime: 30_000,
+   704→  });
+   705→
+   706→  const timelineQ = useQuery<TimelineResponse>({
+   707→    queryKey: ["product-timeline", currentProduct, "output", refreshKey],
+   708→    queryFn: () => api.getTimeline(currentProduct, "output"),
+   709→    staleTime: 30_000,
+   710→  });
+   711→
+   712→  const sizeQ = useQuery<DimensionResponse>({
+   713→    queryKey: ["product-dim", currentProduct, "size", appliedFilters, refreshKey],
+   714→    queryFn: () => api.getByDimension(currentProduct, "size", appliedFilters),
+   715→    staleTime: 30_000,
+   716→  });
+   717→
+   718→  const colorQ = useQuery<DimensionResponse>({
+   719→    queryKey: ["product-dim", currentProduct, "colorCode", appliedFilters, refreshKey],
+   720→    queryFn: () => api.getByDimension(currentProduct, "colorCode", appliedFilters),
+   721→    staleTime: 30_000,
+   722→  });
+   723→
+   724→  const modelQ = useQuery<DimensionResponse>({
+   725→    queryKey: ["product-dim", currentProduct, "model", appliedFilters, refreshKey],
+   726→    queryFn: () => api.getByDimension(currentProduct, "model", appliedFilters),
+   727→    staleTime: 30_000,
+   728→  });
+   729→
+   730→  // ---- Dashboard Insights (Health Score + Deadline Alerts + Data Quality + Quick Stats) ----
+   731→  const insightsQ = useQuery({
+   732→    queryKey: ["dashboard-insights", currentProduct, refreshKey],
+   733→    queryFn: () => api.getDashboardInsights(currentProduct),
+   734→    staleTime: 30_000,
+   735→  });
+   736→  const insights = insightsQ.data;
+   737→  const insightsLoading = insightsQ.isLoading || insightsQ.isFetching;
+   738→
+   739→  // ---- Dashboard tab state ----
+   740→  const [dashboardTab, setDashboardTab] = React.useState<DashboardTab>("overview");
+   741→
+   742→  // ---- Order Progress (Tab 2/3/4) ----
+   743→  // Re-uses the filter-bar's applied poNo/factoryPO/dateFrom/dateTo so the
+   744→  // progress tab respects the same filters as the rest of the dashboard.
+   745→  const orderProgressQ = useQuery({
+   746→    queryKey: ["order-progress", currentProduct, appliedFilters, refreshKey],
+   747→    queryFn: () =>
+   748→      api.getOrderProgress({
+   749→        productType: currentProduct,
+   750→        poNo: applied.poNo,
+   751→        factoryPO: applied.factoryPO,
+   752→        dateFrom: applied.dateFrom,
+   753→        dateTo: applied.dateTo,
+   754→        mode: applied.dateFrom || applied.dateTo ? "range" : "current",
+   755→      }),
+   756→    staleTime: 30_000,
+   757→  });
+   758→  const orderProgress = orderProgressQ.data;
+   759→  const orderProgressLoading = orderProgressQ.isLoading || orderProgressQ.isFetching;
+   760→  const orderProgressError = orderProgressQ.error;
+   761→  const progressSummary = orderProgress?.summary;
+   762→  const dailySnapshots = orderProgress?.dailySnapshots ?? [];
+   763→  const anomalies = orderProgress?.anomalies ?? [];
+   764→
+   765→  // ---- Data Change History (Tab 5) ----
+   766→  const historyQ = useQuery({
+   767→    queryKey: ["data-change-history", currentProduct, appliedFilters, refreshKey],
+   768→    queryFn: () =>
+   769→      api.getDataChangeHistory({
+   770→        productType: currentProduct,
+   771→        dateFrom: applied.dateFrom,
+   772→        dateTo: applied.dateTo,
+   773→        limit: 200,
+   774→      }),
+   775→    staleTime: 30_000,
+   776→  });
+   777→  const historyData = historyQ.data;
+   778→  const historyLoading = historyQ.isLoading || historyQ.isFetching;
+   779→  const historyError = historyQ.error;
+   780→  const historyRows = historyData?.history ?? [];
+   781→  const historySummary = historyData?.summary;
+   782→
+   783→  // ---- Drill-Down (Tab 6) ----
+   784→  const [drilldownSearch, setDrilldownSearch] = React.useState("");
+   785→  const [expandedPOs, setExpandedPOs] = React.useState<Set<string>>(new Set());
+   786→  const [expandedFPOs, setExpandedFPOs] = React.useState<Set<string>>(new Set());
+   787→  const [sizeDetail, setSizeDetail] = React.useState<{ poNo: string; factoryPO: string; size: string } | null>(null);
+   788→  const [sizeTransactions, setSizeTransactions] = React.useState<any[] | null>(null);
+   789→  const [loadingTransactions, setLoadingTransactions] = React.useState(false);
+   790→
+   791→  const drilldownQ = useQuery({
+   792→    queryKey: ["order-drilldown", currentProduct, refreshKey],
+   793→    queryFn: () => api.getOrderDrilldown({ productType: currentProduct }),
+   794→    // Enabled on both drilldown + reports tabs (reports tab exports the hierarchy).
+   795→    enabled: dashboardTab === "drilldown" || dashboardTab === "reports",
+   796→    staleTime: 30_000,
+   797→  });
+   798→  const drilldownData = drilldownQ.data;
+   799→  const drilldownLoading = drilldownQ.isLoading || drilldownQ.isFetching;
+   800→
+   801→  // Filter hierarchy by search
+   802→  const filteredHierarchy = React.useMemo(() => {
+   803→    if (!drilldownData?.hierarchy) return [];
+   804→    const q = drilldownSearch.trim().toLowerCase();
+   805→    if (!q) return drilldownData.hierarchy;
+   806→    return drilldownData.hierarchy
+   807→      .map((po) => {
+   808→        const poMatch = po.poNo.toLowerCase().includes(q);
+   809→        const filteredFPOs = po.factoryPOs
+   810→          .map((fpo) => {
+   811→            const fpoMatch = fpo.factoryPO.toLowerCase().includes(q) || poMatch;
+   812→            const filteredSizes = fpo.sizes.filter((s) =>
+   813→              fpoMatch || s.size.toLowerCase().includes(q) || s.model.toLowerCase().includes(q) || s.sku.toLowerCase().includes(q)
+   814→            );
+   815→            if (filteredSizes.length === 0 && !fpoMatch) return null;
+   816→            return { ...fpo, sizes: fpoMatch ? fpo.sizes : filteredSizes };
+   817→          })
+   818→          .filter(Boolean) as any[];
+   819→        if (filteredFPOs.length === 0 && !poMatch) return null;
+   820→        return { ...po, factoryPOs: poMatch ? po.factoryPOs : filteredFPOs };
+   821→      })
+   822→      .filter(Boolean) as any[];
+   823→  }, [drilldownData, drilldownSearch]);
+   824→
+   825→  async function loadSizeTransactions(poNo: string, factoryPO: string, size: string) {
+   826→    setSizeDetail({ poNo, factoryPO, size });
+   827→    setSizeTransactions(null);
+   828→    setLoadingTransactions(true);
+   829→    try {
+   830→      const res = await api.getOrderDrilldown({ productType: currentProduct, poNo, factoryPO, size, mode: "transactions" });
+   831→      setSizeTransactions(res.transactions || []);
+   832→    } catch (e) {
+   833→      toast.error("Failed to load transactions");
+   834→    } finally {
+   835→      setLoadingTransactions(false);
+   836→    }
+   837→  }
+   838→
+   839→  function togglePO(poNo: string) {
+   840→    setExpandedPOs((prev) => {
+   841→      const next = new Set(prev);
+   842→      if (next.has(poNo)) next.delete(poNo);
+   843→      else next.add(poNo);
+   844→      return next;
+   845→    });
+   846→  }
+   847→  function toggleFPO(key: string) {
+   848→    setExpandedFPOs((prev) => {
+   849→      const next = new Set(prev);
+   850→      if (next.has(key)) next.delete(key);
+   851→      else next.add(key);
+   852→      return next;
+   853→    });
+   854→  }
+   855→
+   856→  // Derived: anomaly counts by type for the Anomaly tab summary cards
+   857→  const anomalyTypeCounts = React.useMemo(() => {
+   858→    const counts = { OVER_OUTPUT: 0, INPUT_EXCEEDS_OUTPUT: 0, DEADLINE_RISK: 0 } as Record<string, number>;
+   859→    for (const a of anomalies) {
+   860→      const t = (a.type || "").toUpperCase();
+   861→      counts[t] = (counts[t] ?? 0) + 1;
+   862→    }
+   863→    return counts;
+   864→  }, [anomalies]);
+   865→
+   866→  // Derived: daily-activity totals for the Daily Activity tab summary
+   867→  const dailyActivityTotals = React.useMemo(() => {
+   868→    let totalOutput = 0;
+   869→    let totalInput = 0;
+   870→    for (const s of dailySnapshots) {
+   871→      totalOutput += Number(s.dailyOutput ?? 0) || 0;
+   872→      totalInput += Number(s.dailyInput ?? 0) || 0;
+   873→    }
+   874→    return { totalOutput, totalInput };
+   875→  }, [dailySnapshots]);
+   876→
+   877→  // Derived: history by-action breakdown (re-bucketed into CREATE/UPDATE/DELETE/IMPORT/EXPORT/OTHER)
+   878→  const historyBuckets = React.useMemo(() => {
+   879→    const out = {
+   880→      CREATE: 0,
+   881→      UPDATE: 0,
+   882→      DELETE: 0,
+   883→      IMPORT: 0,
+   884→      EXPORT: 0,
+   885→      OTHER: 0,
+   886→    } as Record<string, number>;
+   887→    for (const h of historyRows) {
+   888→      const { bucket } = bucketAction(h.action);
+   889→      out[bucket] = (out[bucket] ?? 0) + 1;
+   890→    }
+   891→    return out;
+   892→  }, [historyRows]);
+   893→
+   894→  // ---- Derived values ----
+   895→  const kpis = kpiQ.data;
+   896→  const isLoadingKpis = kpiQ.isLoading || kpiQ.isFetching;
+   897→  const alerts = alertsQ.data;
+   898→  const alertsLoading = alertsQ.isLoading || alertsQ.isFetching;
+   899→  const timeline = timelineQ.data;
+   900→  const timelineLoading = timelineQ.isLoading || timelineQ.isFetching;
+   901→  const sizeRows = sizeQ.data?.rows ?? [];
+   902→  const colorRows = colorQ.data?.rows ?? [];
+   903→  const modelRows = modelQ.data?.rows ?? [];
+   904→  const dimsLoading = sizeQ.isLoading || colorQ.isLoading || modelQ.isLoading;
+   905→
+   906→  // ---- Chart data for Order vs Output vs Input (single grouped bar set) ----
+   907→  const ooiChartData = React.useMemo(() => {
+   908→    if (!kpis) return [];
+   909→    return [
+   910→      {
+   911→        name: "Quantities",
+   912→        Order: kpis.orderQty,
+   913→        Output: kpis.outputQty,
+   914→        Input: kpis.inputQty,
+   915→      },
+   916→    ];
+   917→  }, [kpis]);
+   918→
+   919→  // ---- Timeline chart data ----
+   920→  const timelineData = React.useMemo(() => timeline?.series ?? [], [timeline]);
+   921→
+   922→  // ---- Any error ----
+   923→  const error =
+   924→    kpiQ.error || alertsQ.error || timelineQ.error || sizeQ.error || colorQ.error || modelQ.error;
+   925→  const isError = Boolean(error);
+   926→
+   927→  const kpiStats: {
+   928→    label: string;
+   929→    value: string;
+   930→    icon: React.ComponentType<{ className?: string }>;
+   931→    iconClass: string;
+   932→    sub?: React.ReactNode;
+   933→  }[] = [
+   934→    {
+   935→      label: "Total Orders",
+   936→      value: fmt(kpis?.totalFactoryPOs ?? 0),
+   937→      icon: FactoryIcon,
+   938→      iconClass: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300",
+   939→      sub: <span>{kpis?.totalPOs ?? 0} PO NO#s</span>,
+   940→    },
+   941→    {
+   942→      label: "Total Ordered Qty",
+   943→      value: fmt(kpis?.orderQty ?? 0),
+   944→      icon: ClipboardList,
+   945→      iconClass: "bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300",
+   946→      sub: <span>{kpis?.totalModels ?? 0} models · {kpis?.totalSKUs ?? 0} SKUs</span>,
+   947→    },
+   948→    {
+   949→      label: "Total Output Qty",
+   950→      value: fmt(kpis?.outputQty ?? 0),
+   951→      icon: Truck,
+   952→      iconClass: "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300",
+   953→      sub: (
+   954→        <span>
+   955→          <span className={rateTone(clampPct(kpis?.outputRate ?? 0))}>
+   956→            {fmtPct(kpis?.outputRate ?? 0)}
+   957→          </span>{" "}
+   958→          of ordered
+   959→        </span>
+   960→      ),
+   961→    },
+   962→    {
+   963→      label: "Total Processing Qty",
+   964→      value: fmt(kpis?.processing ?? 0),
+   965→      icon: Activity,
+   966→      iconClass: "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300",
+   967→      sub: <span>{fmtPct(kpis?.processingRate ?? 0)} of ordered</span>,
+   968→    },
+   969→    {
+   970→      label: "Total Input Qty",
+   971→      value: fmt(kpis?.inputQty ?? 0),
+   972→      icon: PackageCheck,
+   973→      iconClass: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300",
+   974→      sub: (
+   975→        <span className={rateTone(clampPct(kpis?.completionRate ?? 0))}>
+   976→          {fmtPct(kpis?.completionRate ?? 0)} completion
+   977→        </span>
+   978→      ),
+   979→    },
+   980→    {
+   981→      label: "Total Missing Qty",
+   982→      value: fmt(kpis?.missing ?? 0),
+   983→      icon: PackageX,
+   984→      iconClass: cn(
+   985→        "bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300",
+   986→        (kpis?.missing ?? 0) === 0 &&
+   987→          "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300",
+   988→      ),
+   989→      sub: <span>ordered − received</span>,
+   990→    },
+   991→    {
+   992→      label: "Output Rate",
+   993→      value: fmtPct(kpis?.outputRate ?? 0),
+   994→      icon: TrendingUp,
+   995→      iconClass: cn(
+   996→        "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300",
+   997→        clampPct(kpis?.outputRate ?? 0) >= 95 &&
+   998→          "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300",
+   999→        clampPct(kpis?.outputRate ?? 0) < 80 &&
+  1000→          "bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300",
+  1001→      ),
+  1002→      sub: <span>output / ordered</span>,
+  1003→    },
+  1004→    {
+  1005→      label: "Completion Rate",
+  1006→      value: fmtPct(kpis?.completionRate ?? 0),
+  1007→      icon: Gauge,
+  1008→      iconClass: cn(
+  1009→        "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300",
+  1010→        clampPct(kpis?.completionRate ?? 0) < 80 &&
+  1011→          "bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300",
+  1012→        clampPct(kpis?.completionRate ?? 0) >= 80 &&
+  1013→          clampPct(kpis?.completionRate ?? 0) < 95 &&
+  1014→          "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300",
+  1015→      ),
+  1016→      sub: <span>input / ordered</span>,
+  1017→    },
+  1018→  ];
+  1019→
+  1020→  return (
+  1021→    <div className="space-y-6">
+  1022→      {/* ---------------- Header banner ---------------- */}
+  1023→      <div
+  1024→        className={cn(
+  1025→          "relative overflow-hidden rounded-xl border bg-gradient-to-r p-5 text-white shadow-sm",
+  1026→          theme.gradient,
+  1027→        )}
+  1028→      >
+  1029→        <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-white/10" />
+  1030→        <div className="absolute -bottom-10 right-24 h-32 w-32 rounded-full bg-white/5" />
+  1031→        <div className="relative flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+  1032→          <div className="flex items-center gap-3">
+  1033→            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white/15 backdrop-blur">
+  1034→              <Boxes className="h-6 w-6" />
+  1035→            </div>
+  1036→            <div>
+  1037→              <p className="text-[11px] font-medium uppercase tracking-wider text-white/80">
+  1038→                Product Dashboard
+  1039→              </p>
+  1040→              <h1 className="text-2xl font-bold tracking-tight">{currentProduct}</h1>
+  1041→              <p className="text-xs text-white/80">
+  1042→                Real-time production KPIs, alerts &amp; trends
+  1043→              </p>
+  1044→            </div>
+  1045→          </div>
+  1046→          <div className="flex items-center gap-2">
+  1047→            <Button
+  1048→              variant="secondary"
+  1049→              size="sm"
+  1050→              onClick={() => bumpRefresh()}
+  1051→              disabled={isLoadingKpis || alertsLoading || timelineLoading || dimsLoading}
+  1052→              className="h-9 bg-white/20 text-white hover:bg-white/30 hover:text-white"
+  1053→            >
+  1054→              {isLoadingKpis || alertsLoading || timelineLoading || dimsLoading ? (
+  1055→                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+  1056→              ) : (
+  1057→                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+  1058→              )}
+  1059→              Refresh
+  1060→            </Button>
+  1061→          </div>
+  1062→        </div>
+  1063→      </div>
+  1064→
+  1065→      {/* ---------------- Filter bar ---------------- */}
+  1066→      <Card>
+  1067→        <CardContent className="py-4">
+  1068→          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-6">
+  1069→            {/* Factory PO */}
+  1070→            <div className="flex flex-col gap-1.5">
+  1071→              <label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+  1072→                <FactoryIcon className="h-3 w-3" /> Factory PO
+  1073→              </label>
+  1074→              <Input
+  1075→                value={form.factoryPO}
+  1076→                onChange={(e) => setForm((f) => ({ ...f, factoryPO: e.target.value }))}
+  1077→                onKeyDown={handleEnterKey}
+  1078→                placeholder="e.g. MH26110228"
+  1079→                className="h-9"
+  1080→                autoComplete="off"
+  1081→                spellCheck={false}
+  1082→              />
+  1083→            </div>
+  1084→            {/* PO NO# */}
+  1085→            <div className="flex flex-col gap-1.5">
+  1086→              <label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+  1087→                <Hash className="h-3 w-3" /> PO NO#
+  1088→              </label>
+  1089→              <Input
+  1090→                value={form.poNo}
+  1091→                onChange={(e) => setForm((f) => ({ ...f, poNo: e.target.value }))}
+  1092→                onKeyDown={handleEnterKey}
+  1093→                placeholder="e.g. H411351070"
+  1094→                className="h-9"
+  1095→                autoComplete="off"
+  1096→                spellCheck={false}
+  1097→              />
+  1098→            </div>
+  1099→            {/* Model */}
+  1100→            <div className="flex flex-col gap-1.5">
+  1101→              <label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+  1102→                <Tag className="h-3 w-3" /> Model
+  1103→              </label>
+  1104→              <Input
+  1105→                value={form.model}
+  1106→                onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+  1107→                onKeyDown={handleEnterKey}
+  1108→                placeholder="e.g. MAFATE5 MS"
+  1109→                className="h-9"
+  1110→                autoComplete="off"
+  1111→                spellCheck={false}
+  1112→              />
+  1113→            </div>
+  1114→            {/* Season */}
+  1115→            <div className="flex flex-col gap-1.5">
+  1116→              <label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+  1117→                <Shirt className="h-3 w-3" /> Season
+  1118→              </label>
+  1119→              <Input
+  1120→                value={form.season}
+  1121→                onChange={(e) => setForm((f) => ({ ...f, season: e.target.value }))}
+  1122→                onKeyDown={handleEnterKey}
+  1123→                placeholder="e.g. SP27"
+  1124→                className="h-9"
+  1125→                autoComplete="off"
+  1126→                spellCheck={false}
+  1127→              />
+  1128→            </div>
+  1129→            {/* Date From */}
+  1130→            <div className="flex flex-col gap-1.5">
+  1131→              <label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+  1132→                <CalendarClock className="h-3 w-3" /> Date From
+  1133→              </label>
+  1134→              <Input
+  1135→                type="date"
+  1136→                value={form.dateFrom}
+  1137→                onChange={(e) => setForm((f) => ({ ...f, dateFrom: e.target.value }))}
+  1138→                onKeyDown={handleEnterKey}
+  1139→                className="h-9"
+  1140→              />
+  1141→            </div>
+  1142→            {/* Date To */}
+  1143→            <div className="flex flex-col gap-1.5">
+  1144→              <label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+  1145→                <CalendarClock className="h-3 w-3" /> Date To
+  1146→              </label>
+  1147→              <Input
+  1148→                type="date"
+  1149→                value={form.dateTo}
+  1150→                onChange={(e) => setForm((f) => ({ ...f, dateTo: e.target.value }))}
+  1151→                onKeyDown={handleEnterKey}
+  1152→                className="h-9"
+  1153→              />
+  1154→            </div>
+  1155→          </div>
+  1156→
+  1157→          <div className="mt-4 flex flex-wrap items-center gap-2">
+  1158→            <Button size="sm" onClick={handleApply} className="h-9">
+  1159→              <Search className="mr-1.5 h-3.5 w-3.5" />
+  1160→              Apply Filters
+  1161→            </Button>
+  1162→            <Button
+  1163→              variant="ghost"
+  1164→              size="sm"
+  1165→              onClick={handleReset}
+  1166→              disabled={!hasFilters}
+  1167→              className="h-9"
+  1168→            >
+  1169→              Reset
+  1170→            </Button>
+  1171→            {hasFilters ? (
+  1172→              <div className="flex flex-wrap items-center gap-1.5">
+  1173→                <span className="text-xs text-muted-foreground">Active:</span>
+  1174→                {Object.entries(appliedFilters).map(([k, v]) => (
+  1175→                  <Badge key={k} variant="secondary" className="gap-1 text-[10px]">
+  1176→                    <span className="opacity-70">{k}:</span>
+  1177→                    {v}
+  1178→                    <button
+  1179→                      type="button"
+  1180→                      onClick={() =>
+  1181→                        setApplied((a) => {
+  1182→                          const next = { ...a };
+  1183→                          delete (next as Record<string, string>)[k];
+  1184→                          return next;
+  1185→                        })
+  1186→                      }
+  1187→                      className="ml-0.5 rounded-sm hover:bg-accent"
+  1188→                      aria-label={`Remove ${k} filter`}
+  1189→                    >
+  1190→                      ×
+  1191→                    </button>
+  1192→                  </Badge>
+  1193→                ))}
+  1194→              </div>
+  1195→            ) : null}
+  1196→          </div>
+  1197→        </CardContent>
+  1198→      </Card>
+  1199→
+  1200→      {/* ---------------- Error banner ---------------- */}
+  1201→      {isError ? (
+  1202→        <Alert variant="destructive">
+  1203→          <AlertTriangle className="h-4 w-4" />
+  1204→          <AlertTitle>Failed to load dashboard data</AlertTitle>
+  1205→          <AlertDescription>
+  1206→            {error instanceof Error ? error.message : "Unknown error."}{" "}
+  1207→            <button
+  1208→              type="button"
+  1209→              onClick={() => bumpRefresh()}
+  1210→              className="underline underline-offset-2 hover:opacity-80"
+  1211→            >
+  1212→              Try again
+  1213→            </button>
+  1214→          </AlertDescription>
+  1215→        </Alert>
+  1216→      ) : null}
+  1217→
+  1218→      {/* ---------------- Dashboard Tabs ---------------- */}
+  1219→      <Tabs
+  1220→        value={dashboardTab}
+  1221→        onValueChange={(v) => setDashboardTab(v as DashboardTab)}
+  1222→        className="space-y-4"
+  1223→      >
+  1224→        <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-4 lg:grid-cols-8">
+  1225→          <TabsTrigger value="overview" className="gap-1.5 py-1.5 text-xs">
+  1226→            <LayoutDashboard className="h-3.5 w-3.5" /> Overview
+  1227→          </TabsTrigger>
+  1228→          <TabsTrigger value="progress" className="gap-1.5 py-1.5 text-xs">
+  1229→            <TrendingUp className="h-3.5 w-3.5" /> Order Progress
+  1230→          </TabsTrigger>
+  1231→          <TabsTrigger value="daily" className="gap-1.5 py-1.5 text-xs">
+  1232→            <BarChart3 className="h-3.5 w-3.5" /> Daily Activity
+  1233→          </TabsTrigger>
+  1234→          <TabsTrigger value="timeline" className="gap-1.5 py-1.5 text-xs">
+  1235→            <CalendarDays className="h-3.5 w-3.5" /> Order Timeline
+  1236→          </TabsTrigger>
+  1237→          <TabsTrigger value="history" className="gap-1.5 py-1.5 text-xs">
+  1238→            <HistoryIcon className="h-3.5 w-3.5" /> Data Change History
+  1239→          </TabsTrigger>
+  1240→          <TabsTrigger value="anomaly" className="gap-1.5 py-1.5 text-xs">
+  1241→            <Bug className="h-3.5 w-3.5" /> Anomaly Detection
+  1242→          </TabsTrigger>
+  1243→          <TabsTrigger value="reports" className="gap-1.5 py-1.5 text-xs">
+  1244→            <FileSpreadsheet className="h-3.5 w-3.5" /> Reports
+  1245→          </TabsTrigger>
+  1246→          <TabsTrigger value="drilldown" className="gap-1.5 py-1.5 text-xs">
+  1247→            <ListTree className="h-3.5 w-3.5" /> Drill-Down
+  1248→          </TabsTrigger>
+  1249→        </TabsList>
+  1250→
+  1251→      {/* ---------------- Tab: Overview (wraps ALL existing dashboard content) ---------------- */}
+  1252→      <TabsContent value="overview" className="space-y-6 outline-none">
+  1253→
+  1254→      {/* ---------------- KPI cards (8) ---------------- */}
+  1255→      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4">
+  1256→        {kpiStats.map((st) => (
+  1257→          <StatCard
+  1258→            key={st.label}
+  1259→            label={st.label}
+  1260→            value={st.value}
+  1261→            icon={st.icon}
+  1262→            iconClass={st.iconClass}
+  1263→            sub={st.sub}
+  1264→            loading={isLoadingKpis}
+  1265→          />
+  1266→        ))}
+  1267→      </div>
+  1268→
+  1269→      {/* ---------------- Dashboard Insights: Health Score + Deadline Alerts + Data Quality + Quick Stats ---------------- */}
+  1270→      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+  1271→        {/* 1. Production Health Score */}
+  1272→        <Card>
+  1273→          <CardHeader className="pb-2">
+  1274→            <CardTitle className="flex items-center gap-2 text-sm">
+  1275→              <Activity className="h-4 w-4 text-primary" />
+  1276→              Production Health Score
+  1277→            </CardTitle>
+  1278→            <CardDescription className="text-xs">
+  1279→              Overall production health based on completion, output, deadlines, and data quality.
+  1280→            </CardDescription>
+  1281→          </CardHeader>
+  1282→          <CardContent>
+  1283→            {insightsLoading ? (
+  1284→              <div className="flex h-24 items-center justify-center">
+  1285→                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+  1286→              </div>
+  1287→            ) : insights ? (
+  1288→              <div className="space-y-3">
+  1289→                <div className="flex items-center gap-4">
+  1290→                  <div className={cn(
+  1291→                    "flex h-20 w-20 flex-col items-center justify-center rounded-full text-2xl font-bold",
+  1292→                    insights.healthScore.status === "EXCELLENT" && "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400",
+  1293→                    insights.healthScore.status === "GOOD" && "bg-teal-100 text-teal-700 dark:bg-teal-950/40 dark:text-teal-400",
+  1294→                    insights.healthScore.status === "WARNING" && "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400",
+  1295→                    insights.healthScore.status === "CRITICAL" && "bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400",
+  1296→                  )}>
+  1297→                    {insights.healthScore.score}
+  1298→                    <span className="text-[10px] font-normal opacity-70">/ 100</span>
+  1299→                  </div>
+  1300→                  <div className="flex-1 space-y-1">
+  1301→                    <Badge className={cn(
+  1302→                      insights.healthScore.status === "EXCELLENT" && "bg-emerald-100 text-emerald-700 border-emerald-200",
+  1303→                      insights.healthScore.status === "GOOD" && "bg-teal-100 text-teal-700 border-teal-200",
+  1304→                      insights.healthScore.status === "WARNING" && "bg-amber-100 text-amber-700 border-amber-200",
+  1305→                      insights.healthScore.status === "CRITICAL" && "bg-rose-100 text-rose-700 border-rose-200",
+  1306→                    )}>
+  1307→                      {insights.healthScore.status}
+  1308→                    </Badge>
+  1309→                    <div className="text-xs text-muted-foreground">
+  1310→                      Completion: {insights.healthScore.completionRate}% · Output: {insights.healthScore.outputRate}%
+  1311→                    </div>
+  1312→                  </div>
+  1313→                </div>
+  1314→                {/* Score breakdown */}
+  1315→                <div className="space-y-1.5">
+  1316→                  {[
+  1317→                    { label: "Completion (40%)", value: insights.healthScore.components.completion, max: 40, tone: "bg-emerald-500" },
+  1318→                    { label: "Output Rate (30%)", value: insights.healthScore.components.output, max: 30, tone: "bg-teal-500" },
+  1319→                    { label: "Deadline Health (20%)", value: insights.healthScore.components.deadline, max: 20, tone: "bg-amber-500" },
+  1320→                    { label: "Data Quality (10%)", value: insights.healthScore.components.dataQuality, max: 10, tone: "bg-violet-500" },
+  1321→                  ].map((comp) => (
+  1322→                    <div key={comp.label} className="flex items-center gap-2">
+  1323→                      <span className="w-32 text-[10px] text-muted-foreground">{comp.label}</span>
+  1324→                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+  1325→                        <div className={cn("h-full rounded-full", comp.tone)} style={{ width: `${(comp.value / comp.max) * 100}%` }} />
+  1326→                      </div>
+  1327→                      <span className="w-8 text-right text-[10px] tabular-nums">{comp.value}</span>
+  1328→                    </div>
+  1329→                  ))}
+  1330→                </div>
+  1331→              </div>
+  1332→            ) : (
+  1333→              <div className="py-6 text-center text-xs text-muted-foreground">No insights available</div>
+  1334→            )}
+  1335→          </CardContent>
+  1336→        </Card>
+  1337→
+  1338→        {/* 2. Deadline Alert Center */}
+  1339→        <Card>
+  1340→          <CardHeader className="pb-2">
+  1341→            <CardTitle className="flex items-center gap-2 text-sm">
+  1342→              <AlertTriangle className="h-4 w-4 text-amber-500" />
+  1343→              Deadline Alert Center
+  1344→            </CardTitle>
+  1345→            <CardDescription className="text-xs">
+  1346→              Orders with upcoming or past deadlines that still have missing quantity.
+  1347→            </CardDescription>
+  1348→          </CardHeader>
+  1349→          <CardContent>
+  1350→            {insightsLoading ? (
+  1351→              <div className="flex h-24 items-center justify-center">
+  1352→                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+  1353→              </div>
+  1354→            ) : insights && insights.deadlineCenter ? (
+  1355→              <div className="space-y-2">
+  1356→                <div className="grid grid-cols-4 gap-2">
+  1357→                  <div className="rounded-lg bg-rose-50 p-2 text-center dark:bg-rose-950/30">
+  1358→                    <div className="text-lg font-bold tabular-nums text-rose-600 dark:text-rose-400">{insights.deadlineCenter.overdue}</div>
+  1359→                    <div className="text-[10px] text-rose-600 dark:text-rose-400">Overdue</div>
+  1360→                  </div>
+  1361→                  <div className="rounded-lg bg-rose-50 p-2 text-center dark:bg-rose-950/30">
+  1362→                    <div className="text-lg font-bold tabular-nums text-rose-600 dark:text-rose-400">{insights.deadlineCenter.dueToday}</div>
+  1363→                    <div className="text-[10px] text-rose-600 dark:text-rose-400">Due Today</div>
+  1364→                  </div>
+  1365→                  <div className="rounded-lg bg-amber-50 p-2 text-center dark:bg-amber-950/30">
+  1366→                    <div className="text-lg font-bold tabular-nums text-amber-600 dark:text-amber-400">{insights.deadlineCenter.dueThisWeek}</div>
+  1367→                    <div className="text-[10px] text-amber-600 dark:text-amber-400">This Week</div>
+  1368→                  </div>
+  1369→                  <div className="rounded-lg bg-emerald-50 p-2 text-center dark:bg-emerald-950/30">
+  1370→                    <div className="text-lg font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{insights.deadlineCenter.upcoming}</div>
+  1371→                    <div className="text-[10px] text-emerald-600 dark:text-emerald-400">Upcoming</div>
+  1372→                  </div>
+  1373→                </div>
+  1374→                {insights.deadlineCenter.alerts.length > 0 && (
+  1375→                  <div className="max-h-40 space-y-1 overflow-y-auto scroll-thin">
+  1376→                    {insights.deadlineCenter.alerts.slice(0, 8).map((a, i) => (
+  1377→                      <div key={i} className={cn(
+  1378→                        "flex items-center gap-2 rounded border px-2 py-1 text-xs",
+  1379→                        a.priority === "HIGH" && a.daysUntilDeadline < 0
+  1380→                          ? "border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30"
+  1381→                          : a.priority === "HIGH"
+  1382→                          ? "border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30"
+  1383→                          : "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30"
+  1384→                      )}>
+  1385→                        <Badge variant="outline" className={cn(
+  1386→                          "text-[9px]",
+  1387→                          a.daysUntilDeadline < 0 ? "border-rose-400 text-rose-600" : "border-amber-400 text-amber-600"
+  1388→                        )}>
+  1389→                          {a.daysUntilDeadline < 0 ? `${Math.abs(a.daysUntilDeadline)}d late` : `${a.daysUntilDeadline}d`}
+  1390→                        </Badge>
+  1391→                        <span className="font-mono text-[10px]">{a.factoryPO}</span>
+  1392→                        <span className="text-muted-foreground">{a.size}</span>
+  1393→                        <span className="ml-auto font-medium tabular-nums">Missing: {a.missing.toLocaleString()}</span>
+  1394→                      </div>
+  1395→                    ))}
+  1396→                  </div>
+  1397→                )}
+  1398→              </div>
+  1399→            ) : (
+  1400→              <div className="py-6 text-center text-xs text-muted-foreground">No deadline data</div>
+  1401→            )}
+  1402→          </CardContent>
+  1403→        </Card>
+  1404→
+  1405→        {/* 3. Data Quality Summary */}
+  1406→        <Card>
+  1407→          <CardHeader className="pb-2">
+  1408→            <CardTitle className="flex items-center gap-2 text-sm">
+  1409→              <ShieldCheck className="h-4 w-4 text-primary" />
+  1410→              Data Quality Summary
+  1411→            </CardTitle>
+  1412→            <CardDescription className="text-xs">
+  1413→              Data integrity issues that may affect reports and exports.
+  1414→            </CardDescription>
+  1415→          </CardHeader>
+  1416→          <CardContent>
+  1417→            {insightsLoading ? (
+  1418→              <div className="flex h-24 items-center justify-center">
+  1419→                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+  1420→              </div>
+  1421→            ) : insights && insights.dataQuality ? (
+  1422→              <div className="space-y-2">
+  1423→                <div className="flex items-center justify-between">
+  1424→                  <span className="text-xs text-muted-foreground">Quality Score</span>
+  1425→                  <Badge className={cn(
+  1426→                    insights.dataQuality.qualityScore >= 90 ? "bg-emerald-100 text-emerald-700 border-emerald-200" :
+  1427→                    insights.dataQuality.qualityScore >= 70 ? "bg-amber-100 text-amber-700 border-amber-200" :
+  1428→                    "bg-rose-100 text-rose-700 border-rose-200"
+  1429→                  )}>
+  1430→                    {insights.dataQuality.qualityScore}%
+  1431→                  </Badge>
+  1432→                </div>
+  1433→                <div className="grid grid-cols-2 gap-2 text-xs">
+  1434→                  <div className="rounded border p-2">
+  1435→                    <div className="text-muted-foreground">Missing Deadline</div>
+  1436→                    <div className="text-lg font-bold tabular-nums">
+  1437→                      {insights.dataQuality.missingDeadline.toLocaleString()}
+  1438→                      <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+  1439→                        ({insights.dataQuality.missingDeadlinePercent}%)
+  1440→                      </span>
+  1441→                    </div>
+  1442→                  </div>
+  1443→                  <div className="rounded border p-2">
+  1444→                    <div className="text-muted-foreground">Output &gt; Order</div>
+  1445→                    <div className="text-lg font-bold tabular-nums text-amber-600 dark:text-amber-400">
+  1446→                      {insights.dataQuality.outputExceedsOrder}
+  1447→                    </div>
+  1448→                  </div>
+  1449→                  <div className="rounded border p-2">
+  1450→                    <div className="text-muted-foreground">Input &gt; Output</div>
+  1451→                    <div className="text-lg font-bold tabular-nums text-rose-600 dark:text-rose-400">
+  1452→                      {insights.dataQuality.inputExceedsOutput}
+  1453→                    </div>
+  1454→                  </div>
+  1455→                  <div className="rounded border p-2">
+  1456→                    <div className="text-muted-foreground">Total Rows</div>
+  1457→                    <div className="text-lg font-bold tabular-nums">
+  1458→                      {insights.dataQuality.totalRows.toLocaleString()}
+  1459→                    </div>
+  1460→                  </div>
+  1461→                </div>
+  1462→              </div>
+  1463→            ) : (
+  1464→              <div className="py-6 text-center text-xs text-muted-foreground">No quality data</div>
+  1465→            )}
+  1466→          </CardContent>
+  1467→        </Card>
+  1468→
+  1469→        {/* 4. Quick Stats + Quick Actions */}
+  1470→        <Card>
+  1471→          <CardHeader className="pb-2">
+  1472→            <CardTitle className="flex items-center gap-2 text-sm">
+  1473→              <Zap className="h-4 w-4 text-primary" />
+  1474→              Quick Stats &amp; Actions
+  1475→            </CardTitle>
+  1476→            <CardDescription className="text-xs">
+  1477→              Today's activity and quick navigation shortcuts.
+  1478→            </CardDescription>
+  1479→          </CardHeader>
+  1480→          <CardContent>
+  1481→            {insightsLoading ? (
+  1482→              <div className="flex h-24 items-center justify-center">
+  1483→                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+  1484→              </div>
+  1485→            ) : insights && insights.quickStats ? (
+  1486→              <div className="space-y-3">
+  1487→                <div className="grid grid-cols-2 gap-2 text-xs">
+  1488→                  <div className="rounded border p-2">
+  1489→                    <div className="text-muted-foreground">Entries Today</div>
+  1490→                    <div className="text-lg font-bold tabular-nums">{insights.quickStats.entryCountToday}</div>
+  1491→                  </div>
+  1492→                  <div className="rounded border p-2">
+  1493→                    <div className="text-muted-foreground">Active Factory POs</div>
+  1494→                    <div className="text-lg font-bold tabular-nums">{insights.quickStats.activeFactoryPOs}</div>
+  1495→                  </div>
+  1496→                  <div className="rounded border p-2">
+  1497→                    <div className="text-muted-foreground">Remaining Output</div>
+  1498→                    <div className="text-lg font-bold tabular-nums text-amber-600 dark:text-amber-400">
+  1499→                      {insights.quickStats.remainingOutput.toLocaleString()}
+  1500→                    </div>
+  1501→                  </div>
+  1502→                  <div className="rounded border p-2">
+  1503→                    <div className="text-muted-foreground">Remaining Input</div>
+  1504→                    <div className="text-lg font-bold tabular-nums text-rose-600 dark:text-rose-400">
+  1505→                      {insights.quickStats.remainingInput.toLocaleString()}
+  1506→                    </div>
+  1507→                  </div>
+  1508→                </div>
+  1509→                <div className="flex flex-wrap gap-2">
+  1510→                  <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setView("product-data-entry")}>
+  1511→                    <PenLine className="h-3 w-3" /> Data Entry
+  1512→                  </Button>
+  1513→                  <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setView("product-bulk-check")}>
+  1514→                    <ClipboardCheck className="h-3 w-3" /> Bulk Check
+  1515→                  </Button>
+  1516→                  <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setView("product-output-slip")}>
+  1517→                    <FileOutput className="h-3 w-3" /> Output Slip
+  1518→                  </Button>
+  1519→                  <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setView("product-reconciliation")}>
+  1520→                    <GitCompare className="h-3 w-3" /> Reconcile
+  1521→                  </Button>
+  1522→                </div>
+  1523→              </div>
+  1524→            ) : (
+  1525→              <div className="py-6 text-center text-xs text-muted-foreground">No stats available</div>
+  1526→            )}
+  1527→          </CardContent>
+  1528→        </Card>
+  1529→      </div>
+  1530→
+  1531→      {/* ---------------- Charts row: Order vs Output vs Input  +  Production by Date ---------------- */}
+  1532→      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+  1533→        {/* Chart 1: Order vs Output vs Input */}
+  1534→        <Card>
+  1535→          <CardHeader className="pb-2">
+  1536→            <CardTitle className="flex items-center gap-2 text-sm">
+  1537→              <Layers className="h-4 w-4" style={{ color: theme.chart }} />
+  1538→              Order vs Output vs Input
+  1539→            </CardTitle>
+  1540→            <CardDescription className="text-xs">
+  1541→              Aggregated quantity comparison for {currentProduct}.
+  1542→            </CardDescription>
+  1543→          </CardHeader>
+  1544→          <CardContent>
+  1545→            {isLoadingKpis ? (
+  1546→              <ChartSkeleton />
+  1547→            ) : !kpis || kpis.orderQty === 0 ? (
+  1548→              <EmptyState
+  1549→                message="No quantity data available for the current filters."
+  1550→                icon={Layers}
+  1551→              />
+  1552→            ) : (
+  1553→              <div className="h-72">
+  1554→                <ResponsiveContainer width="100%" height="100%">
+  1555→                  <BarChart
+  1556→                    data={ooiChartData}
+  1557→                    margin={{ top: 5, right: 20, left: -10, bottom: 0 }}
+  1558→                  >
+  1559→                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+  1560→                    <XAxis dataKey="name" tick={{ fontSize: 11 }} className="text-muted-foreground" />
+  1561→                    <YAxis
+  1562→                      tick={{ fontSize: 10 }}
+  1563→                      allowDecimals={false}
+  1564→                      width={64}
+  1565→                      tickFormatter={(v: number) => fmt(v)}
+  1566→                    />
+  1567→                    <Tooltip
+  1568→                      contentStyle={TOOLTIP_STYLE}
+  1569→                      cursor={{ fill: "var(--muted)", opacity: 0.35 }}
+  1570→                      formatter={(value: number, name: string) => [fmt(value), name]}
+  1571→                    />
+  1572→                    <Legend wrapperStyle={{ fontSize: 11 }} />
+  1573→                    <Bar dataKey="Order" fill={QTY_COLORS.order} radius={[4, 4, 0, 0]} maxBarSize={80} />
+  1574→                    <Bar dataKey="Output" fill={QTY_COLORS.output} radius={[4, 4, 0, 0]} maxBarSize={80} />
+  1575→                    <Bar dataKey="Input" fill={QTY_COLORS.input} radius={[4, 4, 0, 0]} maxBarSize={80} />
+  1576→                  </BarChart>
+  1577→                </ResponsiveContainer>
+  1578→              </div>
+  1579→            )}
+  1580→          </CardContent>
+  1581→        </Card>
+  1582→
+  1583→        {/* Chart 2: Production by Date (timeline, output bucket) */}
+  1584→        <Card>
+  1585→          <CardHeader className="pb-2">
+  1586→            <CardTitle className="flex items-center gap-2 text-sm">
+  1587→              <TrendingUp className="h-4 w-4" style={{ color: theme.chart }} />
+  1588→              Production by Date
+  1589→            </CardTitle>
+  1590→            <CardDescription className="text-xs">
+  1591→              Daily output quantity shipped for {currentProduct}.
+  1592→            </CardDescription>
+  1593→          </CardHeader>
+  1594→          <CardContent>
+  1595→            {timelineLoading ? (
+  1596→              <ChartSkeleton />
+  1597→            ) : timelineData.length === 0 ? (
+  1598→              <EmptyState
+  1599→                message="No output timeline records for the current filters."
+  1600→                icon={TrendingUp}
+  1601→              />
+  1602→            ) : (
+  1603→              <div className="h-72">
+  1604→                <ResponsiveContainer width="100%" height="100%">
+  1605→                  <LineChart
+  1606→                    data={timelineData}
+  1607→                    margin={{ top: 5, right: 20, left: -10, bottom: 0 }}
+  1608→                  >
+  1609→                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+  1610→                    <XAxis
+  1611→                      dataKey="date"
+  1612→                      tick={{ fontSize: 10 }}
+  1613→                      className="text-muted-foreground"
+  1614→                      minTickGap={16}
+  1615→                    />
+  1616→                    <YAxis
+  1617→                      tick={{ fontSize: 10 }}
+  1618→                      allowDecimals={false}
+  1619→                      width={64}
+  1620→                      tickFormatter={(v: number) => fmt(v)}
+  1621→                    />
+  1622→                    <Tooltip
+  1623→                      contentStyle={TOOLTIP_STYLE}
+  1624→                      formatter={(value: number) => [fmt(value), "Output Qty"]}
+  1625→                      labelFormatter={(label: string) => `Date: ${label}`}
+  1626→                    />
+  1627→                    <Line
+  1628→                      type="monotone"
+  1629→                      dataKey="qty"
+  1630→                      name="Output Qty"
+  1631→                      stroke={theme.chart}
+  1632→                      strokeWidth={2.5}
+  1633→                      dot={{ r: 2, fill: theme.chart, strokeWidth: 0 }}
+  1634→                      activeDot={{ r: 5 }}
+  1635→                      isAnimationActive={false}
+  1636→                    />
+  1637→                  </LineChart>
+  1638→                </ResponsiveContainer>
+  1639→              </div>
+  1640→            )}
+  1641→          </CardContent>
+  1642→        </Card>
+  1643→      </div>
+  1644→
+  1645→      {/* ---------------- Alerts section ---------------- */}
+  1646→      <Card>
+  1647→        <CardHeader className="pb-2">
+  1648→          <CardTitle className="flex items-center justify-between gap-2 text-sm">
+  1649→            <span className="flex items-center gap-2">
+  1650→              <AlertTriangle className="h-4 w-4 text-amber-500" />
+  1651→              Priority Alerts
+  1652→            </span>
+  1653→            <div className="flex items-center gap-1.5">
+  1654→              {alerts && alerts.high > 0 ? (
+  1655→                <Badge className={cn("border", PRIORITY_BADGE.HIGH.className)}>
+  1656→                  {PRIORITY_BADGE.HIGH.dot} {alerts.high} High
+  1657→                </Badge>
+  1658→              ) : null}
+  1659→              {alerts && alerts.medium > 0 ? (
+  1660→                <Badge className={cn("border", PRIORITY_BADGE.MEDIUM.className)}>
+  1661→                  {PRIORITY_BADGE.MEDIUM.dot} {alerts.medium} Medium
+  1662→                </Badge>
+  1663→              ) : null}
+  1664→              {alerts && alerts.low > 0 ? (
+  1665→                <Badge className={cn("border", PRIORITY_BADGE.LOW.className)}>
+  1666→                  {PRIORITY_BADGE.LOW.dot} {alerts.low} Low
+  1667→                </Badge>
+  1668→              ) : null}
+  1669→              <span className="ml-2 text-xs font-normal text-muted-foreground tabular-nums">
+  1670→                {alerts?.alerts.length ?? 0} shown
+  1671→              </span>
+  1672→            </div>
+  1673→          </CardTitle>
+  1674→          <CardDescription className="text-xs">
+  1675→            Top-priority items requiring attention — sorted by priority then deadline.
+  1676→          </CardDescription>
+  1677→        </CardHeader>
+  1678→        <CardContent>
+  1679→          {alertsLoading ? (
+  1680→            <TableSkeleton />
+  1681→          ) : !alerts || alerts.alerts.length === 0 ? (
+  1682→            <EmptyState
+  1683→              message={`No priority alerts for ${currentProduct}. All production is on track.`}
+  1684→              icon={AlertTriangle}
+  1685→            />
+  1686→          ) : (
+  1687→            <div className="overflow-x-auto scroll-thin">
+  1688→              <Table>
+  1689→                <TableHeader>
+  1690→                  <TableRow>
+  1691→                    <TableHead className="min-w-[90px]">Priority</TableHead>
+  1692→                    <TableHead className="min-w-[130px]">Factory PO</TableHead>
+  1693→                    <TableHead className="min-w-[120px]">Model</TableHead>
+  1694→                    <TableHead className="min-w-[70px]">Size</TableHead>
+  1695→                    <TableHead className="text-right">Order</TableHead>
+  1696→                    <TableHead className="text-right">Output</TableHead>
+  1697→                    <TableHead className="text-right">Input</TableHead>
+  1698→                    <TableHead className="text-right">Missing</TableHead>
+  1699→                    <TableHead className="min-w-[100px]">Deadline</TableHead>
+  1700→                    <TableHead className="min-w-[120px]">Deadline Status</TableHead>
+  1701→                  </TableRow>
+  1702→                </TableHeader>
+  1703→                <TableBody>
+  1704→                  {alerts.alerts.map((a) => {
+  1705→                    const pb = PRIORITY_BADGE[a.alert.priority] ?? PRIORITY_BADGE.INFO;
+  1706→                    const dsBadge = deadlineBadgeClass(a.deadlineStatus);
+  1707→                    const missingTone =
+  1708→                      a.missing > 0
+  1709→                        ? "text-rose-600 dark:text-rose-400 font-semibold"
+  1710→                        : "text-emerald-600 dark:text-emerald-400";
+  1711→                    return (
+  1712→                      <TableRow key={a.key} className="hover:bg-accent/40">
+  1713→                        <TableCell>
+  1714→                          <Badge className={cn("border", pb.className)} variant="outline">
+  1715→                            <span className="mr-0.5">{pb.dot}</span>
+  1716→                            {pb.label}
+  1717→                          </Badge>
+  1718→                        </TableCell>
+  1719→                        <TableCell className="font-medium">
+  1720→                          <span className="inline-flex items-center gap-1.5">
+  1721→                            <FactoryIcon className="h-3 w-3 text-muted-foreground" />
+  1722→                            {a.factoryPO || "—"}
+  1723→                          </span>
+  1724→                        </TableCell>
+  1725→                        <TableCell className="text-xs">{a.model || "—"}</TableCell>
+  1726→                        <TableCell className="text-xs">
+  1727→                          <Badge variant="outline" className="font-mono text-[10px]">
+  1728→                            {a.size || "—"}
+  1729→                          </Badge>
+  1730→                        </TableCell>
+  1731→                        <TableCell className="text-right tabular-nums">
+  1732→                          {fmt(a.orderQty)}
+  1733→                        </TableCell>
+  1734→                        <TableCell className="text-right tabular-nums text-amber-600 dark:text-amber-400">
+  1735→                          {fmt(a.outputQty)}
+  1736→                        </TableCell>
+  1737→                        <TableCell className="text-right tabular-nums text-emerald-600 dark:text-emerald-400">
+  1738→                          {fmt(a.inputQty)}
+  1739→                        </TableCell>
+  1740→                        <TableCell className={cn("text-right tabular-nums", missingTone)}>
+  1741→                          {fmt(a.missing)}
+  1742→                        </TableCell>
+  1743→                        <TableCell className="text-xs tabular-nums">
+  1744→                          {formatDeadline(a.deadline)}
+  1745→                        </TableCell>
+  1746→                        <TableCell>
+  1747→                          <Badge className={cn("border", dsBadge)} variant="outline">
+  1748→                            {deadlineLabel(a.deadlineStatus)}
+  1749→                          </Badge>
+  1750→                        </TableCell>
+  1751→                      </TableRow>
+  1752→                    );
+  1753→                  })}
+  1754→                </TableBody>
+  1755→              </Table>
+  1756→            </div>
+  1757→          )}
+  1758→        </CardContent>
+  1759→      </Card>
+  1760→
+  1761→      {/* ---------------- Production by Dimension (3 bar charts) ---------------- */}
+  1762→      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+  1763→        {/* By Size */}
+  1764→        <Card>
+  1765→          <CardHeader className="pb-2">
+  1766→            <CardTitle className="flex items-center gap-2 text-sm">
+  1767→              <Layers className="h-4 w-4" style={{ color: theme.chart }} />
+  1768→              Production by Size
+  1769→            </CardTitle>
+  1770→            <CardDescription className="text-xs">
+  1771→              Order / Output / Input quantities per size.
+  1772→            </CardDescription>
+  1773→          </CardHeader>
+  1774→          <CardContent>
+  1775→            {dimsLoading && sizeQ.isLoading ? (
+  1776→              <ChartSkeleton height="h-64" />
+  1777→            ) : sizeRows.length === 0 ? (
+  1778→              <EmptyState
+  1779→                message={`No size breakdown for ${currentProduct} with the current filters.`}
+  1780→                icon={Layers}
+  1781→              />
+  1782→            ) : (
+  1783→              <div className="h-64">
+  1784→                <ResponsiveContainer width="100%" height="100%">
+  1785→                  <BarChart
+  1786→                    data={sizeRows}
+  1787→                    margin={{ top: 5, right: 10, left: -15, bottom: 0 }}
+  1788→                  >
+  1789→                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+  1790→                    <XAxis
+  1791→                      dataKey="dim"
+  1792→                      tick={{ fontSize: 10 }}
+  1793→                      className="text-muted-foreground"
+  1794→                      interval={0}
+  1795→                      angle={-25}
+  1796→                      textAnchor="end"
+  1797→                      height={50}
+  1798→                    />
+  1799→                    <YAxis
+  1800→                      tick={{ fontSize: 9 }}
+  1801→                      allowDecimals={false}
+  1802→                      width={48}
+  1803→                      tickFormatter={(v: number) => fmt(v)}
+  1804→                    />
+  1805→                    <Tooltip
+  1806→                      contentStyle={TOOLTIP_STYLE}
+  1807→                      cursor={{ fill: "var(--muted)", opacity: 0.35 }}
+  1808→                      formatter={(value: number, name: string) => [fmt(value), name]}
+  1809→                      labelFormatter={(label: string) => `Size: ${label}`}
+  1810→                    />
+  1811→                    <Legend wrapperStyle={{ fontSize: 10 }} />
+  1812→                    <Bar dataKey="orderQty" name="Order" fill={QTY_COLORS.order} radius={[3, 3, 0, 0]} />
+  1813→                    <Bar dataKey="outputQty" name="Output" fill={QTY_COLORS.output} radius={[3, 3, 0, 0]} />
+  1814→                    <Bar dataKey="inputQty" name="Input" fill={QTY_COLORS.input} radius={[3, 3, 0, 0]} />
+  1815→                  </BarChart>
+  1816→                </ResponsiveContainer>
+  1817→              </div>
+  1818→            )}
+  1819→          </CardContent>
+  1820→        </Card>
+  1821→
+  1822→        {/* By Color */}
+  1823→        <Card>
+  1824→          <CardHeader className="pb-2">
+  1825→            <CardTitle className="flex items-center gap-2 text-sm">
+  1826→              <Tag className="h-4 w-4" style={{ color: theme.chart }} />
+  1827→              Production by Color
+  1828→            </CardTitle>
+  1829→            <CardDescription className="text-xs">
+  1830→              Order / Output / Input quantities per color code.
+  1831→            </CardDescription>
+  1832→          </CardHeader>
+  1833→          <CardContent>
+  1834→            {dimsLoading && colorQ.isLoading ? (
+  1835→              <ChartSkeleton height="h-64" />
+  1836→            ) : colorRows.length === 0 ? (
+  1837→              <EmptyState
+  1838→                message={`No color breakdown for ${currentProduct} with the current filters.`}
+  1839→                icon={Tag}
+  1840→              />
+  1841→            ) : (
+  1842→              <div className="h-64">
+  1843→                <ResponsiveContainer width="100%" height="100%">
+  1844→                  <BarChart
+  1845→                    data={colorRows}
+  1846→                    layout="vertical"
+  1847→                    margin={{ top: 5, right: 10, left: 10, bottom: 0 }}
+  1848→                  >
+  1849→                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" horizontal={false} />
+  1850→                    <XAxis
+  1851→                      type="number"
+  1852→                      tick={{ fontSize: 9 }}
+  1853→                      allowDecimals={false}
+  1854→                      tickFormatter={(v: number) => fmt(v)}
+  1855→                    />
+  1856→                    <YAxis
+  1857→                      dataKey="dim"
+  1858→                      type="category"
+  1859→                      tick={{ fontSize: 9 }}
+  1860→                      width={90}
+  1861→                      className="text-muted-foreground"
+  1862→                    />
+  1863→                    <Tooltip
+  1864→                      contentStyle={TOOLTIP_STYLE}
+  1865→                      cursor={{ fill: "var(--muted)", opacity: 0.35 }}
+  1866→                      formatter={(value: number, name: string) => [fmt(value), name]}
+  1867→                      labelFormatter={(label: string) => `Color: ${label}`}
+  1868→                    />
+  1869→                    <Legend wrapperStyle={{ fontSize: 10 }} />
+  1870→                    <Bar dataKey="orderQty" name="Order" fill={QTY_COLORS.order} radius={[0, 3, 3, 0]} />
+  1871→                    <Bar dataKey="outputQty" name="Output" fill={QTY_COLORS.output} radius={[0, 3, 3, 0]} />
+  1872→                    <Bar dataKey="inputQty" name="Input" fill={QTY_COLORS.input} radius={[0, 3, 3, 0]} />
+  1873→                  </BarChart>
+  1874→                </ResponsiveContainer>
+  1875→              </div>
+  1876→            )}
+  1877→          </CardContent>
+  1878→        </Card>
+  1879→
+  1880→        {/* By Model */}
+  1881→        <Card>
+  1882→          <CardHeader className="pb-2">
+  1883→            <CardTitle className="flex items-center gap-2 text-sm">
+  1884→              <Tag className="h-4 w-4" style={{ color: theme.chart }} />
+  1885→              Production by Model
+  1886→            </CardTitle>
+  1887→            <CardDescription className="text-xs">
+  1888→              Order / Output / Input quantities per model.
+  1889→            </CardDescription>
+  1890→          </CardHeader>
+  1891→          <CardContent>
+  1892→            {dimsLoading && modelQ.isLoading ? (
+  1893→              <ChartSkeleton height="h-64" />
+  1894→            ) : modelRows.length === 0 ? (
+  1895→              <EmptyState
+  1896→                message={`No model breakdown for ${currentProduct} with the current filters.`}
+  1897→                icon={Tag}
+  1898→              />
+  1899→            ) : (
+  1900→              <div className="h-64">
+  1901→                <ResponsiveContainer width="100%" height="100%">
+  1902→                  <BarChart
+  1903→                    data={modelRows}
+  1904→                    margin={{ top: 5, right: 10, left: -15, bottom: 0 }}
+  1905→                  >
+  1906→                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+  1907→                    <XAxis
+  1908→                      dataKey="dim"
+  1909→                      tick={{ fontSize: 9 }}
+  1910→                      className="text-muted-foreground"
+  1911→                      interval={0}
+  1912→                      angle={-25}
+  1913→                      textAnchor="end"
+  1914→                      height={50}
+  1915→                    />
+  1916→                    <YAxis
+  1917→                      tick={{ fontSize: 9 }}
+  1918→                      allowDecimals={false}
+  1919→                      width={48}
+  1920→                      tickFormatter={(v: number) => fmt(v)}
+  1921→                    />
+  1922→                    <Tooltip
+  1923→                      contentStyle={TOOLTIP_STYLE}
+  1924→                      cursor={{ fill: "var(--muted)", opacity: 0.35 }}
+  1925→                      formatter={(value: number, name: string) => [fmt(value), name]}
+  1926→                      labelFormatter={(label: string) => `Model: ${label}`}
+  1927→                    />
+  1928→                    <Legend wrapperStyle={{ fontSize: 10 }} />
+  1929→                    <Bar dataKey="orderQty" name="Order" fill={QTY_COLORS.order} radius={[3, 3, 0, 0]} />
+  1930→                    <Bar dataKey="outputQty" name="Output" fill={QTY_COLORS.output} radius={[3, 3, 0, 0]} />
+  1931→                    <Bar dataKey="inputQty" name="Input" fill={QTY_COLORS.input} radius={[3, 3, 0, 0]} />
+  1932→                  </BarChart>
+  1933→                </ResponsiveContainer>
+  1934→              </div>
+  1935→            )}
+  1936→          </CardContent>
+  1937→        </Card>
+  1938→      </div>
+  1939→
+  1940→      </TabsContent>
+  1941→      {/* ---------------- /Tab: Overview ---------------- */}
+  1942→
+  1943→      {/* ================================================================== */}
+  1944→      {/* Tab 2: Order Progress                                              */}
+  1945→      {/* ================================================================== */}
+  1946→      <TabsContent value="progress" className="space-y-4 outline-none">
+  1947→        {orderProgressLoading ? (
+  1948→          <div className="space-y-4">
+  1949→            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+  1950→              {Array.from({ length: 8 }).map((_, i) => (
+  1951→                <Skeleton key={i} className="h-20" />
+  1952→              ))}
+  1953→            </div>
+  1954→            <Skeleton className="h-64" />
+  1955→          </div>
+  1956→        ) : orderProgressError ? (
+  1957→          <Alert variant="destructive">
+  1958→            <AlertTriangle className="h-4 w-4" />
+  1959→            <AlertTitle>Failed to load order progress</AlertTitle>
+  1960→            <AlertDescription>
+  1961→              {orderProgressError instanceof Error ? orderProgressError.message : "Unknown error."}{" "}
+  1962→              <button
+  1963→                type="button"
+  1964→                onClick={() => bumpRefresh()}
+  1965→                className="underline underline-offset-2 hover:opacity-80"
+  1966→              >
+  1967→                Try again
+  1968→              </button>
+  1969→            </AlertDescription>
+  1970→          </Alert>
+  1971→        ) : !progressSummary ? (
+  1972→          <EmptyState
+  1973→            message={`No order-progress data available for ${currentProduct}.`}
+  1974→            icon={TrendingUp}
+  1975→          />
+  1976→        ) : (
+  1977→          <>
+  1978→            {/* 8 stat cards: Total Order / Total Output / Total Input / Pending / Remaining / Avg Output % / Avg Input % / Input vs Output % */}
+  1979→            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+  1980→              <MiniStat
+  1981→                label="Total Order"
+  1982→                value={fmt(progressSummary.totalOrderQty)}
+  1983→                icon={ClipboardList}
+  1984→                iconClass="bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300"
+  1985→                sub={`${fmt(progressSummary.totalOrders)} orders`}
+  1986→              />
+  1987→              <MiniStat
+  1988→                label="Total Output"
+  1989→                value={fmt(progressSummary.totalOutputQty)}
+  1990→                icon={Truck}
+  1991→                iconClass="bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+  1992→              />
+  1993→              <MiniStat
+  1994→                label="Total Input"
+  1995→                value={fmt(progressSummary.totalInputQty)}
+  1996→                icon={PackageCheck}
+  1997→                iconClass="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+  1998→              />
+  1999→              <MiniStat
+  2000→                label="Pending"
+
+[showing lines 1-2000 of 3559; use offset=2001 with limit to continue reading]

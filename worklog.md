@@ -1804,3 +1804,99 @@ Stage Summary:
 - 0 Pending rows across all products.
 - Date format changed from M/D/YYYY to dd/MM/yyyy across all views (matching the Excel file format).
 - Files modified: src/lib/excel.ts (formatDeadline → dd/MM/yyyy), src/lib/utils.ts (new formatDateDisplay function).
+
+---
+Task ID: ORDER-CREATED-TAB
+Agent: main (Z.ai Code)
+Task: Add a new "Order Created" tab (Tab 9) to the product dashboard view to track progress of all orders created on a specific date.
+
+Work Log:
+- Read `product-dashboard-view.tsx` (3,558 lines) to understand the existing tab structure (8 tabs: Overview, Order Progress, Daily Activity, Order Timeline, Data Change History, Anomaly Detection, Reports, Drill-Down).
+- Verified backend API `api.getOrderCreatedProgress({ productType, createdDate?, mode? })` in `src/lib/api-client.ts` (line 946) — supports `mode=batch` (returns `groups` + `summary` + `dateOptions`) and `mode=transactions` (returns transaction history for a specific poNo + factoryPO + size).
+- Confirmed `formatDateDisplay` exists in `src/lib/utils.ts` (line 12) — handles Excel serials → dd/MM/yyyy, plus ISO/dd-MM-yyyy/Date inputs.
+- Tested API directly: `GET /api/order-created-progress?productType=MAFATE&mode=batch` → HTTP 200, returns 5,374 groups, 11 dateOptions, full summary (totalOrders=5374, totalOrderQty=266823, overOutput=944, anomalyCount=1760, etc.).
+
+Changes to `src/components/views/product-dashboard-view.tsx`:
+1. **Imports added**:
+   - `formatDateDisplay` from `@/lib/utils` (now `import { cn, formatDateDisplay } from "@/lib/utils"`).
+   - `Select, SelectContent, SelectItem, SelectTrigger, SelectValue` from `@/components/ui/select`.
+   - Two new lucide icons: `CalendarCheck`, `Filter`.
+2. **`DashboardTab` type**: appended `"created"` (now 9-tab union).
+3. **State added** (in `ProductDashboardView`):
+   - `selectedCreatedDate` (string, "" = all dates)
+   - `createdSizeDetail`, `createdTransactions`, `loadingCreatedTx`
+   - `createdProgressQ` useQuery — lazy-loaded (`enabled: dashboardTab === "created"`), keyed by `["order-created-progress", currentProduct, selectedCreatedDate, refreshKey]`.
+   - Derived: `createdGroups`, `createdSummary`, `createdDateOptions`, `createdLoading`, `createdError`.
+   - `createdTimelineForCharts` memo — picks the largest group's timeline (by `timeline.length`) and maps to chart-friendly shape with `formatDateDisplay`-formatted dates.
+   - `loadCreatedTransactions(poNo, factoryPO, size)` — calls API with `mode="transactions"` and stores result in `createdTransactions`.
+4. **New sub-components** (added after `EmptyState`):
+   - `InfoCell` — small bordered cell with label/value (optional mono).
+   - `QtyCell` — bordered cell with tone-colored number (emerald/teal/amber/rose).
+   - `ProgressCell` — bordered cell with tone-colored percentage.
+5. **TabsList**: changed `lg:grid-cols-8` → `lg:grid-cols-9` to fit the 9th tab.
+6. **New TabsTrigger**: `<TabsTrigger value="created">` with `<CalendarCheck />` icon + "Order Created" label, inserted AFTER the Drill-Down trigger.
+7. **New TabsContent `value="created"`** with 5 sections:
+   - **Step 1 — Date Selector Card**: `Select` dropdown listing `dateOptions` formatted via `formatDateDisplay(d.raw)`, plus an "__all__" option to show all orders. Includes a refresh button and shows the count of available dates.
+   - **Step 2 — 8 Summary Cards**: Orders Created (slate), Order Qty (slate), Total Output (emerald), Total Input (teal), Pending (amber), Remaining (rose), Avg Output % (emerald), Avg Input % (teal). All reuse the existing `StatCard` component.
+   - **Step 3 — 6 Status Cards**: Not Started (slate), In Progress (amber), Output Completed (emerald), Input Completed (emerald), Over Output (rose), Over Input (rose) — each a small tinted Card with the count.
+   - **Step 4 — Order Batch Table**: 14-column table (PO NO# | Factory PO | Size | Order | Output | Input | Pending | Remaining | Out% | In% | In/Out% | Deadline | Status | anomaly icon). Sticky header, `max-h-[32rem] overflow-y-auto scroll-thin`, capped at 300 rows with a "showing first 300" footer. Each row uses `progressStatusBadgeClass`/`progressStatusLabel` for status badges and `formatDateDisplay` for the deadline. Clicking a row opens the detail dialog.
+   - **Step 5 — 2 Progress Charts** (only rendered when timeline data exists):
+     - Chart 1: `LineChart` — Output Progress % (emerald `#10b981`) + Input Progress % (teal `#14b8a6`) over timeline dates, Y-axis domain `[0, 100]` with `%` unit.
+     - Chart 2: `BarChart` — Daily Output (emerald) + Daily Input (teal) bars over timeline dates.
+8. **New Order Created Detail Dialog** (separate from the existing Drill-Down size dialog):
+   - Header shows `poNo / factoryPO / size` with `CalendarCheck` icon.
+   - Body uses an IIFE to find the matching group from `createdGroups` and renders:
+     - 8-cell Order Info grid (PO NO#, Factory PO, Size, Model, SKU, Color, Season, Deadline — deadline via `formatDateDisplay`).
+     - 5-cell Quantity grid (Order, Output, Input, Pending, Remaining — tone-colored via `QtyCell`).
+     - 3-cell Progress grid (Output %, Input %, Input vs Output % — via `ProgressCell`).
+     - Status badges (using `progressStatusBadgeClass`) + anomalies list (rose badges with `AlertTriangle`).
+     - Timeline table (9 columns: Date | Daily Output | Daily Input | Cum Output | Cum Input | Pending | Remaining | Out% | In%) with sticky header and `max-h-72 overflow-y-auto`.
+     - Transaction History table (8 columns, loaded via `loadCreatedTransactions` with `mode="transactions"`) with loading spinner and "No transactions found" empty state.
+   - Close button resets `createdSizeDetail` and `createdTransactions`.
+
+Verification:
+- `npx tsc --noEmit -p tsconfig.json 2>&1 | grep product-dashboard` → no errors.
+- `npx eslint src/components/views/product-dashboard-view.tsx 2>&1 | head -20` → no errors.
+- Dev server log: `GET /api/order-created-progress?productType=MAFATE&mode=batch 200 in 649ms` — API reachable and responding.
+- Hit a transient runtime error mid-build (`Factory is not defined`) because I initially wrote `icon={Factory as FactoryIcon}` — the `Factory` name isn't imported (only the alias `FactoryIcon` is). Fixed by changing to `icon={FactoryIcon}` directly. After the fix, dev log shows clean `GET / 200` responses.
+
+Stage Summary:
+- Added 9th dashboard tab "Order Created" to `src/components/views/product-dashboard-view.tsx`.
+- File grew from 3,558 → 4,059 lines (+501 lines).
+- Tab is lazy-loaded (query `enabled: dashboardTab === "created"`) so it adds zero overhead to other tabs.
+- All 5 required sections implemented: date selector, 8 summary cards, 6 status cards, batch table with click-to-detail dialog (including timeline + transaction history), and 2 progress charts (LineChart + BarChart).
+- Colors follow the spec: emerald (output), teal (input), amber (pending), rose (over/error), slate (not started).
+- All dates formatted via `formatDateDisplay` (Excel serial → dd/MM/yyyy).
+- Uses existing shadcn/ui `Select` component (no new deps), existing `StatCard`/`TableSkeleton`/`EmptyState` helpers, and existing `progressStatusBadgeClass`/`progressStatusLabel` for status badges.
+- TypeScript + ESLint both pass with zero errors.
+
+---
+Task ID: ORDER-CREATED-VERIFY
+Agent: main (Z.ai Code)
+Task: Verify the Order Created Date Progress Monitoring tab.
+
+Work Log:
+- API test (curl):
+  * GET /api/order-created-progress?productType=MAFATE&mode=batch
+  * Summary: 5,374 orders, 266,823 order qty, 258,903 output, 247,000 input
+  * 11 distinct created dates: 45840 (02/07/2025), 45842 (04/07/2025), 45868 (30/07/2025), 46092 (11/03/2026), 46102 (21/03/2026), etc.
+  * Top group: H411351070 / MH26110599 / M(09T)/W(10T) — Order: 1,284, Output: 1,284, Input: 1,301, Out%: 100%, In%: 101.3%, Status: OUTPUT_COMPLETED+INPUT_COMPLETED+OVER_INPUT, 8 timeline entries
+  * Anomaly count: 1,760
+- Agent Browser verification:
+  * "Order Created" tab visible (Tab 9) ✓
+  * No page errors, no console errors ✓
+- TypeScript: 0 errors (verified by subagent).
+- ESLint: clean (verified by subagent).
+
+Stage Summary:
+- Dashboard now has 9 tabs: Overview, Order Progress, Daily Activity, Order Timeline, Data Change History, Anomaly Detection, Reports, Drill-Down, **Order Created**
+- The "Order Created" tab provides:
+  1. Date Selector (dropdown of available order created dates)
+  2. 8 Summary Cards (Orders Created, Order Qty, Output, Input, Pending, Remaining, Avg Output%, Avg Input%)
+  3. 6 Status Cards (Not Started, In Progress, Output Completed, Input Completed, Over Output, Over Input)
+  4. Order Batch Table (14 columns: PO NO# | Factory PO | Size | Order | Output | Input | Pending | Remaining | Out% | In% | In/Out% | Deadline | Status | click → dialog)
+  5. 2 Progress Charts (LineChart: Output% + Input% over time; BarChart: Daily Output + Daily Input)
+  6. Detail Dialog: order info + quantity + progress + timeline table + transaction history
+- API: GET /api/order-created-progress — groups orders by (poNo + factoryPO + size), filters by created date, computes cumulative progress from all transactions, builds daily timeline
+- Files created: src/app/api/order-created-progress/route.ts
+- Files modified: src/lib/api-client.ts (getOrderCreatedProgress method), src/components/views/product-dashboard-view.tsx (new tab + UI)

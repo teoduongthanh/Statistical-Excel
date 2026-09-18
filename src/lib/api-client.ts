@@ -942,6 +942,60 @@ export const api = {
     }>(res);
   },
 
+  // ===== Order Created Date Progress (batch by created date + timeline) =====
+  getOrderCreatedProgress: async (params: {
+    productType: string;
+    createdDate?: string;
+    mode?: "batch" | "transactions";
+    poNo?: string;
+    factoryPO?: string;
+    size?: string;
+  }) => {
+    const q = new URLSearchParams({ productType: params.productType });
+    if (params.createdDate) q.set("createdDate", params.createdDate);
+    q.set("mode", params.mode || "batch");
+    if (params.poNo) q.set("poNo", params.poNo);
+    if (params.factoryPO) q.set("factoryPO", params.factoryPO);
+    if (params.size) q.set("size", params.size);
+    const res = await fetch(`/api/order-created-progress?${q}`);
+    return jsonOrThrow<{
+      ok: boolean;
+      groups?: Array<{
+        createdDate: string;
+        poNo: string; factoryPO: string; size: string;
+        orderQty: number; outputQty: number; inputQty: number;
+        pending: number; remaining: number;
+        outputProgress: number; inputProgress: number; inputVsOutput: number;
+        deadline: string | null;
+        model: string; sku: string; colorCode: string; season: string;
+        status: string[];
+        anomalies: string[];
+        timeline: Array<{
+          date: string; dailyOutput: number; dailyInput: number;
+          cumOutput: number; cumInput: number;
+          pending: number; remaining: number;
+          outputProgress: number; inputProgress: number; inputVsOutput: number;
+        }>;
+      }>;
+      summary?: {
+        totalOrders: number; totalOrderQty: number;
+        totalOutputQty: number; totalInputQty: number;
+        totalPending: number; totalRemaining: number;
+        avgOutputProgress: number; avgInputProgress: number;
+        notStarted: number; inProgress: number;
+        outputCompleted: number; inputCompleted: number;
+        overOutput: number; overInput: number; anomalyCount: number;
+      };
+      dateOptions?: Array<{ raw: string; iso: string }>;
+      transactions?: Array<{
+        date: string; shippingStatus: string; bucket: string; qty: number;
+        cumulativeOrder: number; cumulativeOutput: number; cumulativeInput: number;
+        pending: number; remaining: number;
+        outputProgress: number; inputProgress: number; inputVsOutput: number;
+      }>;
+    }>(res);
+  },
+
   // Production Report & Data Validation
   getReportGroups: async (productType: string, filters?: Record<string, string>) => {
     const params = new URLSearchParams({ productType, ...(filters || {}) });

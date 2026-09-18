@@ -53,10 +53,12 @@ import {
   ArrowRight,
   Circle,
   GitCommitHorizontal,
+  CalendarCheck,
+  Filter,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { api } from "@/lib/api-client";
-import { cn } from "@/lib/utils";
+import { cn, formatDateDisplay } from "@/lib/utils";
 import { useAppStore, PRODUCT_THEME, type ProductType } from "@/store/app-store";
 
 import {
@@ -71,6 +73,13 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -431,11 +440,57 @@ function EmptyState({ message, icon: Icon }: { message: string; icon: React.Comp
   );
 }
 
+/** Small info cell used in the Order Created detail dialog. */
+function InfoCell({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  return (
+    <div className="rounded border bg-muted/20 p-2">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={cn("mt-0.5 text-xs font-medium", mono && "font-mono")}>{value}</div>
+    </div>
+  );
+}
+
+/** Quantity cell used in the Order Created detail dialog. */
+function QtyCell({ label, value, tone }: { label: string; value: number; tone?: "emerald" | "teal" | "amber" | "rose" }) {
+  const toneClass =
+    tone === "emerald"
+      ? "text-emerald-700 dark:text-emerald-300"
+      : tone === "teal"
+        ? "text-teal-700 dark:text-teal-300"
+        : tone === "amber"
+          ? "text-amber-700 dark:text-amber-300"
+          : tone === "rose"
+            ? "text-rose-700 dark:text-rose-300"
+            : "text-foreground";
+  return (
+    <div className="rounded border bg-muted/20 p-2 text-center">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={cn("mt-0.5 text-base font-bold tabular-nums", toneClass)}>{value.toLocaleString()}</div>
+    </div>
+  );
+}
+
+/** Progress cell used in the Order Created detail dialog. */
+function ProgressCell({ label, value, tone }: { label: string; value: number; tone?: "emerald" | "teal" }) {
+  const toneClass =
+    tone === "emerald"
+      ? "text-emerald-700 dark:text-emerald-300"
+      : tone === "teal"
+        ? "text-teal-700 dark:text-teal-300"
+        : "text-foreground";
+  return (
+    <div className="rounded border bg-muted/20 p-2 text-center">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={cn("mt-0.5 text-base font-bold tabular-nums", toneClass)}>{value}%</div>
+    </div>
+  );
+}
+
 // ----------------------------------------------------------------------------
 // Order Progress / Anomaly / History helpers
 // ----------------------------------------------------------------------------
 
-type DashboardTab = "overview" | "progress" | "daily" | "timeline" | "history" | "anomaly" | "reports" | "drilldown";
+type DashboardTab = "overview" | "progress" | "daily" | "timeline" | "history" | "anomaly" | "reports" | "drilldown" | "created";
 
 /** Badge classes for Order Progress daily-snapshot status values. */
 const PROGRESS_STATUS_BADGE: Record<string, string> = {
@@ -853,6 +908,66 @@ export function ProductDashboardView() {
     });
   }
 
+  // ---- Order Created (Tab 9) ----
+  // Track progress of all orders created on a specific date.
+  const [selectedCreatedDate, setSelectedCreatedDate] = React.useState<string>("");
+  const [createdSizeDetail, setCreatedSizeDetail] = React.useState<any>(null);
+  const [createdTransactions, setCreatedTransactions] = React.useState<any[] | null>(null);
+  const [loadingCreatedTx, setLoadingCreatedTx] = React.useState(false);
+
+  const createdProgressQ = useQuery({
+    queryKey: ["order-created-progress", currentProduct, selectedCreatedDate, refreshKey],
+    queryFn: () =>
+      api.getOrderCreatedProgress({
+        productType: currentProduct,
+        createdDate: selectedCreatedDate || undefined,
+        mode: "batch",
+      }),
+    enabled: dashboardTab === "created",
+    staleTime: 30_000,
+  });
+  const createdGroups = createdProgressQ.data?.groups ?? [];
+  const createdSummary = createdProgressQ.data?.summary;
+  const createdDateOptions = createdProgressQ.data?.dateOptions ?? [];
+  const createdLoading = createdProgressQ.isLoading || createdProgressQ.isFetching;
+  const createdError = createdProgressQ.error;
+
+  // Pick the largest group's timeline for the progress charts.
+  const createdTimelineForCharts = React.useMemo(() => {
+    if (createdGroups.length === 0) return [];
+    let largest = createdGroups[0];
+    for (const g of createdGroups) {
+      if ((g.timeline?.length ?? 0) > (largest.timeline?.length ?? 0)) largest = g;
+    }
+    return (largest.timeline ?? []).map((t) => ({
+      date: formatDateDisplay(t.date),
+      outputProgress: Number(t.outputProgress ?? 0),
+      inputProgress: Number(t.inputProgress ?? 0),
+      dailyOutput: Number(t.dailyOutput ?? 0),
+      dailyInput: Number(t.dailyInput ?? 0),
+    }));
+  }, [createdGroups]);
+
+  async function loadCreatedTransactions(poNo: string, factoryPO: string, size: string) {
+    setCreatedSizeDetail({ poNo, factoryPO, size });
+    setCreatedTransactions(null);
+    setLoadingCreatedTx(true);
+    try {
+      const res = await api.getOrderCreatedProgress({
+        productType: currentProduct,
+        mode: "transactions",
+        poNo,
+        factoryPO,
+        size,
+      });
+      setCreatedTransactions(res.transactions || []);
+    } catch (e) {
+      toast.error("Failed to load transactions");
+    } finally {
+      setLoadingCreatedTx(false);
+    }
+  }
+
   // Derived: anomaly counts by type for the Anomaly tab summary cards
   const anomalyTypeCounts = React.useMemo(() => {
     const counts = { OVER_OUTPUT: 0, INPUT_EXCEEDS_OUTPUT: 0, DEADLINE_RISK: 0 } as Record<string, number>;
@@ -1221,7 +1336,7 @@ export function ProductDashboardView() {
         onValueChange={(v) => setDashboardTab(v as DashboardTab)}
         className="space-y-4"
       >
-        <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-4 lg:grid-cols-8">
+        <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-4 lg:grid-cols-9">
           <TabsTrigger value="overview" className="gap-1.5 py-1.5 text-xs">
             <LayoutDashboard className="h-3.5 w-3.5" /> Overview
           </TabsTrigger>
@@ -1245,6 +1360,9 @@ export function ProductDashboardView() {
           </TabsTrigger>
           <TabsTrigger value="drilldown" className="gap-1.5 py-1.5 text-xs">
             <ListTree className="h-3.5 w-3.5" /> Drill-Down
+          </TabsTrigger>
+          <TabsTrigger value="created" className="gap-1.5 py-1.5 text-xs">
+            <CalendarCheck className="h-3.5 w-3.5" /> Order Created
           </TabsTrigger>
         </TabsList>
 
@@ -3546,6 +3664,434 @@ export function ProductDashboardView() {
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => { setSizeDetail(null); setSizeTransactions(null); }}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------------- Tab: Order Created (Tab 9) ---------------- */}
+      <TabsContent value="created" className="space-y-4 outline-none">
+        {/* Step 1: Date Selector */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <CalendarCheck className="h-4 w-4 text-primary" />
+              Order Created Date
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Select an order created date to track progress of all orders created on that day. Leave empty to view all orders.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="flex items-center gap-2">
+                <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-xs font-medium text-muted-foreground">Created Date:</span>
+              </div>
+              <Select value={selectedCreatedDate} onValueChange={(v) => setSelectedCreatedDate(v === "__all__" ? "" : v)}>
+                <SelectTrigger size="sm" className="w-full sm:w-64">
+                  <SelectValue placeholder={selectedCreatedDate ? formatDateDisplay(selectedCreatedDate) : "All dates (showing all orders)"} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">All dates (show all orders)</SelectItem>
+                  {createdDateOptions.map((d) => (
+                    <SelectItem key={d.iso} value={d.iso}>
+                      {formatDateDisplay(d.raw)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedCreatedDate && (
+                <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => setSelectedCreatedDate("")}>
+                  Clear filter
+                </Button>
+              )}
+              <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
+                <span>Available dates: <span className="font-bold tabular-nums text-foreground">{createdDateOptions.length}</span></span>
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => bumpRefresh()} disabled={createdLoading}>
+                  <RefreshCw className={cn("h-3.5 w-3.5", createdLoading && "animate-spin")} />
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {createdError ? (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Failed to load order created progress</AlertTitle>
+            <AlertDescription>
+              {createdError instanceof Error ? createdError.message : "Unknown error."}
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        {/* Step 2: Summary Cards (8 cards) */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+          <StatCard label="Orders Created" value={fmt(createdSummary?.totalOrders ?? 0)} icon={ClipboardCheck} iconClass="bg-slate-100 text-slate-700 dark:bg-slate-900/50 dark:text-slate-300" loading={createdLoading} />
+          <StatCard label="Order Qty" value={fmt(createdSummary?.totalOrderQty ?? 0)} icon={Boxes} iconClass="bg-slate-100 text-slate-700 dark:bg-slate-900/50 dark:text-slate-300" loading={createdLoading} />
+          <StatCard label="Total Output" value={fmt(createdSummary?.totalOutputQty ?? 0)} icon={PackageCheck} iconClass="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300" loading={createdLoading} />
+          <StatCard label="Total Input" value={fmt(createdSummary?.totalInputQty ?? 0)} icon={FactoryIcon} iconClass="bg-teal-100 text-teal-700 dark:bg-teal-950/50 dark:text-teal-300" loading={createdLoading} />
+          <StatCard label="Pending" value={fmt(createdSummary?.totalPending ?? 0)} icon={Hourglass} iconClass="bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300" loading={createdLoading} />
+          <StatCard label="Remaining" value={fmt(createdSummary?.totalRemaining ?? 0)} icon={PackageX} iconClass="bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300" loading={createdLoading} />
+          <StatCard label="Avg Output %" value={`${Math.round(createdSummary?.avgOutputProgress ?? 0)}%`} icon={TrendingUp} iconClass="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300" loading={createdLoading} />
+          <StatCard label="Avg Input %" value={`${Math.round(createdSummary?.avgInputProgress ?? 0)}%`} icon={Gauge} iconClass="bg-teal-100 text-teal-700 dark:bg-teal-950/50 dark:text-teal-300" loading={createdLoading} />
+        </div>
+
+        {/* Step 3: Status Cards (6 small cards) */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          {[
+            { label: "Not Started", value: createdSummary?.notStarted ?? 0, tone: "border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/40", text: "text-slate-700 dark:text-slate-300" },
+            { label: "In Progress", value: createdSummary?.inProgress ?? 0, tone: "border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/40", text: "text-amber-700 dark:text-amber-300" },
+            { label: "Output Completed", value: createdSummary?.outputCompleted ?? 0, tone: "border-emerald-200 bg-emerald-50 dark:border-emerald-900/50 dark:bg-emerald-950/40", text: "text-emerald-700 dark:text-emerald-300" },
+            { label: "Input Completed", value: createdSummary?.inputCompleted ?? 0, tone: "border-emerald-200 bg-emerald-50 dark:border-emerald-900/50 dark:bg-emerald-950/40", text: "text-emerald-700 dark:text-emerald-300" },
+            { label: "Over Output", value: createdSummary?.overOutput ?? 0, tone: "border-rose-200 bg-rose-50 dark:border-rose-900/50 dark:bg-rose-950/40", text: "text-rose-700 dark:text-rose-300" },
+            { label: "Over Input", value: createdSummary?.overInput ?? 0, tone: "border-rose-200 bg-rose-50 dark:border-rose-900/50 dark:bg-rose-950/40", text: "text-rose-700 dark:text-rose-300" },
+          ].map((s) => (
+            <Card key={s.label} className={cn("border", s.tone)}>
+              <CardContent className="p-3">
+                <p className="text-[10px] font-medium text-muted-foreground">{s.label}</p>
+                <p className={cn("mt-1 text-2xl font-bold tabular-nums", s.text)}>
+                  {createdLoading ? <Skeleton className="h-7 w-10" /> : s.value}
+                </p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
+        {/* Step 4: Order Batch Table */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <ListTree className="h-4 w-4 text-primary" />
+              Order Batch
+              <Badge variant="outline" className={cn("text-[10px]", theme.badge)}>
+                {createdGroups.length} batches
+              </Badge>
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Click any row to view detailed timeline and transaction history.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {createdLoading ? (
+              <TableSkeleton />
+            ) : createdGroups.length === 0 ? (
+              <EmptyState message="No orders found for the selected date." icon={CalendarCheck} />
+            ) : (
+              <div className="max-h-[32rem] overflow-y-auto scroll-thin">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-background z-10">
+                    <tr className="border-b text-[10px] text-muted-foreground">
+                      <th className="px-2 py-1.5 text-left">PO NO#</th>
+                      <th className="px-2 py-1.5 text-left">Factory PO</th>
+                      <th className="px-2 py-1.5 text-left">Size</th>
+                      <th className="px-2 py-1.5 text-right">Order</th>
+                      <th className="px-2 py-1.5 text-right">Output</th>
+                      <th className="px-2 py-1.5 text-right">Input</th>
+                      <th className="px-2 py-1.5 text-right">Pending</th>
+                      <th className="px-2 py-1.5 text-right">Remaining</th>
+                      <th className="px-2 py-1.5 text-right">Out%</th>
+                      <th className="px-2 py-1.5 text-right">In%</th>
+                      <th className="px-2 py-1.5 text-right">In/Out%</th>
+                      <th className="px-2 py-1.5 text-left">Deadline</th>
+                      <th className="px-2 py-1.5 text-center">Status</th>
+                      <th className="px-2 py-1.5"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {createdGroups.slice(0, 300).map((g, i) => (
+                      <tr
+                        key={`${g.poNo}|${g.factoryPO}|${g.size}|${i}`}
+                        className="border-b last:border-b-0 cursor-pointer hover:bg-muted/40"
+                        onClick={() => loadCreatedTransactions(g.poNo, g.factoryPO, g.size)}
+                      >
+                        <td className="px-2 py-1 font-mono">{g.poNo}</td>
+                        <td className="px-2 py-1 font-mono">{g.factoryPO}</td>
+                        <td className="px-2 py-1 font-mono">{g.size}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{g.orderQty.toLocaleString()}</td>
+                        <td className="px-2 py-1 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{g.outputQty.toLocaleString()}</td>
+                        <td className="px-2 py-1 text-right tabular-nums text-teal-600 dark:text-teal-400">{g.inputQty.toLocaleString()}</td>
+                        <td className="px-2 py-1 text-right tabular-nums text-amber-600 dark:text-amber-400">{g.pending.toLocaleString()}</td>
+                        <td className="px-2 py-1 text-right tabular-nums text-rose-600 dark:text-rose-400">{g.remaining.toLocaleString()}</td>
+                        <td className={cn("px-2 py-1 text-right tabular-nums", g.outputProgress > 100 ? "text-rose-600" : "text-emerald-600")}>{g.outputProgress}%</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{g.inputProgress}%</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{g.inputVsOutput}%</td>
+                        <td className="px-2 py-1 font-mono text-[10px]">{formatDateDisplay(g.deadline)}</td>
+                        <td className="px-2 py-1 text-center">
+                          <div className="flex flex-wrap justify-center gap-0.5">
+                            {(g.status || []).map((st) => (
+                              <Badge key={st} variant="outline" className={cn("text-[8px]", progressStatusBadgeClass(st))}>
+                                {progressStatusLabel(st)}
+                              </Badge>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-2 py-1">
+                          {(g.anomalies?.length ?? 0) > 0 && (
+                            <AlertTriangle className="h-3 w-3 text-rose-500" />
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {createdGroups.length > 300 && (
+                  <div className="py-2 text-center text-xs text-muted-foreground">
+                    Showing first 300 batches. Total: {createdGroups.length}.
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Step 5: Progress Charts */}
+        {createdTimelineForCharts.length > 0 && (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {/* Chart 1: LineChart — Output Progress % + Input Progress % */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <TrendingUp className="h-4 w-4 text-primary" />
+                  Output vs Input Progress %
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Cumulative progress percentages over time (largest batch timeline).
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={260}>
+                  <LineChart data={createdTimelineForCharts} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis dataKey="date" tick={{ fontSize: 10 }} className="text-muted-foreground" />
+                    <YAxis tick={{ fontSize: 10 }} domain={[0, 100]} unit="%" className="text-muted-foreground" />
+                    <Tooltip
+                      contentStyle={{ fontSize: 11, borderRadius: 8, padding: "6px 8px" }}
+                      formatter={(v: number, name: string) => [`${v}%`, name]}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                    <Line type="monotone" dataKey="outputProgress" name="Output %" stroke="#10b981" strokeWidth={2} dot={{ r: 2 }} />
+                    <Line type="monotone" dataKey="inputProgress" name="Input %" stroke="#14b8a6" strokeWidth={2} dot={{ r: 2 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+
+            {/* Chart 2: BarChart — Daily Output + Daily Input */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <BarChart3 className="h-4 w-4 text-primary" />
+                  Daily Output vs Daily Input
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Daily transaction quantities over time (largest batch timeline).
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={createdTimelineForCharts} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis dataKey="date" tick={{ fontSize: 10 }} className="text-muted-foreground" />
+                    <YAxis tick={{ fontSize: 10 }} className="text-muted-foreground" />
+                    <Tooltip
+                      contentStyle={{ fontSize: 11, borderRadius: 8, padding: "6px 8px" }}
+                      formatter={(v: number, name: string) => [v.toLocaleString(), name]}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                    <Bar dataKey="dailyOutput" name="Daily Output" fill="#10b981" radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="dailyInput" name="Daily Input" fill="#14b8a6" radius={[3, 3, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+      </TabsContent>
+
+      {/* ---------------- Order Created Size Detail Dialog ---------------- */}
+      <Dialog open={!!createdSizeDetail} onOpenChange={(o) => { if (!o) { setCreatedSizeDetail(null); setCreatedTransactions(null); } }}>
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto scroll-thin">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <CalendarCheck className="h-4 w-4 text-primary" />
+              Order Created Detail: {createdSizeDetail?.poNo} / {createdSizeDetail?.factoryPO} / {createdSizeDetail?.size}
+            </DialogTitle>
+            <DialogDescription>
+              Order info, progress, timeline, and transaction history.
+            </DialogDescription>
+          </DialogHeader>
+
+          {(() => {
+            const g = createdGroups.find(
+              (x) =>
+                x.poNo === createdSizeDetail?.poNo &&
+                x.factoryPO === createdSizeDetail?.factoryPO &&
+                x.size === createdSizeDetail?.size,
+            );
+            if (!g) {
+              return (
+                <div className="py-8 text-center text-sm text-muted-foreground">
+                  Order batch not found. It may have been filtered out — close and try again.
+                </div>
+              );
+            }
+            return (
+              <div className="space-y-4">
+                {/* Order Info */}
+                <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-4">
+                  <InfoCell label="PO NO#" value={g.poNo} mono />
+                  <InfoCell label="Factory PO" value={g.factoryPO} mono />
+                  <InfoCell label="Size" value={g.size} mono />
+                  <InfoCell label="Model" value={g.model || "—"} />
+                  <InfoCell label="SKU" value={g.sku || "—"} mono />
+                  <InfoCell label="Color" value={g.colorCode || "—"} mono />
+                  <InfoCell label="Season" value={g.season || "—"} />
+                  <InfoCell label="Deadline" value={formatDateDisplay(g.deadline)} mono />
+                </div>
+
+                {/* Quantity */}
+                <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
+                  <QtyCell label="Order" value={g.orderQty} />
+                  <QtyCell label="Output" value={g.outputQty} tone="emerald" />
+                  <QtyCell label="Input" value={g.inputQty} tone="teal" />
+                  <QtyCell label="Pending" value={g.pending} tone="amber" />
+                  <QtyCell label="Remaining" value={g.remaining} tone="rose" />
+                </div>
+
+                {/* Progress */}
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                  <ProgressCell label="Output %" value={g.outputProgress} tone="emerald" />
+                  <ProgressCell label="Input %" value={g.inputProgress} tone="teal" />
+                  <ProgressCell label="Input vs Output %" value={g.inputVsOutput} tone="teal" />
+                </div>
+
+                {/* Status badges + anomalies */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Status:</span>
+                  {(g.status || []).length === 0 ? (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  ) : (
+                    g.status.map((st) => (
+                      <Badge key={st} variant="outline" className={cn("text-[10px]", progressStatusBadgeClass(st))}>
+                        {progressStatusLabel(st)}
+                      </Badge>
+                    ))
+                  )}
+                  {(g.anomalies?.length ?? 0) > 0 && (
+                    <div className="flex w-full items-start gap-2 mt-2">
+                      <AlertTriangle className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
+                      <div className="flex flex-wrap gap-1">
+                        {g.anomalies.map((a, i) => (
+                          <Badge key={i} variant="outline" className="text-[10px] border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300">
+                            {a}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Timeline table */}
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Timeline</h4>
+                  <div className="max-h-72 overflow-y-auto scroll-thin rounded border">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 bg-muted/50">
+                        <tr className="border-b text-[10px] text-muted-foreground">
+                          <th className="px-2 py-1 text-left">Date</th>
+                          <th className="px-2 py-1 text-right">Daily Output</th>
+                          <th className="px-2 py-1 text-right">Daily Input</th>
+                          <th className="px-2 py-1 text-right">Cum Output</th>
+                          <th className="px-2 py-1 text-right">Cum Input</th>
+                          <th className="px-2 py-1 text-right">Pending</th>
+                          <th className="px-2 py-1 text-right">Remaining</th>
+                          <th className="px-2 py-1 text-right">Out%</th>
+                          <th className="px-2 py-1 text-right">In%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(g.timeline || []).length === 0 ? (
+                          <tr>
+                            <td colSpan={9} className="px-2 py-6 text-center text-muted-foreground">
+                              No timeline data available.
+                            </td>
+                          </tr>
+                        ) : (
+                          g.timeline.map((t, i) => (
+                            <tr key={i} className="border-b last:border-b-0 hover:bg-muted/30">
+                              <td className="px-2 py-1 font-mono text-[10px]">{formatDateDisplay(t.date)}</td>
+                              <td className="px-2 py-1 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{t.dailyOutput.toLocaleString()}</td>
+                              <td className="px-2 py-1 text-right tabular-nums text-teal-600 dark:text-teal-400">{t.dailyInput.toLocaleString()}</td>
+                              <td className="px-2 py-1 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{t.cumOutput.toLocaleString()}</td>
+                              <td className="px-2 py-1 text-right tabular-nums text-teal-600 dark:text-teal-400">{t.cumInput.toLocaleString()}</td>
+                              <td className="px-2 py-1 text-right tabular-nums text-amber-600 dark:text-amber-400">{t.pending.toLocaleString()}</td>
+                              <td className="px-2 py-1 text-right tabular-nums text-rose-600 dark:text-rose-400">{t.remaining.toLocaleString()}</td>
+                              <td className={cn("px-2 py-1 text-right tabular-nums", t.outputProgress > 100 ? "text-rose-600" : "text-emerald-600")}>{t.outputProgress}%</td>
+                              <td className="px-2 py-1 text-right tabular-nums">{t.inputProgress}%</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Transaction history (loaded separately) */}
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Transaction History</h4>
+                  {loadingCreatedTx ? (
+                    <div className="flex h-20 items-center justify-center">
+                      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                    </div>
+                  ) : createdTransactions && createdTransactions.length > 0 ? (
+                    <div className="max-h-72 overflow-y-auto scroll-thin rounded border">
+                      <table className="w-full text-xs">
+                        <thead className="sticky top-0 bg-muted/50">
+                          <tr className="border-b text-[10px] text-muted-foreground">
+                            <th className="px-2 py-1 text-left">Date</th>
+                            <th className="px-2 py-1 text-left">Status</th>
+                            <th className="px-2 py-1 text-right">Qty</th>
+                            <th className="px-2 py-1 text-right">Cum Output</th>
+                            <th className="px-2 py-1 text-right">Cum Input</th>
+                            <th className="px-2 py-1 text-right">Pending</th>
+                            <th className="px-2 py-1 text-right">Out%</th>
+                            <th className="px-2 py-1 text-right">In%</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {createdTransactions.map((t, i) => (
+                            <tr key={i} className="border-b last:border-b-0">
+                              <td className="px-2 py-1 font-mono text-[10px]">{formatDateDisplay(t.date)}</td>
+                              <td className="px-2 py-1">
+                                <Badge variant="outline" className={cn("text-[9px]",
+                                  t.bucket === "order" ? "border-slate-300 text-slate-600" :
+                                  t.bucket === "output" ? "border-emerald-300 text-emerald-600" :
+                                  t.bucket === "input" ? "border-teal-300 text-teal-600" :
+                                  "border-muted text-muted-foreground"
+                                )}>{t.shippingStatus}</Badge>
+                              </td>
+                              <td className="px-2 py-1 text-right tabular-nums font-medium">{t.qty.toLocaleString()}</td>
+                              <td className="px-2 py-1 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{t.cumulativeOutput.toLocaleString()}</td>
+                              <td className="px-2 py-1 text-right tabular-nums text-teal-600 dark:text-teal-400">{t.cumulativeInput.toLocaleString()}</td>
+                              <td className="px-2 py-1 text-right tabular-nums text-amber-600 dark:text-amber-400">{t.pending.toLocaleString()}</td>
+                              <td className="px-2 py-1 text-right tabular-nums">{t.outputProgress}%</td>
+                              <td className="px-2 py-1 text-right tabular-nums">{t.inputProgress}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="py-6 text-center text-sm text-muted-foreground">No transactions found.</div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setCreatedSizeDetail(null); setCreatedTransactions(null); }}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
