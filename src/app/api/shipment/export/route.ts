@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
     );
 
     const today = new Date().toISOString().slice(0, 10);
-    return new NextResponse(buffer, {
+    return new NextResponse(buffer as any, {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="Daily_Shipment_${today}.xlsx"`,

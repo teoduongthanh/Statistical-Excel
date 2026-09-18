@@ -300,7 +300,7 @@ export function ProductExportView() {
     try {
       // First attempt — may return needsConfirm if the row is part of a transaction group.
       const res = await api.deleteEntry(deleteRow.id, false);
-      if (res.needsConfirm) {
+      if (!res.ok && "needsConfirm" in res && res.needsConfirm) {
         setDeleteWarn({ id: deleteRow.id, message: res.needsConfirm.message });
         setDeleting(false);
         return;

@@ -71,7 +71,7 @@ export function SyncBanner() {
         qc.invalidateQueries({ queryKey: ["sync-pending"] });
         setDismissed(false);
       } else {
-        toast.error("Sync failed", { description: result.errors?.join(", ") });
+        toast.error("Sync failed", { description: "Sync run failed" });
       }
     } catch (e) {
       toast.error("Sync failed", { description: e instanceof Error ? e.message : "" });

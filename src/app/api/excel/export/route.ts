@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
     }
 
     const buffer = buildExcelBuffer(rows, columns);
-    return new NextResponse(buffer, {
+    return new NextResponse(buffer as any, {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="export_${new Date().toISOString().slice(0, 10)}.xlsx"`,

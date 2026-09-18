@@ -36,6 +36,7 @@ export async function POST(req: NextRequest) {
   }
   const note = await db.orderNote.create({
     data: {
+      productType: body.productType || "MAFATE",
       factoryPO: body.factoryPO.trim(),
       size: body.size.trim(),
       poNo: body.poNo || null,

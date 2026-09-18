@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import * as XLSX from "xlsx";
 import { normalizeSize, extractColorCode } from "@/lib/shipment-planning-service";
-import { formatDeadline } from "@/lib/quantity-service";
+import { formatDeadline } from "@/lib/excel";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -198,7 +198,7 @@ export async function POST(req: NextRequest) {
     // Generate the buffer.
     const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
     const fileName = `Daily_Shipment_${today}.xlsx`;
-    return new NextResponse(buffer, {
+    return new NextResponse(buffer as any, {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="${fileName}"`,

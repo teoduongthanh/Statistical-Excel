@@ -39,7 +39,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   XLSX.utils.book_append_sheet(wb, ws, "Errors");
   const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
   const safeName = h.fileName.replace(/[^\w.-]/g, "_").slice(0, 40);
-  return new NextResponse(buf, {
+  return new NextResponse(buf as any, {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "Content-Disposition": `attachment; filename="errors_${safeName}.xlsx"`,

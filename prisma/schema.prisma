@@ -180,6 +180,51 @@ model LookupRule {
   createdAt     DateTime @default(now())
 }
 
+/// Sync Queue — records each data change event that requires synchronization.
+model SyncQueue {
+  id            String   @id @default(cuid())
+  action        String
+  entity        String
+  entityId      String?
+  productType   String
+  poNo          String?
+  factoryPO     String?
+  size          String?
+  changedFields String?
+  status        String   @default("pending")
+  error         String?
+  processedAt   DateTime?
+  syncDurationMs Int?
+  triggeredBy   String?
+  createdAt     DateTime @default(now())
+
+  @@index([productType])
+  @@index([productType, status])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// Sync Run — a completed synchronization batch.
+model SyncRun {
+  id            String   @id @default(cuid())
+  runNumber     String   @unique
+  productType   String?
+  eventsProcessed Int    @default(0)
+  productGroupsRecalculated Int @default(0)
+  errorsFound   Int      @default(0)
+  warningsFound Int      @default(0)
+  validationResults String?
+  triggeredBy   String?
+  startedAt     DateTime @default(now())
+  completedAt   DateTime?
+  durationMs    Int?
+  status        String   @default("running")
+
+  @@index([productType])
+  @@index([status])
+  @@index([startedAt])
+}
+
 /// Output Slip — a preparation document for shipping out work to a factory.
 /// Created from BULK OUTPUT SLIP GENERATOR. Status lifecycle:
 ///   DRAFT → GENERATED → PRINTED → CONFIRMED_OUTPUT | CANCELLED

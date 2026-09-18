@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
     };
     const result = await getReportGroups(filters);
     const buffer = buildReportExcel(result.groups, result.errors);
-    return new NextResponse(buffer, {
+    return new NextResponse(buffer as any, {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="Production_Report_${new Date().toISOString().slice(0,10)}.xlsx"`,

@@ -32,7 +32,7 @@ export function OrderNotePanel({ company, poNo, factoryPO, entryId }: Props) {
     if (!content.trim()) { toast.error("Note content is required"); return; }
     setSaving(true);
     try {
-      await api.createNote({ company, poNo, factoryPO, entryId, content, noteDate });
+      await api.createNote({ company, poNo, factoryPO, size: "", entryId, content, noteDate });
       setContent("");
       toast.success("Note added");
       qc.invalidateQueries({ queryKey: ["notes", company, poNo, factoryPO] });

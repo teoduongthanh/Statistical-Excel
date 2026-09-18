@@ -1,4 +1,4 @@
-import type { CanonicalField } from "./fields";
+import type { CanonicalField } from "@/lib/fields";
 
 // Shared DTO types used by both API and frontend.
 

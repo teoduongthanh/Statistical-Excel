@@ -646,7 +646,7 @@ export function ProductDataEntryView() {
     setDeleting(true);
     try {
       const res = await api.deleteEntry(deleteEntryRow.id, false);
-      if (res.needsConfirm) {
+      if (!res.ok && "needsConfirm" in res && res.needsConfirm) {
         setDeleteWarn({ id: deleteEntryRow.id, message: res.needsConfirm.message });
         setDeleting(false);
         return;

@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 // Pending is calculated dynamically (= -Output) — no longer stored in DB.
 export async function GET() {
   const products = ["MAFATE", "ONYX", "MIZUNO"];
-  const result = [];
+  const result: any[] = [];
   for (const productType of products) {
     const rows = await db.$queryRawUnsafe<any[]>(`
       SELECT

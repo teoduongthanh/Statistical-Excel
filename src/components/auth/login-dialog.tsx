@@ -32,7 +32,7 @@ export function LoginDialog({ open, onOpenChange }: { open: boolean; onOpenChang
     setLoading(true);
     try {
       if (mode === "register") {
-        await api.registerUser({ email, password, name, role: "admin" });
+        await api.registerUser({ username: name, email, password });
         toast.success("Admin account created. Logging you in…");
       }
       const result = await signIn("credentials", {

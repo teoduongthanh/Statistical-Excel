@@ -517,7 +517,7 @@ export const api = {
   },
 
   // Order notes
-  listNotes: async (params: { factoryPO?: string; size?: string; noteDate?: string }): Promise<OrderNote[]> => {
+  listNotes: async (params: { factoryPO?: string; size?: string; noteDate?: string; company?: string; poNo?: string; entryId?: string }): Promise<OrderNote[]> => {
     const q = new URLSearchParams(
       Object.entries(params).filter(([, v]) => v).map(([k, v]) => [k, String(v)])
     ).toString();
@@ -532,6 +532,8 @@ export const api = {
     noteDate: string;
     content: string;
     author?: string;
+    company?: string;
+    entryId?: string;
   }): Promise<OrderNote> => {
     const res = await fetch("/api/order-notes", {
       method: "POST",
@@ -731,6 +733,50 @@ export const api = {
   cancelOutputSlip: async (id: string) => {
     const res = await fetch(`/api/output-slips/${id}`, { method: "DELETE" });
     return jsonOrThrow<{ ok: boolean; slip?: any; error?: string }>(res);
+  },
+
+  // ===== Sync System =====
+  getPendingSync: async (productType?: string) => {
+    const q = productType ? `?productType=${encodeURIComponent(productType)}` : "";
+    const res = await fetch(`/api/sync/pending${q}`);
+    return jsonOrThrow<{
+      ok: boolean; pendingCount: number;
+      byProductType: Record<string, number>;
+      byAction: Record<string, number>; byEntity: Record<string, number>;
+      oldestPendingAt: string | null; lastSyncedAt: string | null;
+      affectedProductKeys: string[];
+    }>(res);
+  },
+  runSync: async (body?: { productType?: string; triggeredBy?: string }) => {
+    const res = await fetch("/api/sync/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    return jsonOrThrow<{
+      ok: boolean; runId: string; runNumber: string;
+      eventsProcessed: number; productGroupsRecalculated: number;
+      errorsFound: number; warningsFound: number; durationMs: number;
+      validationErrors: any[];
+    }>(res);
+  },
+  getSyncHistory: async (limit = 20) => {
+    const res = await fetch(`/api/sync/history?limit=${limit}`);
+    return jsonOrThrow<{ ok: boolean; history: any[] }>(res);
+  },
+
+  // ===== Notifications =====
+  getNotifications: async (productType: string) => {
+    const res = await fetch(`/api/notifications?productType=${encodeURIComponent(productType)}`);
+    return jsonOrThrow<{ ok: boolean; notifications: any[]; summary: any }>(res);
+  },
+
+  // ===== Auth =====
+  registerUser: async (body: { username: string; password: string; email?: string }) => {
+    const res = await fetch("/api/auth/register", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; user?: any; error?: string }>(res);
   },
 
   // ===== Dashboard Insights (Health Score + Deadline Alerts + Data Quality) =====
