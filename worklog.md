@@ -2011,3 +2011,31 @@ Stage Summary:
 - API: GET /api/order-monitor — unified 5-mode endpoint (creation, deadline, matrix, daily, detail)
 - Files created: src/app/api/order-monitor/route.ts, src/components/views/product-order-monitor-view.tsx (~2010 lines)
 - Files modified: src/lib/api-client.ts (orderMonitor method), src/store/app-store.ts (ViewKey), src/app/page.tsx (router), src/components/layout/sidebar.tsx (nav item), src/components/layout/header.tsx (title)
+
+---
+Task ID: IMPORT-3FILES-19.9
+Agent: main (Z.ai Code)
+Task: Delete old data, import 3 new files (19.9 version), only DATA sheet, skip Pending.
+
+Work Log:
+- Verified all 3 files:
+  * FMT shipped out S-TECH mafate -2026 19.9.xlsx (5.3 MB, 21 sheets, DATA 46,046 rows)
+  * FMT shipped out S-TECH Onyx-2026 19.9.xlsx (1.3 MB, 14 sheets, DATA 9,119 rows)
+  * FMT shipped out MIZUNO-2026 19.9.xlsx (0.1 MB, 8 sheets, DATA 602 rows)
+- Imported all 3 (delete old, skip Pending, dedup, only DATA sheet):
+  * MAFATE: 46,045 parsed → 17,774 Pending skipped, 731 invalid, 103 dupes → 27,437 unique. Deleted 26,723 old. Rebuilt 544 groups.
+  * ONYX: 9,118 parsed → 3,464 Pending skipped, 56 invalid, 25 dupes → 5,573 unique. Deleted 5,108 old. Rebuilt 169 groups.
+  * MIZUNO: 601 parsed → 248 Pending skipped, 0 invalid, 0 dupes → 353 unique. Deleted 340 old. Rebuilt 11 groups.
+- 0 Pending rows across all products ✓
+- Restarted dev server, verified dashboards:
+  * MAFATE: orderQty=287,581, outputQty=278,808, inputQty=266,222, totalFactoryPOs=544, completionRate=92.6%
+  * ONYX: orderQty=73,132, outputQty=67,547, inputQty=59,643, totalFactoryPOs=169, completionRate=81.6%
+  * MIZUNO: orderQty=4,592, outputQty=5,263, inputQty=4,200, totalFactoryPOs=11, completionRate=91.5%
+
+Stage Summary:
+- Imported 33,363 total rows from 3 new files.
+- MAFATE: 27,437 rows (was 26,723), 544 groups (was 496). Source: "FMT shipped out S-TECH mafate -2026 19.9.xlsx"
+- ONYX: 5,573 rows (was 5,108), 169 groups (was 170). Source: "FMT shipped out S-TECH Onyx-2026 19.9.xlsx"
+- MIZUNO: 353 rows (was 340), 11 groups. Source: "FMT shipped out MIZUNO-2026 19.9.xlsx"
+- 0 Pending rows across all products.
+- All dashboards verified reflecting the new data.
