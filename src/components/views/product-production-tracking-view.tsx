@@ -36,7 +36,7 @@ import {
 } from "lucide-react";
 
 import { api } from "@/lib/api-client";
-import { cn } from "@/lib/utils";
+import { cn, formatDateDisplay } from "@/lib/utils";
 import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -310,30 +310,7 @@ function clampPct(n: number): number {
 }
 
 function formatDeadline(s: string | null | undefined): string {
-  if (!s) return "—";
-  const str = String(s).trim();
-  if (!str) return "—";
-  // Try common formats: yyyy-MM-dd, dd/MM/yyyy, ISO.
-  const dmy = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (dmy) {
-    const d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
-    if (!isNaN(d.getTime())) {
-      return d.toLocaleDateString(undefined, {
-        year: "numeric",
-        month: "short",
-        day: "2-digit",
-      });
-    }
-  }
-  const iso = new Date(str);
-  if (!isNaN(iso.getTime())) {
-    return iso.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-    });
-  }
-  return str;
+  return formatDateDisplay(s);
 }
 
 function completionTone(rate: number): string {

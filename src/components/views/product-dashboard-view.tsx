@@ -340,31 +340,7 @@ function deadlineLabel(status: string): string {
 }
 
 function formatDeadline(s: string | null | undefined): string {
-  if (!s) return "—";
-  const str = String(s).trim();
-  if (!str) return "—";
-  // Try yyyy-MM-dd or ISO
-  const d = new Date(str);
-  if (!isNaN(d.getTime())) {
-    return d.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-    });
-  }
-  // Try dd/MM/yyyy
-  const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m) {
-    const dt = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
-    if (!isNaN(dt.getTime())) {
-      return dt.toLocaleDateString(undefined, {
-        year: "numeric",
-        month: "short",
-        day: "2-digit",
-      });
-    }
-  }
-  return str;
+  return formatDateDisplay(s);
 }
 
 // ----------------------------------------------------------------------------

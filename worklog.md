@@ -2039,3 +2039,43 @@ Stage Summary:
 - MIZUNO: 353 rows (was 340), 11 groups. Source: "FMT shipped out MIZUNO-2026 19.9.xlsx"
 - 0 Pending rows across all products.
 - All dashboards verified reflecting the new data.
+
+---
+Task ID: FIX-DATE-FORMAT-ALL
+Agent: main (Z.ai Code)
+Task: Fix date format across ALL views to use dd/MM/yyyy (formatDateDisplay).
+
+Work Log:
+- **Root cause**: Master Data view displayed raw Excel serials (e.g. "45840") for date/deadline columns because the table rendered `r[c]` directly without formatting. Other views had local `formatDeadline()` functions using `toLocaleDateString(undefined, ...)` which didn't handle Excel serials and used locale-dependent format.
+- **Fix 1**: `src/components/views/product-master-data-view.tsx`:
+  * Added `formatDateDisplay` import from `@/lib/utils`
+  * Added date/deadline column handling in the table cell renderer: `c === "date" || c === "deadline"` → `<span className="tabular-nums">{formatDateDisplay(r[c])}</span>`
+- **Fix 2**: Replaced local `formatDeadline()` functions in 4 views with `return formatDateDisplay(s)`:
+  * `src/components/views/product-dashboard-view.tsx`
+  * `src/components/views/product-output-slip-view.tsx`
+  * `src/components/views/product-production-tracking-view.tsx`
+  * `src/components/views/product-report-view.tsx` (also replaced `formatTxDate()`)
+- **Fix 3**: `src/components/views/product-order-monitor-view.tsx`:
+  * Fixed `new Date(d.deadline)` calls that didn't handle Excel serials → now uses proper Excel epoch conversion
+  * Fixed null safety for deadline date parsing
+- **formatDateDisplay** in `src/lib/utils.ts` handles:
+  * Excel serials (e.g. "45840" → "02/07/2025")
+  * yyyy-MM-dd (e.g. "2026-09-08" → "08/09/2026")
+  * dd/MM/yyyy (normalized)
+  * Date objects
+  * null/empty → "—"
+  * Small numbers (like ONYX deadline "1") → returned as-is (not treated as dates)
+- **Verification**:
+  * `formatDateDisplay("46284")` = "19/09/2026" ✓
+  * `formatDateDisplay("46298")` = "03/10/2026" ✓
+  * `formatDateDisplay("46287")` = "22/09/2026" ✓
+  * Agent Browser: Production Tracking shows "12/09/2026", "29/09/2026", "30/06/2026" ✓
+  * Master Data: rows with dates show dd/MM/yyyy, rows without dates show "—" ✓
+  * TypeScript: 0 errors ✓
+  * No page/console errors ✓
+
+Stage Summary:
+- All date displays across ALL views now use the centralized `formatDateDisplay()` function from `@/lib/utils`.
+- Format is consistently `dd/MM/yyyy` (e.g. "19/09/2026") — matching the Excel file format.
+- Excel serials are properly converted BEFORE `new Date()` to avoid the year-46298 bug.
+- Files modified: product-master-data-view.tsx, product-dashboard-view.tsx, product-output-slip-view.tsx, product-production-tracking-view.tsx, product-report-view.tsx, product-order-monitor-view.tsx.

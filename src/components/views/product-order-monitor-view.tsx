@@ -1033,7 +1033,8 @@ function DeadlineView({ productType, filters, refreshKey, theme }: DeadlineViewP
     const list = query.data?.deadlines ?? [];
     let overdue = 0, dueToday = 0, dueThisWeek = 0, upcoming = 0;
     for (const d of list) {
-      const t = new Date(d.deadline);
+      if (!d.deadline) continue;
+      const t = d.deadline.includes("-") ? new Date(d.deadline) : new Date(Date.UTC(1899, 11, 30) + Number(d.deadline) * 86400000);
       t.setHours(0, 0, 0, 0);
       const diff = Math.floor((t.getTime() - today) / dayMs);
       const rem = d.remaining > 0;
@@ -1146,9 +1147,12 @@ function DeadlineView({ productType, filters, refreshKey, theme }: DeadlineViewP
                   {deadlines.map((d) => {
                     const rowKey = `deadline:${d.deadline}`;
                     const open = expandedNodes.has(rowKey);
-                    const t = new Date(d.deadline);
-                    t.setHours(0, 0, 0, 0);
-                    const diff = Math.floor((t.getTime() - today) / dayMs);
+                    let diff = 999;
+                    if (d.deadline) {
+                      const t = d.deadline.includes("-") ? new Date(d.deadline) : new Date(Date.UTC(1899, 11, 30) + Number(d.deadline) * 86400000);
+                      t.setHours(0, 0, 0, 0);
+                      diff = Math.floor((t.getTime() - today) / dayMs);
+                    }
                     const isOverdue = diff < 0 && d.remaining > 0;
                     return (
                       <React.Fragment key={rowKey}>

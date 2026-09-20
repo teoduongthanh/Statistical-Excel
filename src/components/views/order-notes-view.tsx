@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
 import { api } from "@/lib/api-client";
-import { cn } from "@/lib/utils";
+import { cn, formatDateDisplay } from "@/lib/utils";
 import { toast } from "sonner";
 import type { OrderNote } from "@/types";
 

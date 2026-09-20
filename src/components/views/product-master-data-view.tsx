@@ -43,7 +43,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { FIELD_LABELS, type CanonicalField } from "@/lib/fields";
-import { cn } from "@/lib/utils";
+import { cn, formatDateDisplay } from "@/lib/utils";
 import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
 
 // Master data columns displayed in the table. productType is intentionally
@@ -452,6 +452,12 @@ export function ProductMasterDataView() {
                             <Badge variant="outline" className="font-mono text-[10px]">
                               {r[c]}
                             </Badge>
+                          ) : c === "date" || c === "deadline" ? (
+                            r[c] ? (
+                              <span className="tabular-nums">{formatDateDisplay(r[c])}</span>
+                            ) : (
+                              <span className="text-muted-foreground/40">—</span>
+                            )
                           ) : r[c] ? (
                             r[c]
                           ) : (
