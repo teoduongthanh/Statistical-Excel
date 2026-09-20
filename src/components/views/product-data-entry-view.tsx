@@ -27,6 +27,7 @@ import {
   Eye,
   ShieldCheck,
   Lightbulb,
+  FileSpreadsheet,
 } from "lucide-react";
 import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
 import { api } from "@/lib/api-client";
@@ -41,7 +42,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -57,6 +58,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -207,7 +209,8 @@ export function ProductDataEntryView() {
   // ===== Bulk Entry mode =====
   // Toggle between "single" (one row at a time with autocomplete lookup) and
   // "bulk" (paste many rows from Excel, validate, then confirm import).
-  const [entryMode, setEntryMode] = React.useState<"single" | "bulk">("single");
+  // ===== Entry mode: "single" | "bulk" | "order" =====
+  const [entryMode, setEntryMode] = React.useState<"single" | "bulk" | "order">("single");
   const [bulkPastedText, setBulkPastedText] = React.useState("");
   const [bulkHasHeader, setBulkHasHeader] = React.useState(true);
   const [bulkValidating, setBulkValidating] = React.useState(false);
@@ -918,13 +921,16 @@ export function ProductDataEntryView() {
 
       {/* Entry mode toggle: Single vs Bulk */}
       <div className="flex items-center justify-center">
-        <Tabs value={entryMode} onValueChange={(v) => setEntryMode(v as "single" | "bulk")}>
+        <Tabs value={entryMode} onValueChange={(v) => setEntryMode(v as "single" | "bulk" | "order")}>
           <TabsList>
             <TabsTrigger value="single" className="px-4">
               <PenLine className="h-4 w-4 mr-1.5" /> Single Entry
             </TabsTrigger>
             <TabsTrigger value="bulk" className="px-4">
               <ClipboardPaste className="h-4 w-4 mr-1.5" /> Bulk Entry
+            </TabsTrigger>
+            <TabsTrigger value="order" className="px-4">
+              <FileSpreadsheet className="h-4 w-4 mr-1.5" /> Order Entry
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -1281,6 +1287,15 @@ export function ProductDataEntryView() {
           </Card>
         </div>
       </div>
+      )}
+
+      {/* ===== Order Entry panel (Bulk Entry Order) ===== */}
+      {entryMode === "order" && (
+        <OrderEntryPanel
+          currentProduct={currentProduct}
+          theme={theme}
+          onImported={() => { bumpRefresh(); qc.invalidateQueries({ queryKey: ["data-entry-entries"] }); }}
+        />
       )}
 
       {/* ===== Bulk Entry panel (when in bulk mode) ===== */}
@@ -2560,3 +2575,447 @@ function StatBox({
     </div>
   );
 }
+
+// ============================================================================
+// OrderEntryPanel — Bulk Entry Order (spec §4-14)
+// Paste Excel data → auto-detect columns → validate → preview → confirm import
+// Only accepts Shipping Status = 1.Order. Warns if other statuses detected.
+// ============================================================================
+
+interface OrderEntryPanelProps {
+  currentProduct: string;
+  theme: any;
+  onImported: () => void;
+}
+
+function OrderEntryPanel({ currentProduct, theme, onImported }: OrderEntryPanelProps) {
+  const [pastedText, setPastedText] = React.useState("");
+  const [hasHeader, setHasHeader] = React.useState(true);
+  const [parsing, setParsing] = React.useState(false);
+  const [parsedRows, setParsedRows] = React.useState<Record<string, string>[]>([]);
+  const [headers, setHeaders] = React.useState<string[]>([]);
+  const [mapping, setMapping] = React.useState<Record<string, string>>({});
+  const [validating, setValidating] = React.useState(false);
+  const [validationResult, setValidationResult] = React.useState<any>(null);
+  const [importing, setImporting] = React.useState(false);
+  const [showPreview, setShowPreview] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  // Parse pasted TSV text into rows + auto-detect column mapping
+  function handleParse() {
+    const text = pastedText.trim();
+    if (!text) { setError("Please paste some data first."); return; }
+    setError(null);
+    setParsing(true);
+    setParsedRows([]);
+    setValidationResult(null);
+    try {
+      const lines = text.split(/\r\n|\n|\r/).filter((l) => l.trim() !== "");
+      if (lines.length < 2) { setError("Need at least a header row + 1 data row."); setParsing(false); return; }
+      const rawHeaders = lines[0].split("\t").map((h) => h.trim());
+      const detectedHeaders = rawHeaders.map((h, i) => h || `Column_${i + 1}`);
+      const dataRows: Record<string, string>[] = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cells = lines[i].split("\t");
+        const row: Record<string, string> = {};
+        detectedHeaders.forEach((h, idx) => { row[h] = (cells[idx] ?? "").trim(); });
+        dataRows.push(row);
+      }
+      setHeaders(detectedHeaders);
+      setParsedRows(dataRows);
+      const autoMapping = buildAutoMapping(detectedHeaders);
+      const initMapping: Record<string, string> = {};
+      for (const h of detectedHeaders) { initMapping[h] = autoMapping[h] || ""; }
+      setMapping(initMapping);
+
+      // Check for non-Order shipping statuses
+      const statusCol = detectedHeaders.find((h) => {
+        const f = autoMapping[h];
+        return f === "shippingStatus";
+      });
+      if (statusCol) {
+        const nonOrderStatuses = new Set<string>();
+        for (const row of dataRows) {
+          const status = (row[statusCol] || "").trim().toLowerCase();
+          if (status && !status.startsWith("1") && status !== "order") {
+            nonOrderStatuses.add(row[statusCol]);
+          }
+        }
+        if (nonOrderStatuses.size > 0) {
+          setError(`⚠ This Bulk Entry is for Order Data only. Detected non-Order statuses: ${[...nonOrderStatuses].join(", ")}. Please use the Output/Input Entry tabs for those.`);
+        }
+      }
+      toast.success(`Parsed ${dataRows.length} rows from pasted data (${detectedHeaders.length} columns detected).`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to parse pasted data");
+    } finally {
+      setParsing(false);
+    }
+  }
+
+  // Build canonical rows from parsed rows using mapping
+  function buildCanonicalRows(): Record<string, string>[] {
+    return parsedRows.map((row) => {
+      const out: Record<string, string> = {};
+      for (const [excelHeader, field] of Object.entries(mapping)) {
+        if (!field || field === "__skip__") continue;
+        out[field] = row[excelHeader] ?? "";
+      }
+      // Force shippingStatus to "1.Order" if not set
+      if (!out.shippingStatus) out.shippingStatus = "1.Order";
+      return out;
+    });
+  }
+
+  // Validate parsed rows
+  async function handleValidate() {
+    const canonicalRows = buildCanonicalRows();
+    if (canonicalRows.length === 0) { setError("No rows to validate."); return; }
+    setError(null);
+    setValidating(true);
+    setValidationResult(null);
+    try {
+      const result = await api.bulkValidateEntries({ productType: currentProduct, rows: canonicalRows });
+      setValidationResult(result);
+      toast.success(`Validated ${result.summary.totalRows} rows — ${result.summary.validRows} valid, ${result.summary.errorRows} errors`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Validation failed");
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  // Import confirmed rows
+  async function handleImport() {
+    if (!validationResult) return;
+    setShowPreview(false);
+    setImporting(true);
+    try {
+      const canonicalRows = buildCanonicalRows();
+      const importableRows = (validationResult.rows as any[])
+        .filter((r) => r.statusBucket === "valid" || r.statusBucket === "warning")
+        .map((r, i) => ({
+          shippingStatus: "1.Order",
+          poNo: canonicalRows[i]?.poNo || r.poNo || "",
+          factoryPO: canonicalRows[i]?.factoryPO || r.factoryPO || "",
+          size: canonicalRows[i]?.size || r.size || "",
+          qty1: Number(r.qty1Num ?? r.qty1) || 0,
+          confirmReason: r.needsConfirm ? "bulk-order-entry-warning" : undefined,
+        }));
+      if (importableRows.length === 0) { toast.error("No importable rows"); return; }
+      const res = await api.bulkImportEntries({ productType: currentProduct, rows: importableRows, mode: "all_valid", importedBy: "bulk-order-entry" });
+      if (res.ok) {
+        toast.success(`Imported ${res.imported} Order entries`, { description: `${res.skipped} skipped` });
+        setPastedText(""); setParsedRows([]); setHeaders([]); setMapping({}); setValidationResult(null);
+        onImported();
+      } else {
+        toast.error("Import failed", { description: res.errors?.join(", ") });
+      }
+    } catch (e) {
+      toast.error("Import failed", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  // Also add to Master Data (spec §22)
+  async function handleAddToMaster() {
+    const canonicalRows = buildCanonicalRows();
+    if (canonicalRows.length === 0) { toast.error("No rows to add"); return; }
+    setImporting(true);
+    try {
+      const masterRows = canonicalRows.map((r) => ({
+        productType: currentProduct,
+        factoryPO: r.factoryPO || "",
+        size: r.size || "",
+        poNo: r.poNo || "",
+        shippingStatus: r.shippingStatus || "1.Order",
+        model: r.model || undefined,
+        sku: r.sku || undefined,
+        item: r.item || undefined,
+        season: r.season || undefined,
+        colorCode: r.colorCode || undefined,
+        colorCode2: r.colorCode2 || undefined,
+        painting: r.painting || undefined,
+        printingColor: r.printingColor || undefined,
+        deadline: r.deadline || undefined,
+        qty1: r.qty1 || undefined,
+        qty2: r.qty2 || undefined,
+        date: r.date || undefined,
+      }));
+      const res = await api.bulkAddMasterRows(masterRows);
+      toast.success(`${res.inserted} rows added to Master Data`, { description: `${res.productsAffected} product(s) index rebuilt` });
+      onImported();
+    } catch (e) {
+      toast.error("Failed to add to Master Data", { description: e instanceof Error ? e.message : "" });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  const options = React.useMemo(() => {
+    return headers.map((h) => ({ value: h, label: h }));
+  }, [headers]);
+
+  const REQUIRED_FIELDS = ["poNo", "factoryPO", "size", "qty1"];
+  const mappedFields = new Set(Object.values(mapping).filter((v) => v && v !== "__skip__"));
+  const missingRequired = REQUIRED_FIELDS.filter((f) => !mappedFields.has(f));
+  const canValidate = parsedRows.length > 0 && missingRequired.length === 0 && !error;
+  const canImport = validationResult && validationResult.summary.errorRows === 0;
+
+  return (
+    <div className="space-y-4">
+      {/* Info banner */}
+      <Card className={cn("border-primary/20 bg-gradient-to-br", theme.gradient, "text-white")}>
+        <CardContent className="p-4">
+          <div className="flex items-start gap-3">
+            <FileSpreadsheet className="h-5 w-5 mt-0.5 shrink-0" />
+            <div>
+              <h3 className="text-sm font-semibold">Bulk Entry Order</h3>
+              <p className="text-xs text-white/90 mt-0.5">
+                Paste Order data (Shipping Status = 1.Order) from Excel. The system will auto-detect columns,
+                validate, preview, and import. Non-Order statuses will be rejected.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Step 1: Paste area */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <ClipboardPaste className="h-4 w-4 text-primary" /> Step 1: Paste Excel Data
+            {parsedRows.length > 0 && <Badge variant="outline" className="ml-1 text-[10px]">{parsedRows.length} rows parsed</Badge>}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs font-medium">Paste tab-separated data from Excel (Ctrl+V)</Label>
+            <div className="flex gap-2">
+              <label className="flex items-center gap-1.5 text-xs">
+                <Switch checked={hasHeader} onCheckedChange={setHasHeader} className="scale-[0.6] origin-left" />
+                First row is header
+              </label>
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => { setPastedText(""); setParsedRows([]); setHeaders([]); setMapping({}); setValidationResult(null); setError(null); }}>
+                Clear
+              </Button>
+            </div>
+          </div>
+          <Textarea
+            className="min-h-[180px] font-mono text-xs"
+            placeholder={"Date\tShipping status\tMODEL\tSKU\tPO NO#\tFactory PO\tSize\tQ'ty 1\tDead Line\n27/08\t1.Order\tMAFATE5 MS\t1168723-GDNS\tH411351971\tMH26110909\tM4/W5T\t100\t05/09/2026\n27/08\t1.Order\tMAFATE5 MS\t1168723-GDNS\tH411351971\tMH26110909\tM5/W6T\t120\t05/09/2026"}
+            value={pastedText}
+            onChange={(e) => setPastedText(e.target.value)}
+            disabled={parsing}
+            spellCheck={false}
+          />
+          <Button className={cn("gap-1.5 text-white", theme.bg)} onClick={handleParse} disabled={parsing || !pastedText.trim()}>
+            {parsing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
+            {parsing ? "Parsing…" : "Parse Data"}
+          </Button>
+          {error && (
+            <Alert variant="destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription className="text-xs">{error}</AlertDescription>
+            </Alert>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Step 2: Column Mapping */}
+      {parsedRows.length > 0 && headers.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Database className="h-4 w-4 text-primary" /> Step 2: Column Mapping
+              {missingRequired.length > 0 ? (
+                <Badge className="ml-1 text-[10px] bg-rose-100 text-rose-700 border-rose-200">Missing: {missingRequired.join(", ")}</Badge>
+              ) : (
+                <Badge className="ml-1 text-[10px] bg-emerald-100 text-emerald-700 border-emerald-200">All required mapped</Badge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b text-[10px] text-muted-foreground">
+                    <th className="px-2 py-1 text-left">Excel Column</th>
+                    <th className="px-2 py-1 text-left">Sample Value</th>
+                    <th className="px-2 py-1 text-center">→</th>
+                    <th className="px-2 py-1 text-left">System Field</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {headers.map((h) => {
+                    const mapped = mapping[h] || "";
+                    const isRequired = REQUIRED_FIELDS.includes(mapped);
+                    return (
+                      <tr key={h} className="border-b last:border-b-0">
+                        <td className="px-2 py-1 font-mono font-medium">{h}</td>
+                        <td className="px-2 py-1 text-muted-foreground max-w-[200px] truncate" title={parsedRows[0]?.[h] ?? ""}>{parsedRows[0]?.[h] ?? "—"}</td>
+                        <td className="px-2 py-1 text-center text-muted-foreground">→</td>
+                        <td className="px-2 py-1">
+                          <Select value={mapped || "__skip__"} onValueChange={(v) => setMapping((prev) => ({ ...prev, [h]: v === "__skip__" ? "" : v }))}>
+                            <SelectTrigger className="h-7 w-40 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__skip__">— Skip —</SelectItem>
+                              {["date", "shippingStatus", "model", "sku", "poNo", "factoryPO", "item", "season", "colorCode", "colorCode2", "painting", "printingColor", "size", "qty1", "qty2", "deadline"].map((f) => (
+                                <SelectItem key={f} value={f}>
+                                  {f}{REQUIRED_FIELDS.includes(f) ? " *" : ""}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-2 text-[10px] text-muted-foreground">* = required field. Columns marked "Skip" will be ignored.</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Step 3: Validate + Preview */}
+      {parsedRows.length > 0 && missingRequired.length === 0 && !error && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <ShieldCheck className="h-4 w-4 text-primary" /> Step 3: Validate & Import
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={handleValidate} disabled={validating}>
+                {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+                {validating ? "Validating…" : "Validate Data"}
+              </Button>
+              <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={handleAddToMaster} disabled={importing}>
+                <Database className="h-3.5 w-3.5" /> Add to Master Data
+              </Button>
+              {validationResult && validationResult.summary.errorRows === 0 && (
+                <Button className={cn("gap-1.5 text-xs ml-auto", theme.bg)} onClick={() => setShowPreview(true)}>
+                  <Upload className="h-3.5 w-3.5" /> Confirm Import
+                </Button>
+              )}
+            </div>
+
+            {/* Validation result summary */}
+            {validationResult && (
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 text-xs">
+                <div className="rounded border p-2 text-center">
+                  <div className="text-muted-foreground">Total</div>
+                  <div className="text-lg font-bold tabular-nums">{validationResult.summary.totalRows}</div>
+                </div>
+                <div className="rounded border p-2 text-center bg-emerald-50 dark:bg-emerald-950/30">
+                  <div className="text-emerald-600">Valid</div>
+                  <div className="text-lg font-bold tabular-nums text-emerald-600">{validationResult.summary.validRows}</div>
+                </div>
+                <div className="rounded border p-2 text-center bg-amber-50 dark:bg-amber-950/30">
+                  <div className="text-amber-600">Warnings</div>
+                  <div className="text-lg font-bold tabular-nums text-amber-600">{validationResult.summary.warningRows}</div>
+                </div>
+                <div className="rounded border p-2 text-center bg-rose-50 dark:bg-rose-950/30">
+                  <div className="text-rose-600">Errors</div>
+                  <div className="text-lg font-bold tabular-nums text-rose-600">{validationResult.summary.errorRows}</div>
+                </div>
+              </div>
+            )}
+
+            {/* Preview table */}
+            {parsedRows.length > 0 && (
+              <div className="max-h-[400px] overflow-y-auto scroll-thin rounded border">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-muted/95 backdrop-blur">
+                    <tr className="border-b text-[10px] text-muted-foreground">
+                      <th className="px-2 py-1 text-left">#</th>
+                      {["Date", "Model", "PO NO#", "Factory PO", "Size", "Qty", "Deadline", "Status"].map((h) => (
+                        <th key={h} className="px-2 py-1 text-left">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {parsedRows.slice(0, 100).map((row, i) => {
+                      const cr = buildCanonicalRows()[i];
+                      const vr = validationResult?.rows?.[i];
+                      return (
+                        <tr key={i} className={cn("border-b last:border-b-0 hover:bg-muted/30",
+                          vr?.statusBucket === "error" && "bg-rose-50 dark:bg-rose-950/15",
+                          vr?.statusBucket === "warning" && "bg-amber-50 dark:bg-amber-950/15",
+                        )}>
+                          <td className="px-2 py-1 text-muted-foreground tabular-nums">{i + 1}</td>
+                          <td className="px-2 py-1 tabular-nums">{cr?.date || "—"}</td>
+                          <td className="px-2 py-1">{cr?.model || "—"}</td>
+                          <td className="px-2 py-1 font-mono">{cr?.poNo || "—"}</td>
+                          <td className="px-2 py-1 font-mono">{cr?.factoryPO || "—"}</td>
+                          <td className="px-2 py-1 font-mono">{cr?.size || "—"}</td>
+                          <td className="px-2 py-1 tabular-nums">{cr?.qty1 || "—"}</td>
+                          <td className="px-2 py-1 tabular-nums">{cr?.deadline || "—"}</td>
+                          <td className="px-2 py-1">
+                            {vr ? (
+                              <Badge variant="outline" className={cn("text-[9px]",
+                                vr.statusBucket === "valid" && "border-emerald-300 text-emerald-600",
+                                vr.statusBucket === "warning" && "border-amber-300 text-amber-600",
+                                vr.statusBucket === "error" && "border-rose-300 text-rose-600",
+                              )}>{vr.statusBucket}</Badge>
+                            ) : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {parsedRows.length > 100 && (
+              <p className="text-center text-xs text-muted-foreground">Showing first 100 of {parsedRows.length} rows</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Import Preview Dialog */}
+      <Dialog open={showPreview} onOpenChange={setShowPreview}>
+        <DialogHeader>
+          <DialogTitle className="text-base">Import Preview — Bulk Order Entry</DialogTitle>
+          <DialogDescription>Confirm to import these Order entries into the database.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2 text-xs">
+          {validationResult && (
+            <>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded border p-2 text-center">
+                  <div className="text-muted-foreground">Total Rows</div>
+                  <div className="text-lg font-bold">{validationResult.summary.totalRows}</div>
+                </div>
+                <div className="rounded border p-2 text-center bg-emerald-50 dark:bg-emerald-950/30">
+                  <div className="text-emerald-600">Will Import</div>
+                  <div className="text-lg font-bold text-emerald-600">{validationResult.summary.validRows + validationResult.summary.warningRows}</div>
+                </div>
+                <div className="rounded border p-2 text-center bg-rose-50 dark:bg-rose-950/30">
+                  <div className="text-rose-600">Skipped (Errors)</div>
+                  <div className="text-lg font-bold text-rose-600">{validationResult.summary.errorRows}</div>
+                </div>
+              </div>
+              <p className="text-muted-foreground">Shipping Status will be set to "1.Order" for all imported rows.</p>
+            </>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setShowPreview(false)}>Cancel</Button>
+          <Button className={cn(theme.bg, "text-white")} onClick={handleImport} disabled={importing}>
+            {importing ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Upload className="h-4 w-4 mr-1" />}
+            {importing ? "Importing…" : "Confirm Import"}
+          </Button>
+        </DialogFooter>
+      </Dialog>
+    </div>
+  );
+}
+

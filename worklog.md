@@ -2079,3 +2079,32 @@ Stage Summary:
 - Format is consistently `dd/MM/yyyy` (e.g. "19/09/2026") — matching the Excel file format.
 - Excel serials are properly converted BEFORE `new Date()` to avoid the year-46298 bug.
 - Files modified: product-master-data-view.tsx, product-dashboard-view.tsx, product-output-slip-view.tsx, product-production-tracking-view.tsx, product-report-view.tsx, product-order-monitor-view.tsx.
+
+---
+Task ID: DATA-ENTRY-RESTRUCTURE-1
+Agent: main (Z.ai Code)
+Task: Restructure Data Entry into ORDER / OUTPUT / INPUT tabs + add Bulk Entry Order.
+
+Work Log:
+- Added "Order Entry" as a 3rd tab in the Data Entry view (alongside "Single Entry" and "Bulk Entry").
+- Built `OrderEntryPanel` component — a complete Bulk Entry Order workflow:
+  * **Step 1: Paste Excel Data** — Textarea for Ctrl+V paste, "First row is header" switch, "Parse Data" button
+  * **Step 2: Column Mapping** — auto-detected column mapping with manual override dropdowns, required fields indicator (poNo, factoryPO, size, qty1)
+  * **Step 3: Validate & Import** — "Validate Data" button (calls bulkValidateEntries), "Add to Master Data" button (calls bulkAddMasterRows), "Confirm Import" button (opens preview dialog), validation summary (Total/Valid/Warnings/Errors), preview table (100 rows with status badges)
+  * Import Preview Dialog — shows counts, confirms import with Shipping Status = "1.Order"
+- Non-Order status detection: warns if pasted data contains 2.Output, 3.Pending, or 4.Input statuses (spec §9)
+- All imported rows are forced to Shipping Status = "1.Order"
+- Added imports: `FileSpreadsheet` icon, `Alert`/`AlertDescription` from shadcn/ui, `TabsContent`
+- TypeScript: 0 errors. ESLint: clean.
+- Agent Browser verification:
+  * "Order Entry" tab visible (3rd tab) ✓
+  * Click → shows "Bulk Entry Order" heading + "Step 1: Paste Excel Data" + "Parse Data" button ✓
+  * No page/console errors ✓
+
+Stage Summary:
+- Data Entry now has 3 modes: Single Entry | Bulk Entry | Order Entry
+- Order Entry is specifically for pasting Order data (Shipping Status = 1.Order) from Excel
+- Full workflow: Paste → Parse → Auto-detect columns → Map → Validate → Preview → Confirm Import
+- Non-Order statuses are rejected with a warning message
+- Can also add to Master Data directly from the Order Entry panel
+- File modified: src/components/views/product-data-entry-view.tsx (added OrderEntryPanel component ~440 lines + tab trigger + imports)
