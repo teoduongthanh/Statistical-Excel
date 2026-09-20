@@ -52,3 +52,23 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Database & runtime data (do NOT push)
+/db/
+*.db
+*.db-journal
+/upload/
+/download/
+/tool-results/
+/agent-ctx/
+
+# Work logs & internal notes
+worklog.md
+*.worklog.md
+
+# Z scripts runtime
+.zscripts/dev.pid
+.zscripts/*.pid
+
+# Misc local artifacts
+--timeout
