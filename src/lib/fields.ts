@@ -69,7 +69,7 @@ export const FIELDS: FieldDef[] = [
   { key: "size", label: "Size", aliases: ["size"], group: "variable", searchable: true },
   { key: "qty1", label: "Q'ty 1", aliases: ["qty1", "qty", "quantity1", "quantity", "q1"], group: "variable", searchable: false },
   { key: "qty2", label: "Q'ty 2", aliases: ["qty2", "quantity2", "q2"], group: "variable", searchable: false },
-  { key: "deadline", label: "Dead Line", aliases: ["deadline", "dl", "duedate"], group: "variable", searchable: true },
+  { key: "deadline", label: "Dead Line", aliases: ["deadline", "dl", "duedate", "etd", "dead line", "deadlineetd"], group: "variable", searchable: true },
   { key: "productType", label: "Product Type", aliases: ["producttype", "company"], group: "meta", searchable: true },
 ];
 
