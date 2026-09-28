@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import * as XLSX from "xlsx";
 import { normalizeSize, extractColorCode } from "@/lib/shipment-planning-service";
+import {
+  classifyShippingStatus,
+  parseDeadline,
+} from "@/lib/quantity-service";
 import { formatDeadline } from "@/lib/excel";
 
 export const runtime = "nodejs";
@@ -31,38 +35,87 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "productType is required" }, { status: 400 });
     }
 
-    // Fetch all MasterData rows for the selected product, grouped by the shipment key.
-    const conditions: string[] = ["productType = ?"];
-    const params: any[] = [body.productType];
-    if (body.date) {
-      conditions.push("date = ?");
-      params.push(body.date);
+    // Build Prisma where. Always product-scoped.
+    const where: Record<string, unknown> = {
+      productType: body.productType,
+      poNo: { not: null, not: "" },
+      factoryPO: { not: null, not: "" },
+      size: { not: null, not: "" },
+    };
+    if (body.date) where.date = body.date;
+
+    const rows = await db.masterData.findMany({
+      where,
+      select: {
+        poNo: true, factoryPO: true, size: true,
+        colorCode: true, colorCode2: true,
+        model: true, sku: true, season: true,
+        deadline: true, shippingStatus: true, qty1: true,
+      },
+    });
+
+    // Group by (poNo + factoryPO + normalizeSize + colorCode + colorCode2) — same as shipment groups.
+    type GroupAgg = {
+      poNo: string; factoryPO: string; size: string;
+      colorCode: string; colorCode2: string;
+      model: string; sku: string; season: string;
+      nearestDeadline: Date | null;
+      orderQty: number; outputQty: number;
+      pendingQty: number; inputQty: number;
+    };
+    const groupsMap = new Map<string, GroupAgg>();
+
+    for (const r of rows) {
+      const poNo = r.poNo ?? "";
+      const fpo = r.factoryPO ?? "";
+      const sz = r.size ?? "";
+      const cc = r.colorCode ?? "";
+      const cc2 = r.colorCode2 ?? "";
+      const normSize = normalizeSize(sz);
+      const key = `${poNo}|${fpo}|${normSize}|${cc}|${cc2}`;
+      if (!groupsMap.has(key)) {
+        groupsMap.set(key, {
+          poNo, factoryPO: fpo, size: sz,
+          colorCode: cc, colorCode2: cc2,
+          model: r.model ?? "", sku: r.sku ?? "", season: r.season ?? "",
+          nearestDeadline: null,
+          orderQty: 0, outputQty: 0,
+          pendingQty: 0, inputQty: 0,
+        });
+      }
+      const g = groupsMap.get(key)!;
+      if (r.model) g.model = r.model;
+      if (r.sku) g.sku = r.sku;
+      if (r.season) g.season = r.season;
+      if (r.deadline) {
+        const d = parseDeadline(r.deadline);
+        if (d) {
+          if (!g.nearestDeadline || d.getTime() < g.nearestDeadline.getTime()) {
+            g.nearestDeadline = d;
+          }
+        }
+      }
+      const q = r.qty1 ?? 0;
+      const bucket = classifyShippingStatus(r.shippingStatus);
+      if (bucket === "order") g.orderQty += q;
+      else if (bucket === "output") g.outputQty += q;
+      else if (bucket === "pending") g.pendingQty += q;
+      else if (bucket === "input") g.inputQty += q;
     }
 
-    // Aggregate by (poNo + factoryPO + size + colorCode) — same as shipment groups.
-    const sql = `
-      SELECT
-        poNo, factoryPO, size, colorCode, colorCode2,
-        MAX(model) AS model, MAX(sku) AS sku, MAX(season) AS season,
-        MIN(deadline) AS nearestDeadline,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1,0) ELSE 0 END) AS orderQty,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1,0) ELSE 0 END) AS outputQty,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '3%' OR LOWER(shippingStatus) = 'pending' THEN COALESCE(qty1,0) ELSE 0 END) AS pendingQty,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1,0) ELSE 0 END) AS inputQty
-      FROM MasterData
-      WHERE ${conditions.join(" AND ")}
-        AND poNo IS NOT NULL AND poNo != ''
-        AND factoryPO IS NOT NULL AND factoryPO != ''
-        AND size IS NOT NULL AND size != ''
-      GROUP BY poNo, factoryPO, size, colorCode, colorCode2
-      LIMIT 10000
-    `;
-    const rows = await db.$queryRawUnsafe<any[]>(sql, ...params);
+    // Convert to array (LIMIT 10000) — sorted by colorCode for stable order.
+    const aggRows = [...groupsMap.values()]
+      .sort((a, b) => a.colorCode.localeCompare(b.colorCode))
+      .slice(0, 10000)
+      .map((g) => ({
+        ...g,
+        nearestDeadlineStr: g.nearestDeadline ? g.nearestDeadline.toISOString().slice(0, 10) : null,
+      }));
 
     // Determine which color codes to export.
     const selectedColors = body.colorCodes && body.colorCodes.length > 0
       ? body.colorCodes
-      : [...new Set(rows.map((r) => extractColorCode(r.colorCode)).filter(Boolean))];
+      : [...new Set(aggRows.map((r) => extractColorCode(r.colorCode)).filter(Boolean))];
 
     // Build the workbook.
     const wb = XLSX.utils.book_new();
@@ -70,7 +123,7 @@ export async function POST(req: NextRequest) {
     // ===== IN PO [Color] sheets =====
     for (const colorCode of selectedColors) {
       // Filter rows for this color code.
-      const colorRows = rows.filter((r) => extractColorCode(r.colorCode) === colorCode);
+      const colorRows = aggRows.filter((r) => extractColorCode(r.colorCode) === colorCode);
       if (colorRows.length === 0) continue;
 
       // Collect all unique sizes for this color (dynamic — not hard-coded).
@@ -107,8 +160,8 @@ export async function POST(req: NextRequest) {
           });
         }
         const g = rowGroups.get(key)!;
-        const orderQty = Number(r.orderQty) || 0;
-        const outputQty = Number(r.outputQty) || 0;
+        const orderQty = r.orderQty;
+        const outputQty = r.outputQty;
         const remainingOutput = orderQty - outputQty;
 
         // Get planned qty from the request body.
@@ -129,7 +182,7 @@ export async function POST(req: NextRequest) {
         s.outputQty += outputQty;
         s.remainingOutput += remainingOutput;
         s.plannedQty += plannedQty;
-        s.deadline = r.nearestDeadline || s.deadline;
+        s.deadline = r.nearestDeadlineStr || s.deadline;
       }
 
       // Build sheet data.
@@ -169,9 +222,9 @@ export async function POST(req: NextRequest) {
     const summaryData: (string | number)[][] = [summaryHeader];
     const today = body.date || new Date().toISOString().slice(0, 10);
 
-    for (const r of rows) {
-      const orderQty = Number(r.orderQty) || 0;
-      const outputQty = Number(r.outputQty) || 0;
+    for (const r of aggRows) {
+      const orderQty = r.orderQty;
+      const outputQty = r.outputQty;
       const remainingOutput = orderQty - outputQty;
       const normSize = normalizeSize(r.size);
       const planKey = `${r.poNo}|${r.factoryPO}|${normSize}|${r.colorCode}`;
@@ -189,7 +242,7 @@ export async function POST(req: NextRequest) {
         plannedQty, // today's planned
         outputQty + plannedQty, // total output
         Math.max(0, remainingOutput - plannedQty), // remaining after plan
-        formatDeadline(r.nearestDeadline),
+        formatDeadline(r.nearestDeadlineStr),
       ]);
     }
     const summaryWs = XLSX.utils.aoa_to_sheet(summaryData);

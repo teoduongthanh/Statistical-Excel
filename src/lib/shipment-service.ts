@@ -13,7 +13,10 @@
 // Pending (3.Pending) is NOT used in calculations — it's just an offset of Output.
 
 import { db } from "./db";
-import { classifyShippingStatus } from "./quantity-service";
+import {
+  classifyShippingStatus,
+  parseDeadline as parseDeadlineQty,
+} from "./quantity-service";
 import * as XLSX from "xlsx";
 import * as fs from "fs";
 import { FIELD_LABELS, type CanonicalField } from "./fields";
@@ -61,55 +64,89 @@ export interface ShipmentFilters {
 export async function getShipmentGroups(
   filters: ShipmentFilters
 ): Promise<ShipmentGroup[]> {
-  const conditions: string[] = [];
-  const params: any[] = [];
+  // Build Prisma where object. Always product-scoped.
+  const where: Record<string, unknown> = {
+    productType: filters.productType,
+    poNo: { not: null, not: "" },
+    factoryPO: { not: null, not: "" },
+    size: { not: null, not: "" },
+  };
+  if (filters.poNo) where.poNo = filters.poNo;
+  if (filters.factoryPO) where.factoryPO = filters.factoryPO;
+  if (filters.model) where.model = filters.model;
+  if (filters.sku) where.sku = filters.sku;
+  if (filters.season) where.season = filters.season;
+  if (filters.colorCode) where.colorCode = filters.colorCode;
+  if (filters.size) where.size = filters.size;
+  if (filters.date) where.date = filters.date;
+  if (filters.deadline) where.deadline = filters.deadline;
 
-  // productType is MANDATORY.
-  conditions.push("productType = ?");
-  params.push(filters.productType);
+  const rows = await db.masterData.findMany({
+    where,
+    select: {
+      poNo: true, factoryPO: true, size: true,
+      model: true, sku: true, season: true,
+      colorCode: true, colorCode2: true,
+      painting: true, printingColor: true,
+      deadline: true, shippingStatus: true, qty1: true,
+    },
+  });
 
-  if (filters.poNo) { conditions.push("poNo = ?"); params.push(filters.poNo); }
-  if (filters.factoryPO) { conditions.push("factoryPO = ?"); params.push(filters.factoryPO); }
-  if (filters.model) { conditions.push("model = ?"); params.push(filters.model); }
-  if (filters.sku) { conditions.push("sku = ?"); params.push(filters.sku); }
-  if (filters.season) { conditions.push("season = ?"); params.push(filters.season); }
-  if (filters.colorCode) { conditions.push("colorCode = ?"); params.push(filters.colorCode); }
-  if (filters.size) { conditions.push("size = ?"); params.push(filters.size); }
-  if (filters.date) { conditions.push("date = ?"); params.push(filters.date); }
-  if (filters.deadline) { conditions.push("deadline = ?"); params.push(filters.deadline); }
+  // Group by (poNo + factoryPO + size) in JS.
+  type Acc = {
+    poNo: string; factoryPO: string; size: string;
+    model: string; sku: string; season: string;
+    colorCode: string; colorCode2: string;
+    painting: string; printingColor: string;
+    nearestDeadline: Date | null;
+    orderQty: number; outputQty: number; inputQty: number;
+  };
+  const groupsMap = new Map<string, Acc>();
 
-  const whereClause = conditions.join(" AND ");
+  for (const r of rows) {
+    const poNo = (r.poNo ?? "").trim();
+    const fpo = (r.factoryPO ?? "").trim();
+    const sz = (r.size ?? "").trim();
+    const key = `${poNo}|${fpo}|${sz}`;
+    if (!groupsMap.has(key)) {
+      groupsMap.set(key, {
+        poNo, factoryPO: fpo, size: sz,
+        model: r.model ?? "", sku: r.sku ?? "", season: r.season ?? "",
+        colorCode: r.colorCode ?? "", colorCode2: r.colorCode2 ?? "",
+        painting: r.painting ?? "", printingColor: r.printingColor ?? "",
+        nearestDeadline: null,
+        orderQty: 0, outputQty: 0, inputQty: 0,
+      });
+    }
+    const g = groupsMap.get(key)!;
+    if (r.model) g.model = r.model;
+    if (r.sku) g.sku = r.sku;
+    if (r.season) g.season = r.season;
+    if (r.colorCode) g.colorCode = r.colorCode;
+    if (r.colorCode2) g.colorCode2 = r.colorCode2;
+    if (r.painting) g.painting = r.painting;
+    if (r.printingColor) g.printingColor = r.printingColor;
+    if (r.deadline) {
+      const d = parseDeadlineQty(r.deadline);
+      if (d) {
+        if (!g.nearestDeadline || d.getTime() < g.nearestDeadline.getTime()) {
+          g.nearestDeadline = d;
+        }
+      }
+    }
 
-  // Aggregate by poNo + factoryPO + size, computing Order/Output/Input sums.
-  const sql = `
-    SELECT
-      poNo, factoryPO, size,
-      MAX(model) AS model,
-      MAX(sku) AS sku,
-      MAX(season) AS season,
-      MAX(colorCode) AS colorCode,
-      MAX(colorCode2) AS colorCode2,
-      MAX(painting) AS painting,
-      MAX(printingColor) AS printingColor,
-      MIN(deadline) AS deadline,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty
-    FROM MasterData
-    WHERE ${whereClause}
-      AND poNo IS NOT NULL AND poNo != ''
-      AND factoryPO IS NOT NULL AND factoryPO != ''
-      AND size IS NOT NULL AND size != ''
-    GROUP BY poNo, factoryPO, size
-    ORDER BY colorCode, poNo, factoryPO, size
-    LIMIT 2000
-  `;
-  const rows = await db.$queryRawUnsafe<any[]>(sql, ...params);
+    const q = r.qty1 ?? 0;
+    const bucket = classifyShippingStatus(r.shippingStatus);
+    if (bucket === "order") g.orderQty += q;
+    else if (bucket === "output") g.outputQty += q;
+    else if (bucket === "input") g.inputQty += q;
+  }
 
-  return rows.map((r) => {
-    const orderQty = Number(r.orderQty) || 0;
-    const outputQty = Number(r.outputQty) || 0;
-    const inputQty = Number(r.inputQty) || 0;
+  const out: ShipmentGroup[] = [];
+  for (const r of groupsMap.values()) {
+    const orderQty = r.orderQty;
+    const outputQty = r.outputQty;
+    const inputQty = r.inputQty;
     const remainingOutput = orderQty - outputQty;
     const remainingInput = outputQty - inputQty;
     const surplus = Math.max(0, outputQty - orderQty);
@@ -120,20 +157,20 @@ export async function getShipmentGroups(
     else if (orderQty > 0 && outputQty >= orderQty && inputQty >= orderQty) status = "COMPLETE";
     else status = "NO_OUTPUT";
 
-    return {
+    out.push({
       key: `${r.poNo}|${r.factoryPO}|${r.size}`,
       productType: filters.productType,
-      poNo: r.poNo || "",
-      factoryPO: r.factoryPO || "",
-      model: r.model || "",
-      sku: r.sku || "",
-      season: r.season || "",
-      colorCode: r.colorCode || "",
-      colorCode2: r.colorCode2 || "",
-      painting: r.painting || "",
-      printingColor: r.printingColor || "",
-      size: r.size || "",
-      deadline: r.deadline || null,
+      poNo: r.poNo,
+      factoryPO: r.factoryPO,
+      model: r.model,
+      sku: r.sku,
+      season: r.season,
+      colorCode: r.colorCode,
+      colorCode2: r.colorCode2,
+      painting: r.painting,
+      printingColor: r.printingColor,
+      size: r.size,
+      deadline: r.nearestDeadline ? r.nearestDeadline.toISOString().slice(0, 10) : null,
       orderQty,
       outputQty,
       inputQty,
@@ -141,18 +178,35 @@ export async function getShipmentGroups(
       remainingInput,
       surplus,
       status,
-    };
+    });
+  }
+
+  // Sort by colorCode, poNo, factoryPO, size to match the original SQL ORDER BY.
+  out.sort((a, b) => {
+    if (a.colorCode !== b.colorCode) return a.colorCode.localeCompare(b.colorCode);
+    if (a.poNo !== b.poNo) return a.poNo.localeCompare(b.poNo);
+    if (a.factoryPO !== b.factoryPO) return a.factoryPO.localeCompare(b.factoryPO);
+    return a.size.localeCompare(b.size);
   });
+
+  // LIMIT 2000.
+  return out.slice(0, 2000);
 }
 
 // ===== Get distinct color codes for a product =====
 export async function getColorCodes(productType: string): Promise<string[]> {
-  const rows = await db.$queryRaw<{ v: string }[]>`
-    SELECT DISTINCT colorCode AS v FROM MasterData
-    WHERE productType = ${productType} AND colorCode IS NOT NULL AND colorCode != ''
-    ORDER BY colorCode
-  `;
-  return rows.map((r) => r.v);
+  const rows = await db.masterData.findMany({
+    where: {
+      productType,
+      colorCode: { not: null, not: "" },
+    },
+    distinct: ["colorCode"],
+    select: { colorCode: true },
+  });
+  return rows
+    .map((r) => r.colorCode)
+    .filter((v): v is string => Boolean(v))
+    .sort((a, b) => a.localeCompare(b));
 }
 
 // ===== Surplus detection + transfer suggestions =====
@@ -211,8 +265,8 @@ export async function getSurplusTransfers(
     // Sort by priority: deadline nearest first.
     candidates.sort((a, b) => {
       const da = a.deadline || "9999";
-      const db = b.deadline || "9999";
-      return da.localeCompare(db);
+      const db2 = b.deadline || "9999";
+      return da.localeCompare(db2);
     });
 
     let remainingSurplus = src.surplus;

@@ -27,10 +27,54 @@ interface ShipmentBatchRow {
   updatedAt: string;
 }
 
+function toRow(b: {
+  id: string;
+  productType: string;
+  batchNumber: string;
+  date: string;
+  colorCode: string;
+  poNo: string;
+  factoryPO: string;
+  model: string | null;
+  sku: string | null;
+  season: string | null;
+  size: string;
+  orderQty: number;
+  previousOutput: number;
+  plannedQty: number;
+  remainingQty: number;
+  deadline: string | null;
+  status: string;
+  note: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): ShipmentBatchRow {
+  return {
+    id: b.id,
+    productType: b.productType,
+    batchNumber: b.batchNumber,
+    date: b.date,
+    colorCode: b.colorCode,
+    poNo: b.poNo,
+    factoryPO: b.factoryPO,
+    model: b.model,
+    sku: b.sku,
+    season: b.season,
+    size: b.size,
+    orderQty: b.orderQty,
+    previousOutput: b.previousOutput,
+    plannedQty: b.plannedQty,
+    remainingQty: b.remainingQty,
+    deadline: b.deadline,
+    status: b.status,
+    note: b.note,
+    createdAt: b.createdAt.toISOString(),
+    updatedAt: b.updatedAt.toISOString(),
+  };
+}
+
 // GET /api/shipment-batch?productType=MAFATE
 // List ShipmentBatch rows for a product (most recent first).
-// Implemented via raw SQL so the route works even when the dev server is
-// holding a stale Prisma Client singleton (without the shipmentBatch accessor).
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const productType = searchParams.get("productType") || "";
@@ -44,31 +88,17 @@ export async function GET(req: NextRequest) {
   const status = searchParams.get("status") || "";
   const date = searchParams.get("date") || "";
 
-  const conditions = ["productType = ?"];
-  const params: any[] = [productType];
-  if (status) {
-    conditions.push("status = ?");
-    params.push(status);
-  }
-  if (date) {
-    conditions.push("date = ?");
-    params.push(date);
-  }
-  const whereClause = conditions.join(" AND ");
+  const where: Record<string, unknown> = { productType };
+  if (status) where.status = status;
+  if (date) where.date = date;
 
-  const rows = await db.$queryRawUnsafe<ShipmentBatchRow[]>(
-    `SELECT id, productType, batchNumber, date, colorCode, poNo, factoryPO,
-            model, sku, season, size,
-            orderQty, previousOutput, plannedQty, remainingQty,
-            deadline, status, note, createdAt, updatedAt
-       FROM ShipmentBatch
-       WHERE ${whereClause}
-       ORDER BY date DESC, createdAt DESC
-       LIMIT 500`,
-    ...params
-  );
+  const batches = await db.shipmentBatch.findMany({
+    where,
+    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+    take: 500,
+  });
 
-  return NextResponse.json({ batches: rows });
+  return NextResponse.json({ batches: batches.map(toRow) });
 }
 
 // POST /api/shipment-batch — create a new planned shipment batch.
@@ -127,10 +157,10 @@ export async function POST(req: NextRequest) {
   // Generate batchNumber: SHIP-YYYYMMDD-NNN where NNN is the day's sequence.
   const yyyymmdd = date.replace(/-/g, "");
   const prefix = `SHIP-${yyyymmdd}-`;
-  const existing = await db.$queryRawUnsafe<{ batchNumber: string }[]>(
-    `SELECT batchNumber FROM ShipmentBatch WHERE batchNumber LIKE ?`,
-    `${prefix}%`
-  );
+  const existing = await db.shipmentBatch.findMany({
+    where: { batchNumber: { startsWith: prefix } },
+    select: { batchNumber: true },
+  });
   let maxSeq = 0;
   for (const b of existing) {
     const m = b.batchNumber.match(/SHIP-\d{8}-(\d+)$/);
@@ -142,43 +172,27 @@ export async function POST(req: NextRequest) {
   const nextSeq = maxSeq + 1;
   const batchNumber = `${prefix}${String(nextSeq).padStart(3, "0")}`;
 
-  // Generate a cuid-like id (we let SQLite handle it with a random ID).
-  const id =
-    "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  const created = await db.shipmentBatch.create({
+    data: {
+      batchNumber,
+      productType,
+      date,
+      colorCode,
+      poNo,
+      factoryPO,
+      model: body.model ?? null,
+      sku: body.sku ?? null,
+      season: body.season ?? null,
+      size,
+      orderQty,
+      previousOutput,
+      plannedQty,
+      remainingQty,
+      deadline: body.deadline ?? null,
+      status: "DRAFT",
+      note: body.note ?? null,
+    },
+  });
 
-  await db.$executeRawUnsafe(
-    `INSERT INTO ShipmentBatch
-       (id, productType, batchNumber, date, colorCode, poNo, factoryPO,
-        model, sku, season, size, orderQty, previousOutput, plannedQty,
-        remainingQty, deadline, status, note, createdAt, updatedAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?,
-       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-    id,
-    productType,
-    batchNumber,
-    date,
-    colorCode,
-    poNo,
-    factoryPO,
-    body.model ?? null,
-    body.sku ?? null,
-    body.season ?? null,
-    size,
-    orderQty,
-    previousOutput,
-    plannedQty,
-    remainingQty,
-    body.deadline ?? null,
-    body.note ?? null
-  );
-
-  const created = await db.$queryRawUnsafe<ShipmentBatchRow[]>(
-    `SELECT id, productType, batchNumber, date, colorCode, poNo, factoryPO,
-            model, sku, season, size, orderQty, previousOutput, plannedQty,
-            remainingQty, deadline, status, note, createdAt, updatedAt
-       FROM ShipmentBatch WHERE id = ?`,
-    id
-  );
-
-  return NextResponse.json({ ok: true, batch: created[0] ?? null });
+  return NextResponse.json({ ok: true, batch: toRow(created) });
 }

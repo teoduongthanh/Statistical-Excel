@@ -27,26 +27,63 @@ interface ShipmentBatchRow {
   updatedAt: string;
 }
 
+function toRow(b: {
+  id: string;
+  productType: string;
+  batchNumber: string;
+  date: string;
+  colorCode: string;
+  poNo: string;
+  factoryPO: string;
+  model: string | null;
+  sku: string | null;
+  season: string | null;
+  size: string;
+  orderQty: number;
+  previousOutput: number;
+  plannedQty: number;
+  remainingQty: number;
+  deadline: string | null;
+  status: string;
+  note: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): ShipmentBatchRow {
+  return {
+    id: b.id,
+    productType: b.productType,
+    batchNumber: b.batchNumber,
+    date: b.date,
+    colorCode: b.colorCode,
+    poNo: b.poNo,
+    factoryPO: b.factoryPO,
+    model: b.model,
+    sku: b.sku,
+    season: b.season,
+    size: b.size,
+    orderQty: b.orderQty,
+    previousOutput: b.previousOutput,
+    plannedQty: b.plannedQty,
+    remainingQty: b.remainingQty,
+    deadline: b.deadline,
+    status: b.status,
+    note: b.note,
+    createdAt: b.createdAt.toISOString(),
+    updatedAt: b.updatedAt.toISOString(),
+  };
+}
+
 // PUT /api/shipment-batch/[id] — update a planned shipment batch.
 // Body: partial of { plannedQty, status, note, deadline, remainingQty, ... }
 // If plannedQty is being changed, re-validate against remainingQty (remainingOutput).
-// Implemented via raw SQL so the route works even when the dev server is
-// holding a stale Prisma Client singleton.
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const body = await req.json();
 
-  const rows = await db.$queryRawUnsafe<ShipmentBatchRow[]>(
-    `SELECT id, productType, batchNumber, date, colorCode, poNo, factoryPO,
-            model, sku, season, size, orderQty, previousOutput, plannedQty,
-            remainingQty, deadline, status, note, createdAt, updatedAt
-       FROM ShipmentBatch WHERE id = ?`,
-    id
-  );
-  if (rows.length === 0) {
+  const existing = await db.shipmentBatch.findUnique({ where: { id } });
+  if (!existing) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  const existing = rows[0];
 
   const plannedQty =
     body.plannedQty !== undefined ? Number(body.plannedQty) : existing.plannedQty;
@@ -90,40 +127,24 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   const deadline =
     body.deadline !== undefined ? body.deadline ?? null : existing.deadline;
 
-  await db.$executeRawUnsafe(
-    `UPDATE ShipmentBatch
-        SET plannedQty = ?, remainingQty = ?, status = ?, note = ?, deadline = ?,
-            updatedAt = CURRENT_TIMESTAMP
-      WHERE id = ?`,
-    plannedQty,
-    remainingQty,
-    status,
-    note,
-    deadline,
-    id
-  );
+  const updated = await db.shipmentBatch.update({
+    where: { id },
+    data: { plannedQty, remainingQty, status, note, deadline },
+  });
 
-  const updatedRows = await db.$queryRawUnsafe<ShipmentBatchRow[]>(
-    `SELECT id, productType, batchNumber, date, colorCode, poNo, factoryPO,
-            model, sku, season, size, orderQty, previousOutput, plannedQty,
-            remainingQty, deadline, status, note, createdAt, updatedAt
-       FROM ShipmentBatch WHERE id = ?`,
-    id
-  );
-
-  return NextResponse.json({ ok: true, batch: updatedRows[0] ?? null });
+  return NextResponse.json({ ok: true, batch: toRow(updated) });
 }
 
 // DELETE /api/shipment-batch/[id] — delete a planned shipment batch.
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const rows = await db.$queryRawUnsafe<{ id: string }[]>(
-    `SELECT id FROM ShipmentBatch WHERE id = ?`,
-    id
-  );
-  if (rows.length === 0) {
+  const existing = await db.shipmentBatch.findUnique({
+    where: { id },
+    select: { id: true },
+  });
+  if (!existing) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  await db.$executeRawUnsafe(`DELETE FROM ShipmentBatch WHERE id = ?`, id);
+  await db.shipmentBatch.delete({ where: { id } });
   return NextResponse.json({ ok: true });
 }

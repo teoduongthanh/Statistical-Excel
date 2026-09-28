@@ -4,13 +4,13 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "mongodb"
   url      = env("DATABASE_URL")
 }
 
 /// One normalized row from an imported Excel sheet.
 model MasterData {
-  id             String   @id @default(cuid())
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
   date           String?
   shippingStatus String?
   model          String?
@@ -49,7 +49,7 @@ model MasterData {
 
 /// Aggregated shared attributes per (productType + Factory PO).
 model MasterGroup {
-  id              String   @id @default(cuid())
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
   productType     String
   factoryPO       String
   date            String?
@@ -78,7 +78,7 @@ model MasterGroup {
 }
 
 model EntryData {
-  id                  String   @id @default(cuid())
+  id                  String   @id @default(auto()) @map("_id") @db.ObjectId
   productType         String
   date                String?
   shippingStatus      String?
@@ -117,7 +117,7 @@ model EntryData {
 }
 
 model OrderNote {
-  id          String   @id @default(cuid())
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
   productType String
   factoryPO   String
   size        String
@@ -133,7 +133,7 @@ model OrderNote {
 }
 
 model ImportHistory {
-  id           String   @id @default(cuid())
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
   fileName     String
   sheetName    String?
   productType  String?
@@ -147,7 +147,7 @@ model ImportHistory {
 }
 
 model AuditLog {
-  id        String   @id @default(cuid())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
   productType String?
   user      String?
   action    String  // "IMPORT" | "EDIT" | "DELETE" | "EXPORT" | "ENTRY_CREATE" | "ENTRY_EDIT" | "ENTRY_DELETE"
@@ -164,13 +164,13 @@ model AuditLog {
 }
 
 model Setting {
-  id    String @id @default(cuid())
+  id    String @id @default(auto()) @map("_id") @db.ObjectId
   key   String @unique
   value String
 }
 
 model LookupRule {
-  id            String  @id @default(cuid())
+  id            String  @id @default(auto()) @map("_id") @db.ObjectId
   name          String  @unique
   primaryKey    String
   secondaryKey  String?
@@ -182,7 +182,7 @@ model LookupRule {
 
 /// Sync Queue — records each data change event that requires synchronization.
 model SyncQueue {
-  id            String   @id @default(cuid())
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
   action        String
   entity        String
   entityId      String?
@@ -206,7 +206,7 @@ model SyncQueue {
 
 /// Sync Run — a completed synchronization batch.
 model SyncRun {
-  id            String   @id @default(cuid())
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
   runNumber     String   @unique
   productType   String?
   eventsProcessed Int    @default(0)
@@ -232,7 +232,7 @@ model SyncRun {
 /// Only when the user clicks "Confirm Actual Output" (status → CONFIRMED_OUTPUT)
 /// does the system create the real 2.Output (and 3.Pending if auto-calc) entries.
 model OutputSlip {
-  id            String   @id @default(cuid())
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
   slipNumber    String   @unique  // e.g. "OS-20260830-1234"
   productType   String
   poNo          String
@@ -262,5 +262,37 @@ model OutputSlip {
   @@index([productType, poNo])
   @@index([productType, status])
   @@index([status])
+  @@index([createdAt])
+}
+
+/// ShipmentBatch — a single planned shipment row in the Daily Shipment Plan.
+/// Created from the Shipment Planning view when the user picks a plannedQty
+/// for a (productType + date + colorCode + poNo + factoryPO + size) group.
+model ShipmentBatch {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  batchNumber     String   @unique  // e.g. "SHIP-20260101-001"
+  productType     String
+  date            String
+  colorCode       String
+  poNo            String
+  factoryPO       String
+  model           String?
+  sku             String?
+  season          String?
+  size            String
+  orderQty        Int      @default(0)
+  previousOutput  Int     @default(0)
+  plannedQty      Int      @default(0)
+  remainingQty    Int      @default(0)
+  deadline        String?
+  // "DRAFT" | "CONFIRMED" | "EXPORTED"
+  status          String   @default("DRAFT")
+  note            String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([productType])
+  @@index([productType, status])
+  @@index([productType, date])
   @@index([createdAt])
 }

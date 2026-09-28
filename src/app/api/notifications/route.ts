@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { computeDeadlineStatus } from "@/lib/quantity-service";
+import {
+  classifyShippingStatus,
+  computeDeadlineStatus,
+  parseDeadline,
+} from "@/lib/quantity-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,57 +23,81 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "productType is required" }, { status: 400 });
   }
 
-  // Single SQL query to get all production groups with their quantities.
-  const rows = await db.$queryRawUnsafe<any[]>(`
-    SELECT
-      poNo, factoryPO, size,
-      MAX(model) AS model, MAX(colorCode) AS colorCode,
-      MIN(deadline) AS deadline,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus)='order' THEN COALESCE(qty1,0) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus)='output' THEN COALESCE(qty1,0) ELSE 0 END) AS outputQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus)='input' THEN COALESCE(qty1,0) ELSE 0 END) AS inputQty
-    FROM MasterData
-    WHERE productType = ?
-      AND poNo IS NOT NULL AND poNo != ''
-      AND factoryPO IS NOT NULL AND factoryPO != ''
-      AND size IS NOT NULL AND size != ''
-    GROUP BY poNo, factoryPO, size
-    LIMIT 5000
-  `, productType);
+  // Fetch all production rows for this product, then group in JS.
+  const rows = await db.masterData.findMany({
+    where: {
+      productType,
+      poNo: { not: null, not: "" },
+      factoryPO: { not: null, not: "" },
+      size: { not: null, not: "" },
+    },
+    select: {
+      poNo: true, factoryPO: true, size: true,
+      model: true, colorCode: true,
+      deadline: true, shippingStatus: true, qty1: true,
+    },
+    take: 50000, // generous cap; original SQL had no cap but grouped to 5000
+  });
 
+  // Group by (poNo + factoryPO + size).
+  type Acc = {
+    poNo: string; factoryPO: string; size: string;
+    model: string; colorCode: string;
+    nearestDeadline: Date | null;
+    orderQty: number; outputQty: number; inputQty: number;
+  };
+  const groupsMap = new Map<string, Acc>();
+
+  for (const r of rows) {
+    const poNo = r.poNo ?? "";
+    const fpo = r.factoryPO ?? "";
+    const sz = r.size ?? "";
+    const key = `${poNo}|${fpo}|${sz}`;
+    if (!groupsMap.has(key)) {
+      groupsMap.set(key, {
+        poNo, factoryPO: fpo, size: sz,
+        model: r.model ?? "", colorCode: r.colorCode ?? "",
+        nearestDeadline: null,
+        orderQty: 0, outputQty: 0, inputQty: 0,
+      });
+    }
+    const g = groupsMap.get(key)!;
+    if (r.model) g.model = r.model;
+    if (r.colorCode) g.colorCode = r.colorCode;
+    if (r.deadline) {
+      const d = parseDeadline(r.deadline);
+      if (d) {
+        if (!g.nearestDeadline || d.getTime() < g.nearestDeadline.getTime()) {
+          g.nearestDeadline = d;
+        }
+      }
+    }
+    const q = r.qty1 ?? 0;
+    const bucket = classifyShippingStatus(r.shippingStatus);
+    if (bucket === "order") g.orderQty += q;
+    else if (bucket === "output") g.outputQty += q;
+    else if (bucket === "input") g.inputQty += q;
+  }
+
+  const grouped = [...groupsMap.values()].slice(0, 5000);
   const notifications: NotificationItem[] = [];
   const now = new Date();
   now.setHours(0, 0, 0, 0);
   const dayMs = 86400000;
 
-  for (const r of rows) {
-    const orderQty = Number(r.orderQty) || 0;
-    const outputQty = Number(r.outputQty) || 0;
-    const inputQty = Number(r.inputQty) || 0;
+  for (const r of grouped) {
+    const orderQty = r.orderQty;
+    const outputQty = r.outputQty;
+    const inputQty = r.inputQty;
     const remainingOutput = orderQty - outputQty;
     const remainingInput = outputQty - inputQty;
-    const deadline = r.deadline || null;
-
-    // Parse deadline.
-    let dlDate: Date | null = null;
-    if (deadline) {
-      const d = new Date(deadline);
-      if (!isNaN(d.getTime())) dlDate = d;
-      else {
-        const n = Number(deadline);
-        if (!isNaN(n) && n > 1000) {
-          const epoch = new Date(Date.UTC(1899, 11, 30));
-          epoch.setDate(epoch.getDate() + n);
-          dlDate = epoch;
-        }
-      }
-    }
+    const deadline = r.nearestDeadline ? r.nearestDeadline.toISOString().slice(0, 10) : null;
 
     const dlStatus = computeDeadlineStatus(deadline, orderQty > 0 && outputQty >= orderQty && inputQty >= orderQty);
 
     // 1. OVERDUE — deadline passed + still need to output
     if (dlStatus === "OVERDUE" && remainingOutput > 0) {
-      const lateDays = dlDate ? Math.floor((now.getTime() - dlDate.getTime()) / dayMs) : 0;
+      const lateDays = r.nearestDeadline ? Math.floor((now.getTime() - r.nearestDeadline.getTime()) / dayMs) : 0;
       notifications.push({
         id: `overdue-output|${r.poNo}|${r.factoryPO}|${r.size}`,
         type: "OVERDUE",

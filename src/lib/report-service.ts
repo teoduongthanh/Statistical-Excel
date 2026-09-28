@@ -5,7 +5,12 @@
 // suggested solutions. Pending is calculated dynamically (= -Output).
 
 import { db } from "./db";
-import { computeDeadlineStatus, type DeadlineStatus } from "./quantity-service";
+import {
+  classifyShippingStatus,
+  computeDeadlineStatus,
+  parseDeadline,
+  type DeadlineStatus,
+} from "./quantity-service";
 
 // ===== Types =====
 
@@ -118,83 +123,134 @@ export interface ReportFilters {
 export async function getReportGroups(
   filters: ReportFilters
 ): Promise<{ groups: ReportGroup[]; errors: ReportError[]; summary: ReportSummary }> {
-  const conditions: string[] = ["productType = ?"];
-  const params: any[] = [filters.productType];
+  // Build Prisma where object (always product-scoped).
+  const where: Record<string, unknown> = { productType: filters.productType };
+  if (filters.poNo) where.poNo = filters.poNo;
+  if (filters.factoryPO) where.factoryPO = filters.factoryPO;
+  if (filters.model) where.model = filters.model;
+  if (filters.sku) where.sku = filters.sku;
+  if (filters.season) where.season = filters.season;
+  if (filters.colorCode) where.colorCode = filters.colorCode;
+  if (filters.size) where.size = filters.size;
+  if (filters.dateFrom || filters.dateTo) {
+    const dateRange: Record<string, unknown> = {};
+    if (filters.dateFrom) dateRange.gte = filters.dateFrom;
+    if (filters.dateTo) dateRange.lte = filters.dateTo;
+    where.date = dateRange;
+  }
 
-  if (filters.poNo) { conditions.push("poNo = ?"); params.push(filters.poNo); }
-  if (filters.factoryPO) { conditions.push("factoryPO = ?"); params.push(filters.factoryPO); }
-  if (filters.model) { conditions.push("model = ?"); params.push(filters.model); }
-  if (filters.sku) { conditions.push("sku = ?"); params.push(filters.sku); }
-  if (filters.season) { conditions.push("season = ?"); params.push(filters.season); }
-  if (filters.colorCode) { conditions.push("colorCode = ?"); params.push(filters.colorCode); }
-  if (filters.size) { conditions.push("size = ?"); params.push(filters.size); }
-  if (filters.dateFrom) { conditions.push("date >= ?"); params.push(filters.dateFrom); }
-  if (filters.dateTo) { conditions.push("date <= ?"); params.push(filters.dateTo); }
+  // Fetch raw rows; grouping + aggregation done in JS (MongoDB-compatible).
+  const rows = await db.masterData.findMany({
+    where,
+    select: {
+      poNo: true, factoryPO: true, size: true,
+      model: true, sku: true, item: true,
+      season: true, colorCode: true, colorCode2: true,
+      painting: true, printingColor: true,
+      deadline: true, shippingStatus: true, qty1: true, qty2: true,
+      date: true,
+    },
+  });
 
-  const whereClause = conditions.join(" AND ");
+  // Group rows by (poNo + factoryPO + size). Skip rows with empty key parts.
+  type GroupAcc = {
+    poNo: string; factoryPO: string; size: string;
+    model: string; sku: string; item: string;
+    season: string; colorCode: string; colorCode2: string;
+    painting: string; printingColor: string;
+    nearestDeadline: Date | null;
+    rowCount: number;
+    orderQty: number; outputQty: number; inputQty: number;
+    transactions: TransactionRecord[];
+  };
+  const groupsMap = new Map<string, GroupAcc>();
 
-  const sql = `
-    SELECT
-      poNo, factoryPO, size,
-      MAX(model) AS model, MAX(sku) AS sku, MAX(item) AS item,
-      MAX(season) AS season, MAX(colorCode) AS colorCode,
-      MAX(colorCode2) AS colorCode2, MAX(painting) AS painting,
-      MAX(printingColor) AS printingColor, MIN(deadline) AS deadline,
-      COUNT(*) AS rowCount,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus)='order' THEN COALESCE(qty1,0) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus)='output' THEN COALESCE(qty1,0) ELSE 0 END) AS outputQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus)='input' THEN COALESCE(qty1,0) ELSE 0 END) AS inputQty
-    FROM MasterData
-    WHERE ${whereClause}
-      AND poNo IS NOT NULL AND poNo != ''
-      AND factoryPO IS NOT NULL AND factoryPO != ''
-      AND size IS NOT NULL AND size != ''
-    GROUP BY poNo, factoryPO, size
-    ORDER BY deadline ASC, poNo, factoryPO
-    LIMIT 5000
-  `;
-  const rows = await db.$queryRawUnsafe<any[]>(sql, ...params);
+  for (const r of rows) {
+    const poNo = (r.poNo ?? "").trim();
+    const fpo = (r.factoryPO ?? "").trim();
+    const sz = (r.size ?? "").trim();
+    if (!poNo || !fpo || !sz) continue;
+    const key = `${poNo}|${fpo}|${sz}`;
+    if (!groupsMap.has(key)) {
+      groupsMap.set(key, {
+        poNo, factoryPO: fpo, size: sz,
+        model: r.model ?? "", sku: r.sku ?? "", item: r.item ?? "",
+        season: r.season ?? "", colorCode: r.colorCode ?? "", colorCode2: r.colorCode2 ?? "",
+        painting: r.painting ?? "", printingColor: r.printingColor ?? "",
+        nearestDeadline: null,
+        rowCount: 0, orderQty: 0, outputQty: 0, inputQty: 0,
+        transactions: [],
+      });
+    }
+    const g = groupsMap.get(key)!;
+    g.rowCount++;
+    // MAX(model)/MAX(sku)/... — keep the latest non-empty value encountered.
+    if (r.model) g.model = r.model;
+    if (r.sku) g.sku = r.sku;
+    if (r.item) g.item = r.item;
+    if (r.season) g.season = r.season;
+    if (r.colorCode) g.colorCode = r.colorCode;
+    if (r.colorCode2) g.colorCode2 = r.colorCode2;
+    if (r.painting) g.painting = r.painting;
+    if (r.printingColor) g.printingColor = r.printingColor;
+    // MIN(deadline) — keep earliest deadline parsed as Date.
+    if (r.deadline) {
+      const d = parseDeadline(r.deadline);
+      if (d) {
+        if (!g.nearestDeadline || d.getTime() < g.nearestDeadline.getTime()) {
+          g.nearestDeadline = d;
+        }
+      }
+    }
 
-  // Also fetch individual transactions for each group (for transaction history).
-  const allTxSql = `
-    SELECT poNo, factoryPO, size, date, shippingStatus, qty1, qty2
-    FROM MasterData
-    WHERE ${whereClause}
-      AND poNo IS NOT NULL AND poNo != ''
-      AND factoryPO IS NOT NULL AND factoryPO != ''
-      AND size IS NOT NULL AND size != ''
-    ORDER BY date ASC
-  `;
-  const allTx = await db.$queryRawUnsafe<any[]>(allTxSql, ...params);
+    const q = r.qty1 ?? 0;
+    const bucket = classifyShippingStatus(r.shippingStatus);
+    if (bucket === "order") g.orderQty += q;
+    else if (bucket === "output") g.outputQty += q;
+    else if (bucket === "input") g.inputQty += q;
 
-  // Build transaction map.
-  const txMap = new Map<string, TransactionRecord[]>();
-  for (const t of allTx) {
-    const key = `${t.poNo}|${t.factoryPO}|${t.size}`;
-    if (!txMap.has(key)) txMap.set(key, []);
-    txMap.get(key)!.push({
-      date: t.date || "",
-      shippingStatus: t.shippingStatus || "",
-      qty1: Number(t.qty1) || 0,
-      qty2: Number(t.qty2) || 0,
+    // Track transaction (for transaction history + duplicate detection).
+    g.transactions.push({
+      date: r.date ?? "",
+      shippingStatus: r.shippingStatus ?? "",
+      qty1: q,
+      qty2: r.qty2 ?? 0,
     });
   }
 
+  // Sort transactions by date ASC (matches the prior `ORDER BY date ASC`).
+  for (const g of groupsMap.values()) {
+    g.transactions.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  }
+
+  // Build the ordered rows array, sorted by deadline ASC then poNo, factoryPO.
+  const groupList = [...groupsMap.values()];
+  groupList.sort((a, b) => {
+    const aDl = a.nearestDeadline ? a.nearestDeadline.getTime() : Number.MAX_SAFE_INTEGER;
+    const bDl = b.nearestDeadline ? b.nearestDeadline.getTime() : Number.MAX_SAFE_INTEGER;
+    if (aDl !== bDl) return aDl - bDl;
+    if (a.poNo !== b.poNo) return a.poNo.localeCompare(b.poNo);
+    return a.factoryPO.localeCompare(b.factoryPO);
+  });
+
+  // Apply the LIMIT 5000 cap.
+  const limitedGroups = groupList.slice(0, 5000);
+
   // Detect duplicates (same date + status + qty for same group).
   const duplicateMap = new Map<string, "DUPLICATE_OUTPUT" | "DUPLICATE_INPUT">();
-  for (const [key, txs] of txMap) {
+  for (const g of groupsMap.values()) {
     const seen = new Map<string, number>();
-    for (const t of txs) {
+    for (const t of g.transactions) {
       const sig = `${t.date}|${t.shippingStatus}|${t.qty1}`;
-      const s = (t.shippingStatus || "").toLowerCase();
-      if (s.startsWith("2") || s.includes("output")) {
-        const k = `${key}|output|${sig}`;
-        seen.set(k, (seen.get(k) || 0) + 1);
-        if (seen.get(k)! > 1) duplicateMap.set(key, "DUPLICATE_OUTPUT");
-      } else if (s.startsWith("4") || s.includes("input")) {
-        const k = `${key}|input|${sig}`;
-        seen.set(k, (seen.get(k) || 0) + 1);
-        if (seen.get(k)! > 1) duplicateMap.set(key, "DUPLICATE_INPUT");
+      const bucket = classifyShippingStatus(t.shippingStatus);
+      if (bucket === "output") {
+        const k = `output|${sig}`;
+        seen.set(k, (seen.get(k) ?? 0) + 1);
+        if (seen.get(k)! > 1) duplicateMap.set(`${g.poNo}|${g.factoryPO}|${g.size}`, "DUPLICATE_OUTPUT");
+      } else if (bucket === "input") {
+        const k = `input|${sig}`;
+        seen.set(k, (seen.get(k) ?? 0) + 1);
+        if (seen.get(k)! > 1) duplicateMap.set(`${g.poNo}|${g.factoryPO}|${g.size}`, "DUPLICATE_INPUT");
       }
     }
   }
@@ -202,10 +258,10 @@ export async function getReportGroups(
   const groups: ReportGroup[] = [];
   const errors: ReportError[] = [];
 
-  for (const r of rows) {
-    const orderQty = Number(r.orderQty) || 0;
-    const outputQty = Number(r.outputQty) || 0;
-    const inputQty = Number(r.inputQty) || 0;
+  for (const r of limitedGroups) {
+    const orderQty = r.orderQty;
+    const outputQty = r.outputQty;
+    const inputQty = r.inputQty;
     const pendingQty = -outputQty; // Dynamic
     const remainingOutput = orderQty - outputQty;
     const remainingInput = outputQty - inputQty;
@@ -214,10 +270,10 @@ export async function getReportGroups(
     const inputPercentage = outputQty > 0 ? (inputQty / outputQty) * 100 : 0;
     const outputVariance = outputQty - orderQty;
     const inputVariance = inputQty - outputQty;
-    const deadline = r.deadline || null;
+    const deadline = r.nearestDeadline ? r.nearestDeadline.toISOString().slice(0, 10) : null;
 
     const key = `${r.poNo}|${r.factoryPO}|${r.size}`;
-    const transactions = txMap.get(key) || [];
+    const transactions = r.transactions;
 
     // Determine production status (errors take priority).
     let productionStatus: ProductionStatus;
@@ -284,11 +340,11 @@ export async function getReportGroups(
 
     const group: ReportGroup = {
       key, productType: filters.productType,
-      poNo: r.poNo || "", factoryPO: r.factoryPO || "",
-      model: r.model || "", sku: r.sku || "", item: r.item || "",
-      season: r.season || "", colorCode: r.colorCode || "",
-      colorCode2: r.colorCode2 || "", painting: r.painting || "",
-      printingColor: r.printingColor || "", size: r.size || "",
+      poNo: r.poNo, factoryPO: r.factoryPO,
+      model: r.model, sku: r.sku, item: r.item,
+      season: r.season, colorCode: r.colorCode,
+      colorCode2: r.colorCode2, painting: r.painting,
+      printingColor: r.printingColor, size: r.size,
       deadline, deadlineStatus: dlStatus,
       orderQty, outputQty, inputQty, pendingQty,
       remainingOutput, remainingInput,
@@ -297,7 +353,7 @@ export async function getReportGroups(
       outputVariancePercent: orderQty > 0 ? Math.round(((outputQty - orderQty) / orderQty) * 1000) / 10 : 0,
       inputVariancePercent: outputQty > 0 ? Math.round(((inputQty - outputQty) / outputQty) * 1000) / 10 : 0,
       productionStatus, errorType,
-      rowCount: Number(r.rowCount) || 0,
+      rowCount: r.rowCount,
       transactions,
     };
     groups.push(group);

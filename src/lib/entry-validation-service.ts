@@ -115,15 +115,16 @@ export async function validateEntryBeforeSave(
   }
 
   // 2. Fetch existing transactions for this group (PO NO# + Factory PO + Size).
-  const existing = await db.$queryRawUnsafe<any[]>(`
-    SELECT date, shippingStatus, qty1
-    FROM MasterData
-    WHERE productType = ?
-      AND poNo = ?
-      AND factoryPO = ?
-      AND size = ?
-    ORDER BY date ASC
-  `, input.productType, input.poNo, input.factoryPO, input.size);
+  const existing = await db.masterData.findMany({
+    where: {
+      productType: input.productType,
+      poNo: input.poNo,
+      factoryPO: input.factoryPO,
+      size: input.size,
+    },
+    select: { date: true, shippingStatus: true, qty1: true },
+    orderBy: { date: "asc" },
+  });
 
   // Also check EntryData for existing entries.
   const existingEntries = await db.entryData.findMany({

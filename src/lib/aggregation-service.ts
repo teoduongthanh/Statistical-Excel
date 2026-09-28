@@ -1,9 +1,13 @@
 // ProductionAggregationService
 // Groups MasterData rows by composite keys (Product + PO + Factory PO + Size, etc.)
-// and runs Order/Output/Pending/Input aggregation via SQL.
+// and runs Order/Output/Pending/Input aggregation.
 //
 // All queries are product-scoped: the productType parameter is MANDATORY and applied
-// as a WHERE filter to guarantee product isolation (spec §51).
+// as a Prisma `where` filter to guarantee product isolation (spec §51).
+//
+// MongoDB-compatible: uses Prisma's standard query API (findMany / groupBy / count)
+// instead of raw SQL. Filtering on shipping-status buckets is performed in JS via
+// `classifyShippingStatus()`.
 
 import { db } from "./db";
 import {
@@ -11,6 +15,7 @@ import {
   computeProductionSummary,
   computeDeadlineStatus,
   assessAlert,
+  parseDeadline,
   type ProductionSummary,
   type AlertInfo,
   type DeadlineStatus,
@@ -47,23 +52,24 @@ export interface ProductionGroup extends ProductionSummary {
   rowCount: number;
 }
 
-function buildWhere(filters: AggregationFilters): { where: string; params: any[] } {
-  const conditions: string[] = [];
-  const params: any[] = [];
-  // productType is always applied.
-  conditions.push("productType = ?");
-  params.push(filters.productType);
-  if (filters.factoryPO) { conditions.push("factoryPO LIKE ?"); params.push(`%${filters.factoryPO}%`); }
-  if (filters.poNo) { conditions.push("poNo LIKE ?"); params.push(`%${filters.poNo}%`); }
-  if (filters.model) { conditions.push("model LIKE ?"); params.push(`%${filters.model}%`); }
-  if (filters.sku) { conditions.push("sku LIKE ?"); params.push(`%${filters.sku}%`); }
-  if (filters.season) { conditions.push("season LIKE ?"); params.push(`%${filters.season}%`); }
-  if (filters.colorCode) { conditions.push("colorCode LIKE ?"); params.push(`%${filters.colorCode}%`); }
-  if (filters.size) { conditions.push("size LIKE ?"); params.push(`%${filters.size}%`); }
-  if (filters.shippingStatus) { conditions.push("shippingStatus LIKE ?"); params.push(`%${filters.shippingStatus}%`); }
-  if (filters.dateFrom) { conditions.push("date >= ?"); params.push(filters.dateFrom); }
-  if (filters.dateTo) { conditions.push("date <= ?"); params.push(filters.dateTo); }
-  return { where: conditions.join(" AND "), params };
+// Build a Prisma where object from filters. Uses `contains` for LIKE-style matching.
+function buildWhere(filters: AggregationFilters): Record<string, unknown> {
+  const where: Record<string, unknown> = { productType: filters.productType };
+  if (filters.factoryPO) where.factoryPO = { contains: filters.factoryPO };
+  if (filters.poNo) where.poNo = { contains: filters.poNo };
+  if (filters.model) where.model = { contains: filters.model };
+  if (filters.sku) where.sku = { contains: filters.sku };
+  if (filters.season) where.season = { contains: filters.season };
+  if (filters.colorCode) where.colorCode = { contains: filters.colorCode };
+  if (filters.size) where.size = { contains: filters.size };
+  if (filters.shippingStatus) where.shippingStatus = { contains: filters.shippingStatus };
+  if (filters.dateFrom || filters.dateTo) {
+    const dateRange: Record<string, unknown> = {};
+    if (filters.dateFrom) dateRange.gte = filters.dateFrom;
+    if (filters.dateTo) dateRange.lte = filters.dateTo;
+    where.date = dateRange;
+  }
+  return where;
 }
 
 // Core aggregation: groups rows by composite key and sums Order/Output/Pending/Input.
@@ -71,62 +77,122 @@ export async function aggregateProduction(
   filters: AggregationFilters,
   groupBy: ("poNo" | "factoryPO" | "model" | "sku" | "season" | "colorCode" | "colorCode2" | "size")[] = ["poNo", "factoryPO", "size"]
 ): Promise<ProductionGroup[]> {
-  const { where, params } = buildWhere(filters);
-  const groupCols = groupBy.join(", ");
-  // Raw SQL aggregation — fast even on 100k+ rows because of composite indexes.
-  // We pull all 4 status sums + shared attributes + nearest deadline in one pass.
-  const sql = `
-    SELECT
-      ${groupBy.map((c) => `"${c}"`).join(", ")},
-      MAX(model) AS model,
-      MAX(sku) AS sku,
-      MAX(season) AS season,
-      MAX(colorCode) AS colorCode,
-      MAX(colorCode2) AS colorCode2,
-      MAX(poNo) AS poNo,
-      MAX(factoryPO) AS factoryPO,
-      MAX(size) AS size,
-      MIN(deadline) AS nearestDeadline,
-      COUNT(*) AS rowCount,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty
-    FROM MasterData
-    WHERE ${where}
-    GROUP BY ${groupCols}
-    ORDER BY nearestDeadline ASC
-    LIMIT 5000
-  `;
-  const rows = await db.$queryRawUnsafe<any[]>(sql, ...params);
+  const where = buildWhere(filters);
 
-  return rows.map((r) => {
-    // Pending is calculated dynamically: Pending = -Output (no longer stored in DB).
-    const outputQty = Number(r.outputQty) || 0;
+  // Fetch only the columns we need. We materialize everything in memory and group
+  // in JS because MongoDB Prisma's groupBy can't easily compute per-bucket sums
+  // that depend on a classification function (1.Order / 2.Output / 4.Input).
+  const rows = await db.masterData.findMany({
+    where,
+    select: {
+      poNo: true, factoryPO: true, model: true, sku: true,
+      season: true, colorCode: true, colorCode2: true, size: true,
+      deadline: true, shippingStatus: true, qty1: true,
+    },
+    // 5000 group cap (LIMIT) is enforced after JS grouping below.
+  });
+
+  // Group rows by composite key.
+  type Acc = {
+    key: string;
+    parts: Record<string, string>;
+    model: string; sku: string; season: string;
+    colorCode: string; colorCode2: string;
+    poNo: string; factoryPO: string; size: string;
+    nearestDeadline: Date | null;
+    rowCount: number;
+    orderQty: number; outputQty: number; inputQty: number; pendingQty: number;
+  };
+
+  const groups = new Map<string, Acc>();
+  for (const r of rows) {
+    const partVals = groupBy.map((c) => String((r as any)[c] ?? ""));
+    const key = partVals.join("|");
+    // Skip rows whose group key is empty (avoids bogus "empty" groups).
+    if (!key || partVals.every((v) => !v)) continue;
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        parts: Object.fromEntries(groupBy.map((c, i) => [c, partVals[i]])),
+        model: r.model ?? "",
+        sku: r.sku ?? "",
+        season: r.season ?? "",
+        colorCode: r.colorCode ?? "",
+        colorCode2: r.colorCode2 ?? "",
+        poNo: r.poNo ?? "",
+        factoryPO: r.factoryPO ?? "",
+        size: r.size ?? "",
+        nearestDeadline: null,
+        rowCount: 0,
+        orderQty: 0, outputQty: 0, inputQty: 0, pendingQty: 0,
+      });
+    }
+
+    const g = groups.get(key)!;
+    g.rowCount++;
+    // MAX(model)/MAX(sku)/... — keep the latest non-empty value encountered.
+    if (r.model) g.model = r.model;
+    if (r.sku) g.sku = r.sku;
+    if (r.season) g.season = r.season;
+    if (r.colorCode) g.colorCode = r.colorCode;
+    if (r.colorCode2) g.colorCode2 = r.colorCode2;
+    if (r.poNo) g.poNo = r.poNo;
+    if (r.factoryPO) g.factoryPO = r.factoryPO;
+    if (r.size) g.size = r.size;
+
+    // MIN(deadline) — keep earliest deadline parsed as Date.
+    if (r.deadline) {
+      const d = parseDeadline(r.deadline);
+      if (d) {
+        if (!g.nearestDeadline || d.getTime() < g.nearestDeadline.getTime()) {
+          g.nearestDeadline = d;
+        }
+      }
+    }
+
+    const q = r.qty1 ?? 0;
+    const bucket = classifyShippingStatus(r.shippingStatus);
+    if (bucket === "order") g.orderQty += q;
+    else if (bucket === "output") g.outputQty += q;
+    else if (bucket === "input") g.inputQty += q;
+    else if (bucket === "pending") g.pendingQty += q;
+  }
+
+  const groupsArr = [...groups.values()];
+  // Sort by nearestDeadline ASC (nulls last).
+  groupsArr.sort((a, b) => {
+    const ta = a.nearestDeadline ? a.nearestDeadline.getTime() : Number.MAX_SAFE_INTEGER;
+    const tb = b.nearestDeadline ? b.nearestDeadline.getTime() : Number.MAX_SAFE_INTEGER;
+    return ta - tb;
+  });
+
+  return groupsArr.slice(0, 5000).map((g) => {
+    const outputQty = g.outputQty;
     const summary = computeProductionSummary({
-      orderQty: Number(r.orderQty) || 0,
+      orderQty: g.orderQty,
       outputQty,
-      pendingQty: -outputQty, // Pending = -Output (dynamic, not stored)
-      inputQty: Number(r.inputQty) || 0,
+      pendingQty: g.pendingQty || -outputQty, // Pending = -Output (dynamic, not stored)
+      inputQty: g.inputQty,
     });
-    const deadline = r.nearestDeadline || null;
+    const deadline = g.nearestDeadline ? g.nearestDeadline.toISOString().slice(0, 10) : null;
     const deadlineStatus = computeDeadlineStatus(deadline, summary.quantityStatus === "COMPLETED");
     const alert = assessAlert(summary, deadline);
-    const key = groupBy.map((c) => String(r[c] ?? "")).join("|");
     return {
-      key,
+      key: g.key,
       productType: filters.productType,
-      poNo: r.poNo || "",
-      factoryPO: r.factoryPO || "",
-      model: r.model || "",
-      sku: r.sku || "",
-      season: r.season || "",
-      colorCode: r.colorCode || "",
-      colorCode2: r.colorCode2 || "",
-      size: r.size || "",
+      poNo: g.poNo,
+      factoryPO: g.factoryPO,
+      model: g.model,
+      sku: g.sku,
+      season: g.season,
+      colorCode: g.colorCode,
+      colorCode2: g.colorCode2,
+      size: g.size,
       deadline,
       deadlineStatus,
       alert,
-      rowCount: Number(r.rowCount) || 0,
+      rowCount: g.rowCount,
       ...summary,
     } as ProductionGroup;
   });
@@ -134,36 +200,45 @@ export async function aggregateProduction(
 
 // Total KPIs for a product (no grouping).
 export async function getProductKPIs(filters: AggregationFilters) {
-  const { where, params } = buildWhere(filters);
-  const sql = `
-    SELECT
-      COUNT(DISTINCT poNo) AS totalPOs,
-      COUNT(DISTINCT factoryPO) AS totalFactoryPOs,
-      COUNT(DISTINCT model) AS totalModels,
-      COUNT(DISTINCT sku) AS totalSKUs,
-      COUNT(*) AS totalRows,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty
-    FROM MasterData
-    WHERE ${where}
-  `;
-  const rows = await db.$queryRawUnsafe<any[]>(sql, ...params);
-  const r = rows[0] || {};
-  const outputQty = Number(r.outputQty) || 0;
+  const where = buildWhere(filters);
+  const rows = await db.masterData.findMany({
+    where,
+    select: {
+      poNo: true, factoryPO: true, model: true, sku: true,
+      shippingStatus: true, qty1: true,
+    },
+  });
+
+  let orderQty = 0, outputQty = 0, inputQty = 0;
+  const poSet = new Set<string>();
+  const fpoSet = new Set<string>();
+  const modelSet = new Set<string>();
+  const skuSet = new Set<string>();
+  for (const r of rows) {
+    const q = r.qty1 ?? 0;
+    const bucket = classifyShippingStatus(r.shippingStatus);
+    if (bucket === "order") orderQty += q;
+    else if (bucket === "output") outputQty += q;
+    else if (bucket === "input") inputQty += q;
+    if (r.poNo) poSet.add(r.poNo);
+    if (r.factoryPO) fpoSet.add(r.factoryPO);
+    if (r.model) modelSet.add(r.model);
+    if (r.sku) skuSet.add(r.sku);
+  }
+
   const summary = computeProductionSummary({
-    orderQty: Number(r.orderQty) || 0,
+    orderQty,
     outputQty,
     pendingQty: -outputQty, // Pending = -Output (dynamic)
-    inputQty: Number(r.inputQty) || 0,
+    inputQty,
   });
   return {
     ...summary,
-    totalPOs: Number(r.totalPOs) || 0,
-    totalFactoryPOs: Number(r.totalFactoryPOs) || 0,
-    totalModels: Number(r.totalModels) || 0,
-    totalSKUs: Number(r.totalSKUs) || 0,
-    totalRows: Number(r.totalRows) || 0,
+    totalPOs: poSet.size,
+    totalFactoryPOs: fpoSet.size,
+    totalModels: modelSet.size,
+    totalSKUs: skuSet.size,
+    totalRows: rows.length,
   };
 }
 
@@ -172,35 +247,51 @@ export async function aggregateByDimension(
   filters: AggregationFilters,
   dimension: "size" | "colorCode" | "model" | "poNo" | "factoryPO" | "season" | "shippingStatus"
 ) {
-  const { where, params } = buildWhere(filters);
-  const sql = `
-    SELECT
-      "${dimension}" AS dim,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty,
-      COUNT(*) AS rowCount
-    FROM MasterData
-    WHERE ${where} AND "${dimension}" IS NOT NULL AND "${dimension}" != ''
-    GROUP BY "${dimension}"
-    ORDER BY orderQty DESC
-    LIMIT 50
-  `;
-  const rows = await db.$queryRawUnsafe<any[]>(sql, ...params);
-  return rows.map((r) => {
-    const outputQty = Number(r.outputQty) || 0;
+  const where = buildWhere(filters);
+  // Exclude null/empty values for the dimension being aggregated.
+  const dimWhere = { ...where, [dimension]: { not: null, not: "" } };
+
+  const rows = await db.masterData.findMany({
+    where: dimWhere as any,
+    select: {
+      shippingStatus: true, qty1: true, [dimension]: true,
+    } as any,
+  });
+
+  // Group by dimension value in JS.
+  const groups = new Map<string, { orderQty: number; outputQty: number; inputQty: number; rowCount: number }>();
+  for (const r of rows) {
+    const dim = String((r as any)[dimension] ?? "");
+    if (!dim) continue;
+    if (!groups.has(dim)) {
+      groups.set(dim, { orderQty: 0, outputQty: 0, inputQty: 0, rowCount: 0 });
+    }
+    const g = groups.get(dim)!;
+    g.rowCount++;
+    const q = r.qty1 ?? 0;
+    const bucket = classifyShippingStatus(r.shippingStatus);
+    if (bucket === "order") g.orderQty += q;
+    else if (bucket === "output") g.outputQty += q;
+    else if (bucket === "input") g.inputQty += q;
+  }
+
+  const out = [...groups.entries()].map(([dim, g]) => {
     const summary = computeProductionSummary({
-      orderQty: Number(r.orderQty) || 0,
-      outputQty,
-      pendingQty: -outputQty, // Pending = -Output (dynamic)
-      inputQty: Number(r.inputQty) || 0,
+      orderQty: g.orderQty,
+      outputQty: g.outputQty,
+      pendingQty: -g.outputQty, // Pending = -Output (dynamic)
+      inputQty: g.inputQty,
     });
     return {
-      dim: r.dim,
-      rowCount: Number(r.rowCount) || 0,
+      dim,
+      rowCount: g.rowCount,
       ...summary,
     };
   });
+
+  // Sort by orderQty DESC, take top 50.
+  out.sort((a, b) => b.orderQty - a.orderQty);
+  return out.slice(0, 50);
 }
 
 // Production timeline by date for a specific shipping status bucket.
@@ -208,21 +299,27 @@ export async function productionByDate(
   filters: AggregationFilters,
   statusBucket: "order" | "output" | "input" = "output"
 ) {
-  const { where, params } = buildWhere(filters);
-  const statusClause =
-    statusBucket === "order" ? "(LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order')" :
-    statusBucket === "output" ? "(LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output')" :
-    "(LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input')";
-  const sql = `
-    SELECT date, SUM(CAST(qty1 AS REAL)) AS qty
-    FROM MasterData
-    WHERE ${where} AND ${statusClause} AND date IS NOT NULL AND date != ''
-    GROUP BY date
-    ORDER BY date ASC
-    LIMIT 100
-  `;
-  const rows = await db.$queryRawUnsafe<any[]>(sql, ...params);
-  return rows.map((r) => ({ date: r.date, qty: Number(r.qty) || 0 }));
+  const where = buildWhere(filters);
+  const dateWhere = { ...where, date: { not: null, not: "" } };
+
+  const rows = await db.masterData.findMany({
+    where: dateWhere,
+    select: { date: true, shippingStatus: true, qty1: true },
+  });
+
+  const groups = new Map<string, number>();
+  for (const r of rows) {
+    if (!r.date) continue;
+    const bucket = classifyShippingStatus(r.shippingStatus);
+    if (bucket !== statusBucket) continue;
+    const q = r.qty1 ?? 0;
+    groups.set(r.date, (groups.get(r.date) ?? 0) + q);
+  }
+
+  const out = [...groups.entries()]
+    .map(([date, qty]) => ({ date, qty }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  return out.slice(0, 100);
 }
 
 // Top priority alerts for the alert table (sorted by priority then deadline).

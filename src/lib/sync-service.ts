@@ -21,6 +21,7 @@
 //     warn users before critical operations (Confirm Output, Export Report).
 
 import { db } from "./db";
+import { classifyShippingStatus } from "./quantity-service";
 
 // ===== Types =====
 
@@ -261,20 +262,24 @@ export async function runSync(productType?: string, triggeredBy?: string): Promi
     for (const pt of productTypes) {
       for (const t of uniqueTuples) {
         const norm = (s: string) => s.replace(/\s+/g, " ").trim();
-        const rows = await db.$queryRawUnsafe<{ orderQty: number; outputQty: number; inputQty: number }[]>(
-          `SELECT
-            SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1,0) ELSE 0 END) AS orderQty,
-            SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1,0) ELSE 0 END) AS outputQty,
-            SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1,0) ELSE 0 END) AS inputQty
-           FROM MasterData
-           WHERE productType = ? AND poNo = ? AND factoryPO = ? AND size = ?`,
-          pt, t.poNo, t.factoryPO, t.size
-        );
-        const r = rows[0];
-        if (!r) continue;
-        const orderQty = Number(r.orderQty) || 0;
-        const outputQty = Number(r.outputQty) || 0;
-        const inputQty = Number(r.inputQty) || 0;
+        const rows = await db.masterData.findMany({
+          where: {
+            productType: pt,
+            poNo: t.poNo,
+            factoryPO: t.factoryPO,
+            size: t.size,
+          },
+          select: { shippingStatus: true, qty1: true },
+        });
+
+        let orderQty = 0, outputQty = 0, inputQty = 0;
+        for (const r of rows) {
+          const q = r.qty1 ?? 0;
+          const bucket = classifyShippingStatus(r.shippingStatus);
+          if (bucket === "order") orderQty += q;
+          else if (bucket === "output") outputQty += q;
+          else if (bucket === "input") inputQty += q;
+        }
         const productKey = `${pt}|${t.poNo}|${t.factoryPO}|${norm(t.size)}`;
 
         // Output > Order → ERROR

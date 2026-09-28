@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { parseDeadline, computeDeadlineStatus, assessAlert, computeProductionSummary, classifyShippingStatus } from "@/lib/quantity-service";
+import {
+  parseDeadline,
+  classifyShippingStatus,
+} from "@/lib/quantity-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,41 +23,73 @@ export async function GET(req: NextRequest) {
     }
 
     // ── 1. Production Health Score ──────────────────────────────────────────
-    const kpiRow = await db.$queryRawUnsafe<any[]>(`
-      SELECT
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty,
-        COUNT(DISTINCT factoryPO) AS factoryPOCount,
-        COUNT(DISTINCT poNo) AS poNoCount
-      FROM MasterData WHERE productType = ?
-    `, productType);
-    const orderQty = Number(kpiRow[0]?.orderQty) || 0;
-    const outputQty = Number(kpiRow[0]?.outputQty) || 0;
-    const inputQty = Number(kpiRow[0]?.inputQty) || 0;
+    // Fetch all rows for this product and compute KPIs in JS (MongoDB-compatible).
+    const allRows = await db.masterData.findMany({
+      where: { productType },
+      select: {
+        shippingStatus: true, qty1: true,
+        factoryPO: true, poNo: true,
+        deadline: true, size: true,
+      },
+    });
+
+    let orderQty = 0, outputQty = 0, inputQty = 0;
+    const factoryPOSet = new Set<string>();
+    const poNoSet = new Set<string>();
+    for (const r of allRows) {
+      const bucket = classifyShippingStatus(r.shippingStatus);
+      const q = r.qty1 ?? 0;
+      if (bucket === "order") orderQty += q;
+      else if (bucket === "output") outputQty += q;
+      else if (bucket === "input") inputQty += q;
+      if (r.factoryPO) factoryPOSet.add(r.factoryPO);
+      if (r.poNo) poNoSet.add(r.poNo);
+    }
+    const factoryPOCount = factoryPOSet.size;
+    const poNoCount = poNoSet.size;
     const completionRate = orderQty > 0 ? (inputQty / orderQty) * 100 : 0;
     const outputRate = orderQty > 0 ? (outputQty / orderQty) * 100 : 0;
 
-    // Count overdue items (deadline < today, missing > 0)
+    // Count overdue items (deadline < today, missing > 0).
+    // Group by (poNo + factoryPO + size + deadline) and compute orderQty/inputQty.
     const now = new Date();
-    const todayISO = now.toISOString().slice(0, 10);
-    const overdueRows = await db.$queryRawUnsafe<any[]>(`
-      SELECT poNo, factoryPO, size, deadline,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty
-      FROM MasterData
-      WHERE productType = ? AND deadline IS NOT NULL AND deadline != ''
-      GROUP BY poNo, factoryPO, size, deadline
-      HAVING inputQty < orderQty
-      LIMIT 500
-    `, productType);
+    const dayMs = 86400000;
+    const deadlineAlerts: any[] = [];
+
+    const groupsMap = new Map<string, {
+      poNo: string; factoryPO: string; size: string; deadline: string;
+      orderQty: number; inputQty: number;
+    }>();
+
+    for (const r of allRows) {
+      if (!r.deadline) continue;
+      const poNo = r.poNo ?? "";
+      const fpo = r.factoryPO ?? "";
+      const sz = r.size ?? "";
+      const key = `${poNo}|${fpo}|${sz}|${r.deadline}`;
+      if (!groupsMap.has(key)) {
+        groupsMap.set(key, {
+          poNo, factoryPO: fpo, size: sz, deadline: r.deadline,
+          orderQty: 0, inputQty: 0,
+        });
+      }
+      const g = groupsMap.get(key)!;
+      const q = r.qty1 ?? 0;
+      const bucket = classifyShippingStatus(r.shippingStatus);
+      if (bucket === "order") g.orderQty += q;
+      else if (bucket === "input") g.inputQty += q;
+    }
 
     let overdueCount = 0;
     let dueTodayCount = 0;
     let dueThisWeekCount = 0;
     let upcomingCount = 0;
-    const dayMs = 86400000;
-    const deadlineAlerts: any[] = [];
+
+    // Apply HAVING inputQty < orderQty and LIMIT 500 — sort by deadline asc to keep stable.
+    const overdueRows = [...groupsMap.values()]
+      .filter((r) => r.inputQty < r.orderQty)
+      .sort((a, b) => a.deadline.localeCompare(b.deadline))
+      .slice(0, 500);
 
     for (const r of overdueRows) {
       const d = parseDeadline(r.deadline);
@@ -64,8 +99,7 @@ export async function GET(req: NextRequest) {
       const startToday = new Date(now);
       startToday.setHours(0, 0, 0, 0);
       const diff = dNorm.getTime() - startToday.getTime();
-      const missing = Number(r.orderQty) - Number(r.inputQty);
-
+      const missing = r.orderQty - r.inputQty;
       if (missing <= 0) continue;
 
       let status: "OVERDUE" | "DUE_TODAY" | "DUE_THIS_WEEK" | "UPCOMING" = "UPCOMING";
@@ -82,8 +116,8 @@ export async function GET(req: NextRequest) {
           deadline: r.deadline,
           deadlineStatus: status,
           missing,
-          orderQty: Number(r.orderQty),
-          inputQty: Number(r.inputQty),
+          orderQty: r.orderQty,
+          inputQty: r.inputQty,
           daysUntilDeadline: Math.floor(diff / dayMs),
           priority: status === "OVERDUE" ? "HIGH" : status === "DUE_TODAY" ? "HIGH" : "MEDIUM",
         });
@@ -125,21 +159,36 @@ export async function GET(req: NextRequest) {
     };
 
     // ── 3. Data Quality Summary ────────────────────────────────────────────
-    // Count rows with missing deadline
-    // Count groups with qty mismatch (output > order or input > output)
-    const qtyMismatchRows = await db.$queryRawUnsafe<any[]>(`
-      SELECT poNo, factoryPO, size,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty
-      FROM MasterData WHERE productType = ?
-      GROUP BY poNo, factoryPO, size
-      HAVING outputQty > orderQty AND orderQty > 0 OR inputQty > outputQty AND outputQty > 0
-      LIMIT 100
-    `, productType);
+    // Count groups with qty mismatch (output > order or input > output).
+    // Reuse rows already fetched (filtered by productType). Group by (poNo + factoryPO + size).
+    const qtyGroups = new Map<string, {
+      orderQty: number; outputQty: number; inputQty: number;
+    }>();
+    for (const r of allRows) {
+      const poNo = r.poNo ?? "";
+      const fpo = r.factoryPO ?? "";
+      const sz = r.size ?? "";
+      if (!poNo || !fpo || !sz) continue;
+      const key = `${poNo}|${fpo}|${sz}`;
+      if (!qtyGroups.has(key)) {
+        qtyGroups.set(key, { orderQty: 0, outputQty: 0, inputQty: 0 });
+      }
+      const g = qtyGroups.get(key)!;
+      const q = r.qty1 ?? 0;
+      const bucket = classifyShippingStatus(r.shippingStatus);
+      if (bucket === "order") g.orderQty += q;
+      else if (bucket === "output") g.outputQty += q;
+      else if (bucket === "input") g.inputQty += q;
+    }
 
-    const inputExceedsOutput = qtyMismatchRows.filter((r) => Number(r.inputQty) > Number(r.outputQty) && Number(r.outputQty) > 0).length;
-    const outputExceedsOrder = qtyMismatchRows.filter((r) => Number(r.outputQty) > Number(r.orderQty) && Number(r.orderQty) > 0).length;
+    // HAVING: (outputQty > orderQty AND orderQty > 0) OR (inputQty > outputQty AND outputQty > 0)
+    // LIMIT 100.
+    const qtyMismatchRows = [...qtyGroups.values()]
+      .filter((g) => (g.outputQty > g.orderQty && g.orderQty > 0) || (g.inputQty > g.outputQty && g.outputQty > 0))
+      .slice(0, 100);
+
+    const inputExceedsOutput = qtyMismatchRows.filter((r) => r.inputQty > r.outputQty && r.outputQty > 0).length;
+    const outputExceedsOrder = qtyMismatchRows.filter((r) => r.outputQty > r.orderQty && r.orderQty > 0).length;
 
     const dataQuality = {
       totalRows,
@@ -192,8 +241,8 @@ export async function GET(req: NextRequest) {
         orderQty,
         outputQty,
         inputQty,
-        factoryPOCount: Number(kpiRow[0]?.factoryPOCount) || 0,
-        poNoCount: Number(kpiRow[0]?.poNoCount) || 0,
+        factoryPOCount,
+        poNoCount,
       },
     });
   } catch (e) {

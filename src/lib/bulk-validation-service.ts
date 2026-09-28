@@ -326,12 +326,9 @@ async function batchLookupCurrentQuantities(
 ): Promise<Map<string, { order: number; output: number; input: number; pending: number }>> {
   if (groupKeys.length === 0) return new Map();
 
-  // Build OR conditions for each unique (poNo, factoryPO, size) tuple.
+  // Build deduplicated list of unique (poNo, factoryPO, size) tuples.
   const seen = new Set<string>();
-  const conditions: string[] = [];
-  const params: any[] = [productType];
-  let paramIdx = 2; // $1 is productType
-
+  const tuples: { poNo: string; factoryPO: string; size: string }[] = [];
   const norm = (s: string) => s.replace(/\s+/g, " ").trim();
 
   for (const g of groupKeys) {
@@ -341,43 +338,51 @@ async function batchLookupCurrentQuantities(
     const key = `${po}|${fpo}|${sz}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    conditions.push(`(poNo = ? AND factoryPO = ? AND size = ?)`);
-    params.push(po, fpo, sz);
-    paramIdx += 3;
+    tuples.push({ poNo: po, factoryPO: fpo, size: sz });
   }
+  if (tuples.length === 0) return new Map();
 
-  if (conditions.length === 0) return new Map();
+  // Use factoryPO + poNo OR-style filter via Prisma `in` lists. We fetch rows
+  // whose (poNo, factoryPO, size) matches ANY of the requested tuples. Then
+  // re-filter in JS for full AND semantics.
+  const poNos = [...new Set(tuples.map((t) => t.poNo))];
+  const factoryPOs = [...new Set(tuples.map((t) => t.factoryPO))];
+  const sizes = [...new Set(tuples.map((t) => t.size))];
 
-  const sql = `
-    SELECT
-      poNo, factoryPO, size,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order'
-               THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output'
-               THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input'
-               THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty
-    FROM MasterData
-    WHERE productType = ? AND (${conditions.join(" OR ")})
-    GROUP BY poNo, factoryPO, size
-  `;
+  const rows = await db.masterData.findMany({
+    where: {
+      productType,
+      poNo: { in: poNos },
+      factoryPO: { in: factoryPOs },
+      size: { in: sizes },
+    },
+    select: { poNo: true, factoryPO: true, size: true, shippingStatus: true, qty1: true },
+  });
 
-  const rows = await db.$queryRawUnsafe<{ poNo: string; factoryPO: string; size: string; orderQty: number; outputQty: number; inputQty: number }[]>(
-    sql,
-    ...params
-  );
+  // Build a Set of requested tuple-keys for fast filtering.
+  const tupleSet = new Set(tuples.map((t) => `${t.poNo}|${t.factoryPO}|${t.size}`));
 
+  // Aggregate per matched tuple.
   const result = new Map<string, { order: number; output: number; input: number; pending: number }>();
   for (const r of rows) {
-    const key = `${r.poNo}|${r.factoryPO}|${norm(r.size)}`;
-    const output = Number(r.outputQty) || 0;
-    result.set(key, {
-      order: Number(r.orderQty) || 0,
-      output,
-      input: Number(r.inputQty) || 0,
-      pending: -output, // Pending = -Output (dynamic, not stored)
-    });
+    const po = (r.poNo ?? "").trim();
+    const fpo = (r.factoryPO ?? "").trim();
+    const sz = norm(r.size ?? "");
+    if (!tupleSet.has(`${po}|${fpo}|${sz}`)) continue;
+
+    const key = `${po}|${fpo}|${sz}`;
+    if (!result.has(key)) result.set(key, { order: 0, output: 0, input: 0, pending: 0 });
+    const g = result.get(key)!;
+    const q = r.qty1 ?? 0;
+    const bucket = classifyShippingStatus(r.shippingStatus);
+    if (bucket === "order") g.order += q;
+    else if (bucket === "output") g.output += q;
+    else if (bucket === "input") g.input += q;
   }
+
+  // Set Pending = -Output for all matched groups (dynamic).
+  for (const g of result.values()) g.pending = -g.output;
+
   return result;
 }
 

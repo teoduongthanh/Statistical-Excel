@@ -275,31 +275,27 @@ export async function searchMaster(
     size: "size",
   };
   const col = colMap[field];
-  const like = `%${q.toLowerCase()}%`;
 
-  // Build WHERE conditions. Always product-scoped when productType is set.
+  // Build Prisma where object. Always product-scoped when productType is set.
   // When searching factoryPO and poNo is provided, add extra filter so only
   // Factory POs co-occurring with that PO NO# are returned.
-  const conditions: string[] = [];
-  const params: any[] = [];
-  if (productType) {
-    conditions.push("productType = ?");
-    params.push(productType);
-  }
-  if (poNo && field === "factoryPO") {
-    conditions.push("poNo = ?");
-    params.push(poNo);
-  }
-  conditions.push(`"${col}" IS NOT NULL`);
-  conditions.push(`"${col}" != ''`);
-  conditions.push(`LOWER("${col}") LIKE ?`);
-  params.push(like);
+  const where: Record<string, unknown> = {
+    [col]: { not: null, not: "", contains: q },
+  };
+  if (productType) where.productType = productType;
+  if (poNo && field === "factoryPO") where.poNo = poNo;
 
-  const whereClause = conditions.join(" AND ");
-  const sql = `SELECT DISTINCT "${col}" AS v FROM MasterData WHERE ${whereClause} LIMIT 200`;
-  const rows = await db.$queryRawUnsafe<{ v: string }[]>(sql, ...params);
+  const rows = await db.masterData.findMany({
+    where: where as any,
+    distinct: [col as any],
+    select: { [col]: true } as any,
+    take: 200,
+  });
 
-  const candidates = rows.map((r) => ({ value: r.v, sub: "" }));
+  const candidates = rows
+    .map((r) => (r as any)[col])
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+    .map((v) => ({ value: v, sub: "" }));
   const scored: AutocompleteSuggestion[] = [];
   for (const c of candidates) {
     const s = scoreMatch(q, c.value);

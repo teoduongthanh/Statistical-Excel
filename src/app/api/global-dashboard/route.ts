@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { computeProductionSummary } from "@/lib/quantity-service";
+import {
+  classifyShippingStatus,
+  computeProductionSummary,
+} from "@/lib/quantity-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,35 +15,45 @@ export async function GET() {
   const products = ["MAFATE", "ONYX", "MIZUNO"];
   const result: any[] = [];
   for (const productType of products) {
-    const rows = await db.$queryRawUnsafe<any[]>(`
-      SELECT
-        COUNT(DISTINCT poNo) AS totalPOs,
-        COUNT(DISTINCT factoryPO) AS totalFactoryPOs,
-        COUNT(DISTINCT model) AS totalModels,
-        COUNT(DISTINCT sku) AS totalSKUs,
-        COUNT(*) AS totalRows,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order' THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output' THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty,
-        SUM(CASE WHEN LOWER(shippingStatus) LIKE '4%' OR LOWER(shippingStatus) = 'input' THEN COALESCE(qty1, 0) ELSE 0 END) AS inputQty
-      FROM MasterData
-      WHERE productType = ?
-    `, productType);
-    const r = rows[0] || {};
-    const outputQty = Number(r.outputQty) || 0;
+    const rows = await db.masterData.findMany({
+      where: { productType },
+      select: {
+        poNo: true, factoryPO: true, model: true, sku: true,
+        shippingStatus: true, qty1: true,
+      },
+    });
+
+    let orderQty = 0, outputQty = 0, inputQty = 0;
+    const poSet = new Set<string>();
+    const fpoSet = new Set<string>();
+    const modelSet = new Set<string>();
+    const skuSet = new Set<string>();
+    for (const r of rows) {
+      const q = r.qty1 ?? 0;
+      const bucket = classifyShippingStatus(r.shippingStatus);
+      if (bucket === "order") orderQty += q;
+      else if (bucket === "output") outputQty += q;
+      else if (bucket === "input") inputQty += q;
+      if (r.poNo) poSet.add(r.poNo);
+      if (r.factoryPO) fpoSet.add(r.factoryPO);
+      if (r.model) modelSet.add(r.model);
+      if (r.sku) skuSet.add(r.sku);
+    }
+
     const summary = computeProductionSummary({
-      orderQty: Number(r.orderQty) || 0,
+      orderQty,
       outputQty,
       pendingQty: -outputQty, // Pending = -Output (dynamic, not stored)
-      inputQty: Number(r.inputQty) || 0,
+      inputQty,
     });
     result.push({
       productType,
       ...summary,
-      totalPOs: Number(r.totalPOs) || 0,
-      totalFactoryPOs: Number(r.totalFactoryPOs) || 0,
-      totalModels: Number(r.totalModels) || 0,
-      totalSKUs: Number(r.totalSKUs) || 0,
-      totalRows: Number(r.totalRows) || 0,
+      totalPOs: poSet.size,
+      totalFactoryPOs: fpoSet.size,
+      totalModels: modelSet.size,
+      totalSKUs: skuSet.size,
+      totalRows: rows.length,
     });
   }
   return NextResponse.json({ products: result });

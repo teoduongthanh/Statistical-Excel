@@ -10,6 +10,7 @@
 //      DB changed since the slip was generated, refuse confirm.
 
 import { db } from "./db";
+import { classifyShippingStatus, parseDeadline } from "./quantity-service";
 import * as XLSX from "xlsx";
 
 // ===== Types =====
@@ -71,70 +72,112 @@ export async function getFactoryPOGroupsByPoNo(
   productType: string,
   poNo: string
 ): Promise<FactoryPOGroup[]> {
-  // Aggregate MasterData by (factoryPO + size) for this PO NO#.
-  const sql = `
-    SELECT
-      factoryPO,
+  // Fetch raw rows; aggregation done in JS (MongoDB-compatible).
+  const rows = await db.masterData.findMany({
+    where: {
+      productType,
       poNo,
-      size,
-      MAX(model) AS model,
-      MAX(sku) AS sku,
-      MAX(season) AS season,
-      MAX(colorCode) AS colorCode,
-      MAX(colorCode2) AS colorCode2,
-      MAX(painting) AS painting,
-      MAX(printingColor) AS printingColor,
-      MIN(deadline) AS deadline,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order'
-               THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output'
-               THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty
-    FROM MasterData
-    WHERE productType = ? AND poNo = ?
-      AND factoryPO IS NOT NULL AND factoryPO != ''
-      AND size IS NOT NULL AND size != ''
-    GROUP BY factoryPO, size
-    ORDER BY factoryPO, size
-  `;
-  const rows = await db.$queryRawUnsafe<any[]>(sql, productType, poNo);
+      factoryPO: { not: null, not: "" },
+      size: { not: null, not: "" },
+    },
+    select: {
+      factoryPO: true, poNo: true, size: true,
+      model: true, sku: true, season: true,
+      colorCode: true, colorCode2: true,
+      painting: true, printingColor: true,
+      deadline: true, shippingStatus: true, qty1: true,
+    },
+  });
 
-  // Group by factoryPO.
-  const byFpo = new Map<string, SizeRow[]>();
-  const meta = new Map<string, any>();
+  // Group by factoryPO and size, computing Order/Output sums via classifyShippingStatus.
+  // We also track the first non-empty value per group for shared metadata columns.
+  type SizeAgg = SizeRow & { metaDeadline: Date | null };
+  const byFpo = new Map<string, SizeAgg[]>();
+  const meta = new Map<string, {
+    model: string; sku: string; season: string;
+    colorCode: string; colorCode2: string;
+    painting: string; printingColor: string;
+    nearestDeadline: Date | null;
+  }>();
+
   for (const r of rows) {
-    const fpo = r.factoryPO;
+    const fpo = r.factoryPO ?? "";
+    if (!fpo) continue;
     if (!byFpo.has(fpo)) {
       byFpo.set(fpo, []);
-      meta.set(fpo, r);
+      meta.set(fpo, {
+        model: "", sku: "", season: "",
+        colorCode: "", colorCode2: "",
+        painting: "", printingColor: "",
+        nearestDeadline: null,
+      });
     }
-    const orderQty = Number(r.orderQty) || 0;
-    const outputQty = Number(r.outputQty) || 0;
-    byFpo.get(fpo)!.push({
-      size: r.size,
-      orderQty,
-      outputQty,
-      remainingOutput: orderQty - outputQty,
-    });
+    const m = meta.get(fpo)!;
+    if (r.model) m.model = r.model;
+    if (r.sku) m.sku = r.sku;
+    if (r.season) m.season = r.season;
+    if (r.colorCode) m.colorCode = r.colorCode;
+    if (r.colorCode2) m.colorCode2 = r.colorCode2;
+    if (r.painting) m.painting = r.painting;
+    if (r.printingColor) m.printingColor = r.printingColor;
+    if (r.deadline) {
+      const d = parseDeadline(r.deadline);
+      if (d) {
+        if (!m.nearestDeadline || d.getTime() < m.nearestDeadline.getTime()) {
+          m.nearestDeadline = d;
+        }
+      }
+    }
+
+    const orderQty = classifyShippingStatus(r.shippingStatus) === "order" ? (r.qty1 ?? 0) : 0;
+    const outputQty = classifyShippingStatus(r.shippingStatus) === "output" ? (r.qty1 ?? 0) : 0;
+    const sizeArr = byFpo.get(fpo)!;
+    // Try to find existing SizeAgg entry with same size.
+    const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+    const rSize = r.size ?? "";
+    const rSizeNorm = norm(rSize);
+    let entry = sizeArr.find((s) => norm(s.size) === rSizeNorm);
+    if (!entry) {
+      entry = {
+        size: rSize,
+        orderQty: 0, outputQty: 0, remainingOutput: 0,
+        metaDeadline: null,
+      };
+      sizeArr.push(entry);
+    }
+    entry.orderQty += orderQty;
+    entry.outputQty += outputQty;
+    if (r.deadline) {
+      const d = parseDeadline(r.deadline);
+      if (d) {
+        if (!entry.metaDeadline || d.getTime() < entry.metaDeadline.getTime()) {
+          entry.metaDeadline = d;
+        }
+      }
+    }
   }
 
+  // Sort sizes alphabetically and finalize remainingOutput.
   const groups: FactoryPOGroup[] = [];
   for (const [fpo, sizes] of byFpo.entries()) {
-    const m = meta.get(fpo);
+    sizes.sort((a, b) => a.size.localeCompare(b.size));
+    for (const s of sizes) s.remainingOutput = s.orderQty - s.outputQty;
+    const m = meta.get(fpo)!;
     const totalOrder = sizes.reduce((s, r) => s + r.orderQty, 0);
     const totalOutput = sizes.reduce((s, r) => s + r.outputQty, 0);
     const totalRemaining = totalOrder - totalOutput;
     groups.push({
       factoryPO: fpo,
       poNo,
-      model: m?.model || "",
-      sku: m?.sku || "",
-      season: m?.season || "",
-      colorCode: m?.colorCode || "",
-      colorCode2: m?.colorCode2 || "",
-      painting: m?.painting || "",
-      printingColor: m?.printingColor || "",
-      deadline: m?.deadline || null,
-      sizes,
+      model: m.model,
+      sku: m.sku,
+      season: m.season,
+      colorCode: m.colorCode,
+      colorCode2: m.colorCode2,
+      painting: m.painting,
+      printingColor: m.printingColor,
+      deadline: m.nearestDeadline ? m.nearestDeadline.toISOString().slice(0, 10) : null,
+      sizes: sizes.map(({ size, orderQty, outputQty, remainingOutput }) => ({ size, orderQty, outputQty, remainingOutput })),
       totalOrder,
       totalOutput,
       totalRemaining,
@@ -159,24 +202,31 @@ export async function getCurrentRemaining(
 ): Promise<Map<string, number>> {
   if (items.length === 0) return new Map();
   const factoryPOs = [...new Set(items.map((i) => i.factoryPO))];
-  const rows = await db.$queryRawUnsafe<any[]>(`
-    SELECT factoryPO, size,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '1%' OR LOWER(shippingStatus) = 'order'
-               THEN COALESCE(qty1, 0) ELSE 0 END) AS orderQty,
-      SUM(CASE WHEN LOWER(shippingStatus) LIKE '2%' OR LOWER(shippingStatus) = 'output'
-               THEN COALESCE(qty1, 0) ELSE 0 END) AS outputQty
-    FROM MasterData
-    WHERE productType = ? AND poNo = ? AND factoryPO IN (${factoryPOs.map(() => "?").join(",")})
-    GROUP BY factoryPO, size
-  `, productType, poNo, ...factoryPOs);
+  const rows = await db.masterData.findMany({
+    where: {
+      productType,
+      poNo,
+      factoryPO: { in: factoryPOs },
+      size: { not: null, not: "" },
+    },
+    select: { factoryPO: true, size: true, shippingStatus: true, qty1: true },
+  });
 
   const norm = (s: string) => s.replace(/\s+/g, " ").trim();
-  const result = new Map<string, number>();
+  const groups = new Map<string, { orderQty: number; outputQty: number }>();
   for (const r of rows) {
-    const key = `${r.factoryPO}|${norm(r.size)}`;
-    const orderQty = Number(r.orderQty) || 0;
-    const outputQty = Number(r.outputQty) || 0;
-    result.set(key, orderQty - outputQty);
+    const key = `${r.factoryPO}|${norm(r.size ?? "")}`;
+    if (!groups.has(key)) groups.set(key, { orderQty: 0, outputQty: 0 });
+    const g = groups.get(key)!;
+    const bucket = classifyShippingStatus(r.shippingStatus);
+    const q = r.qty1 ?? 0;
+    if (bucket === "order") g.orderQty += q;
+    else if (bucket === "output") g.outputQty += q;
+  }
+
+  const result = new Map<string, number>();
+  for (const [key, g] of groups) {
+    result.set(key, g.orderQty - g.outputQty);
   }
   return result;
 }

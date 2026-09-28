@@ -11,11 +11,19 @@ export async function GET() {
     db.entryData.count(),
     db.masterGroup.count(),
   ]);
-  // Distinct counts via raw SQL (faster than groupBy for large tables).
-  const skuRows = await db.$queryRaw<{ c: number }[]>`SELECT COUNT(DISTINCT sku) AS c FROM MasterData WHERE sku IS NOT NULL AND sku != ''`;
-  const modelRows = await db.$queryRaw<{ c: number }[]>`SELECT COUNT(DISTINCT model) AS c FROM MasterData WHERE model IS NOT NULL AND model != ''`;
-  const totalSKU = Number(skuRows[0]?.c ?? 0);
-  const totalModels = Number(modelRows[0]?.c ?? 0);
+  // Distinct counts via findMany({ distinct }) — works for MongoDB.
+  const skuRows = await db.masterData.findMany({
+    where: { sku: { not: null, not: "" } },
+    distinct: ["sku"],
+    select: { sku: true },
+  });
+  const modelRows = await db.masterData.findMany({
+    where: { model: { not: null, not: "" } },
+    distinct: ["model"],
+    select: { model: true },
+  });
+  const totalSKU = skuRows.length;
+  const totalModels = modelRows.length;
 
   // Today's entries (UTC date).
   const startOfDay = new Date();
