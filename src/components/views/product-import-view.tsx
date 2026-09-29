@@ -343,16 +343,19 @@ export function ProductImportView() {
                         </td>
                         <td className="px-3 py-1.5">
                           <Select
-                            value={mapping[h] ?? ""}
+                            value={mapping[h] ?? "__skip__"}
                             onValueChange={(v) =>
-                              setMapping((m) => ({ ...m, [h]: v as CanonicalField | "" }))
+                              setMapping((m) => ({
+                                ...m,
+                                [h]: v === "__skip__" ? "" : (v as CanonicalField),
+                              }))
                             }
                           >
                             <SelectTrigger className="h-8 w-48 text-xs">
                               <SelectValue placeholder="(skip)" />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="">— Skip —</SelectItem>
+                              <SelectItem value="__skip__">— Skip —</SelectItem>
                               {options.map((o) => (
                                 <SelectItem key={o.value} value={o.value}>
                                   {o.label}
