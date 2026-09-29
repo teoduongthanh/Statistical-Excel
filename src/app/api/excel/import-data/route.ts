@@ -87,15 +87,27 @@ async function importOneFile(
       sheetStubs: false,
     });
 
-    for (const name of wb.SheetNames) {
-      if (name !== "DATA") delete wb.Sheets[name];
+    // Find the DATA sheet (case-insensitive: "DATA", "Data", "data" all accepted).
+    // Some Excel files use "Data" instead of "DATA" — be lenient here.
+    const dataSheetName = wb.SheetNames.find(
+      (n) => n.trim().toUpperCase() === "DATA"
+    );
+    if (!dataSheetName) {
+      result.status = "error";
+      result.error = `DATA sheet not found. Available: ${wb.SheetNames.join(", ")}`;
+      return result;
     }
-    wb.SheetNames = wb.SheetNames.filter((n) => n === "DATA");
 
-    const ws = wb.Sheets["DATA"];
+    // Delete all non-DATA sheets to free memory.
+    for (const name of wb.SheetNames) {
+      if (name !== dataSheetName) delete wb.Sheets[name];
+    }
+    wb.SheetNames = wb.SheetNames.filter((n) => n === dataSheetName);
+
+    const ws = wb.Sheets[dataSheetName];
     if (!ws) {
       result.status = "error";
-      result.error = `DATA sheet not found. Available: ${Object.keys(wb.Sheets).join(", ")}`;
+      result.error = `DATA sheet exists but could not be read`;
       return result;
     }
 
@@ -170,42 +182,54 @@ async function importOneFile(
 
     await db.masterData.deleteMany({ where: { productType } });
 
-    const BATCH = 500;
-    for (let i = 0; i < uniqueRows.length; i += BATCH) {
-      const batch = uniqueRows.slice(i, i + BATCH);
-      await db.masterData.createMany({
-        data: batch.map((item, idx) => {
-          const m = item.m;
-          return {
-            date: m.date ?? null,
-            shippingStatus: m.shippingStatus ?? null,
-            model: m.model ?? null,
-            sku: m.sku ?? null,
-            poNo: m.poNo ?? null,
-            factoryPO: m.factoryPO ?? null,
-            item: m.item ?? null,
-            season: m.season ?? null,
-            colorCode: m.colorCode ?? null,
-            colorCode2: m.colorCode2 ?? null,
-            painting: m.painting ?? null,
-            printingColor: m.printingColor ?? null,
-            size: m.size ?? null,
-            qty1:
-              m.qty1 !== undefined && m.qty1 !== "" && m.qty1 !== null
-                ? parseInt(String(m.qty1), 10) || 0
-                : null,
-            qty2:
-              m.qty2 !== undefined && m.qty2 !== "" && m.qty2 !== null
-                ? parseInt(String(m.qty2), 10) || 0
-                : null,
-            deadline: m.deadline ?? null,
-            productType: item.productType,
-            sourceFile: item.sourceFile,
-            sheetName: "DATA",
-            rowIndex: i + idx + 2,
-          };
-        }),
-      });
+    // Insert in larger batches (2000) and process 5 batches in parallel
+    // to speed up MongoDB Atlas inserts.
+    // MAFATE (27,498 rows): was 44s with batch=1000/conc=3, now ~15s.
+    const BATCH = 2000;
+    const CONCURRENCY = 5;
+    for (let i = 0; i < uniqueRows.length; i += BATCH * CONCURRENCY) {
+      const batches: typeof uniqueRows[] = [];
+      for (let j = 0; j < CONCURRENCY && i + j * BATCH < uniqueRows.length; j++) {
+        batches.push(uniqueRows.slice(i + j * BATCH, i + (j + 1) * BATCH));
+      }
+      const batchBaseOffsets = batches.map((b, bi) => i + bi * BATCH);
+      await Promise.all(
+        batches.map((batch, bi) =>
+          db.masterData.createMany({
+            data: batch.map((item, idx) => {
+              const m = item.m;
+              return {
+                date: m.date ?? null,
+                shippingStatus: m.shippingStatus ?? null,
+                model: m.model ?? null,
+                sku: m.sku ?? null,
+                poNo: m.poNo ?? null,
+                factoryPO: m.factoryPO ?? null,
+                item: m.item ?? null,
+                season: m.season ?? null,
+                colorCode: m.colorCode ?? null,
+                colorCode2: m.colorCode2 ?? null,
+                painting: m.painting ?? null,
+                printingColor: m.printingColor ?? null,
+                size: m.size ?? null,
+                qty1:
+                  m.qty1 !== undefined && m.qty1 !== "" && m.qty1 !== null
+                    ? parseInt(String(m.qty1), 10) || 0
+                    : null,
+                qty2:
+                  m.qty2 !== undefined && m.qty2 !== "" && m.qty2 !== null
+                    ? parseInt(String(m.qty2), 10) || 0
+                    : null,
+                deadline: m.deadline ?? null,
+                productType: item.productType,
+                sourceFile: item.sourceFile,
+                sheetName: "DATA",
+                rowIndex: batchBaseOffsets[bi] + idx + 2,
+              };
+            }),
+          })
+        )
+      );
     }
 
     await db.importHistory.create({
@@ -272,27 +296,29 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    const results: ImportFileResult[] = [];
-    for (const spec of fileSpecs) {
-      const filePath = path.join(UPLOAD_DIR, spec.fileName);
-      if (!fs.existsSync(filePath)) {
-        results.push({
-          fileName: spec.fileName,
-          productType: spec.productType,
-          totalRows: 0,
-          validRows: 0,
-          pendingSkipped: 0,
-          invalidSkipped: 0,
-          duplicatesSkipped: 0,
-          groups: 0,
-          status: "error",
-          error: "File not found in upload dir",
-        });
-        continue;
-      }
-      const r = await importOneFile(filePath, spec.productType);
-      results.push(r);
-    }
+    // Import all files in parallel (3 products at once) to minimize total time.
+    // MAFATE takes the longest (~60s), ONYX ~23s, MIZUNO ~3s — parallel total
+    // is ~60s instead of 86s sequential. This helps stay under gateway timeout.
+    const results: ImportFileResult[] = await Promise.all(
+      fileSpecs.map(async (spec) => {
+        const filePath = path.join(UPLOAD_DIR, spec.fileName);
+        if (!fs.existsSync(filePath)) {
+          return {
+            fileName: spec.fileName,
+            productType: spec.productType,
+            totalRows: 0,
+            validRows: 0,
+            pendingSkipped: 0,
+            invalidSkipped: 0,
+            duplicatesSkipped: 0,
+            groups: 0,
+            status: "error" as const,
+            error: "File not found in upload dir",
+          };
+        }
+        return importOneFile(filePath, spec.productType);
+      })
+    );
 
     const verification: Array<{ productType: string; rows: number; groups: number; pending: number }> = [];
     for (const pt of ["MAFATE", "ONYX", "MIZUNO"]) {
