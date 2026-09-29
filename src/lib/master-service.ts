@@ -135,7 +135,10 @@ export async function rebuildMasterGroups(sourceFile?: string, productType?: str
     } else {
       await tx.masterGroup.deleteMany({});
     }
-    const inserts: Promise<any>[] = [];
+    // Use createMany for bulk insert (much faster than individual create calls).
+    // Build all group records first, then insert in one batch.
+    // This is critical for MongoDB Atlas which has higher latency than SQLite.
+    const groupRecords: any[] = [];
     for (const { productType: pt, factoryPO, rows: groupRows } of groups.values()) {
       const sharedFlags: SharedFlags = {};
       const picked: Record<string, string | null> = {};
@@ -180,36 +183,33 @@ export async function rebuildMasterGroups(sourceFile?: string, productType?: str
       );
       const productType = productTypes.size === 1 ? [...productTypes][0] : null;
 
-      inserts.push(
-        tx.masterGroup.create({
-          data: {
-            productType: pt,
-            factoryPO,
-            date: picked.date ?? null,
-            shippingStatus: picked.shippingStatus ?? null,
-            model: picked.model ?? null,
-            sku: picked.sku ?? null,
-            poNo: picked.poNo ?? null,
-            item: picked.item ?? null,
-            season: picked.season ?? null,
-            colorCode: picked.colorCode ?? null,
-            colorCode2: picked.colorCode2 ?? null,
-            painting: picked.painting ?? null,
-            printingColor: picked.printingColor ?? null,
-            deadline: picked.deadline ?? null,
-            nearestDeadline,
-            sizes: JSON.stringify(sizes),
-            sharedFlags: JSON.stringify(sharedFlags),
-            rowCount: groupRows.length,
-            sourceFile: sourceFile ?? null,
-          },
-        })
-      );
+      groupRecords.push({
+        productType: pt,
+        factoryPO,
+        date: picked.date ?? null,
+        shippingStatus: picked.shippingStatus ?? null,
+        model: picked.model ?? null,
+        sku: picked.sku ?? null,
+        poNo: picked.poNo ?? null,
+        item: picked.item ?? null,
+        season: picked.season ?? null,
+        colorCode: picked.colorCode ?? null,
+        colorCode2: picked.colorCode2 ?? null,
+        painting: picked.painting ?? null,
+        printingColor: picked.printingColor ?? null,
+        deadline: picked.deadline ?? null,
+        nearestDeadline,
+        sizes: JSON.stringify(sizes),
+        sharedFlags: JSON.stringify(sharedFlags),
+        rowCount: groupRows.length,
+        sourceFile: sourceFile ?? null,
+      });
     }
-    for (let i = 0; i < inserts.length; i += 50) {
-      await Promise.all(inserts.slice(i, i + 50));
+    // Bulk insert all groups in batches of 100 (MongoDB createMany is fast).
+    for (let i = 0; i < groupRecords.length; i += 100) {
+      await tx.masterGroup.createMany({ data: groupRecords.slice(i, i + 100) });
     }
-  });
+  }, { timeout: 60000 }); // 60s timeout for MongoDB Atlas (network latency)
   return groups.size;
 }
 

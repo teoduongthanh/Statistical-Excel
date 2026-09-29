@@ -210,6 +210,9 @@ export function ProductImportView() {
         </div>
       </div>
 
+      {/* Quick Bulk Upload — saves files to /upload + imports DATA sheet. */}
+      <QuickBulkUpload />
+
       {/* Step 1: Upload */}
       <Card>
         <CardHeader className="pb-3">
@@ -550,5 +553,291 @@ function Stat({
       </div>
       <div className="text-[11px] text-muted-foreground">{label}</div>
     </div>
+  );
+}
+
+// QuickBulkUpload — fast path for importing the newest Excel files.
+function QuickBulkUpload() {
+  const { bumpRefresh } = useAppStore();
+  const [dragOver, setDragOver] = React.useState(false);
+  const [pending, setPending] = React.useState<File[]>([]);
+  const [uploading, setUploading] = React.useState(false);
+  const [importing, setImporting] = React.useState(false);
+  const [uploadResult, setUploadResult] = React.useState<any>(null);
+  const [importResult, setImportResult] = React.useState<any>(null);
+  const [uploadedFiles, setUploadedFiles] = React.useState<Array<{ name: string; sizeMB: number; mtime: string }>>([]);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    refreshUploadedFiles();
+  }, []);
+
+  async function refreshUploadedFiles() {
+    try {
+      const r = await api.listUploadedFiles();
+      setUploadedFiles(r.files || []);
+    } catch {
+      // ignore
+    }
+  }
+
+  function handleFiles(files: FileList | File[]) {
+    const arr = Array.from(files).filter((f) => {
+      const n = f.name.toLowerCase();
+      return n.endsWith(".xlsx") || n.endsWith(".xls");
+    });
+    setPending((prev) => [...prev, ...arr]);
+    setUploadResult(null);
+    setImportResult(null);
+  }
+
+  function removePending(idx: number) {
+    setPending((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  async function handleUpload() {
+    if (pending.length === 0) return;
+    setUploading(true);
+    setUploadResult(null);
+    try {
+      const r = await api.uploadExcelFiles(pending);
+      setUploadResult(r);
+      if (r.uploaded > 0) {
+        toast.success(`Uploaded ${r.uploaded} file${r.uploaded > 1 ? "s" : ""}`, {
+          description: r.files.filter((f: any) => f.status === "ok").map((f: any) => f.fileName).join(", "),
+        });
+      }
+      if (r.errors > 0) {
+        toast.error(`${r.errors} file${r.errors > 1 ? "s" : ""} failed`, {
+          description: r.files.filter((f: any) => f.status === "error").map((f: any) => `${f.fileName}: ${f.message}`).join("; "),
+        });
+      }
+      setPending([]);
+      await refreshUploadedFiles();
+    } catch (e: any) {
+      toast.error("Upload failed", { description: e?.message });
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleImport() {
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const r = await api.importDataFromUpload();
+      setImportResult(r);
+      const okCount = r.results.filter((res: any) => res.status === "ok").length;
+      if (r.ok) {
+        toast.success(`Imported ${okCount} file${okCount > 1 ? "s" : ""} successfully`, {
+          description: r.verification.map((v: any) => `${v.productType}: ${v.rows} rows, ${v.groups} groups`).join(" · "),
+        });
+        bumpRefresh();
+      } else {
+        toast.error("Some files failed to import", {
+          description: r.results.filter((res: any) => res.status === "error").map((res: any) => `${res.fileName}: ${res.error}`).join("; "),
+        });
+      }
+    } catch (e: any) {
+      toast.error("Import failed", { description: e?.message });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  return (
+    <Card className="border-2 border-dashed border-emerald-200 dark:border-emerald-900 bg-emerald-50/30 dark:bg-emerald-950/10">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Boxes className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          Quick Bulk Upload + Import
+          <Badge variant="secondary" className="text-[10px] ml-auto">Fast path</Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-xs text-muted-foreground">
+          Upload multiple Excel files (MAFATE / ONYX / MIZUNO) at once. Files are saved to
+          <code className="mx-1 px-1 py-0.5 rounded bg-muted text-[10px]">/home/z/my-project/upload/</code>
+          and the <b>"DATA"</b> sheet is imported automatically (product type auto-detected from file name).
+          Pending rows are skipped, duplicates removed, MasterGroup index rebuilt.
+        </p>
+
+        <div
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            if (e.dataTransfer.files) handleFiles(e.dataTransfer.files);
+          }}
+          className={cn(
+            "rounded-lg border-2 border-dashed p-6 text-center transition-colors cursor-pointer",
+            dragOver
+              ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30"
+              : "border-muted-foreground/30 hover:border-emerald-400 hover:bg-emerald-50/50 dark:hover:bg-emerald-950/20"
+          )}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".xlsx,.xls"
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files) handleFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <Upload className="h-8 w-8 mx-auto text-emerald-500 mb-2" />
+          <div className="text-sm font-medium">Drop Excel files here or click to browse</div>
+          <div className="text-[11px] text-muted-foreground mt-1">Supports .xlsx, .xls · multiple files at once</div>
+        </div>
+
+        {pending.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-muted-foreground">Pending upload ({pending.length}):</div>
+            {pending.map((f, i) => (
+              <div key={i} className="flex items-center justify-between rounded-md border bg-background px-3 py-1.5 text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <FileSpreadsheet className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                  <span className="truncate font-medium">{f.name}</span>
+                  <span className="text-muted-foreground shrink-0">({(f.size / 1024 / 1024).toFixed(2)} MB)</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removePending(i)}
+                  className="text-muted-foreground hover:text-destructive text-xs px-2"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <Button
+              size="sm"
+              className="w-full"
+              disabled={uploading || pending.length === 0}
+              onClick={handleUpload}
+            >
+              {uploading ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Uploading {pending.length} file{pending.length > 1 ? "s" : ""}…</>
+              ) : (
+                <><Upload className="mr-2 h-4 w-4" /> Upload {pending.length} file{pending.length > 1 ? "s" : ""}</>
+              )}
+            </Button>
+          </div>
+        )}
+
+        {uploadResult && (
+          <div className="rounded-md border border-emerald-200 dark:border-emerald-900 bg-emerald-50/50 dark:bg-emerald-950/20 p-3 text-xs space-y-1">
+            <div className="flex items-center gap-1.5 font-medium text-emerald-700 dark:text-emerald-300">
+              <CheckCircle2 className="h-3.5 w-3.5" /> Upload complete
+            </div>
+            <div className="text-muted-foreground">
+              Uploaded: {uploadResult.uploaded} · Skipped: {uploadResult.skipped} · Errors: {uploadResult.errors}
+            </div>
+          </div>
+        )}
+
+        {uploadedFiles.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-muted-foreground flex items-center justify-between">
+              <span>Files on server ({uploadedFiles.length}):</span>
+              <button onClick={refreshUploadedFiles} className="text-[10px] hover:text-foreground underline">
+                Refresh
+              </button>
+            </div>
+            <div className="max-h-48 overflow-y-auto scroll-thin space-y-1 rounded-md border p-2">
+              {uploadedFiles.slice(0, 15).map((f) => (
+                <div key={f.name} className="flex items-center justify-between text-[11px] py-1 px-1.5 rounded hover:bg-accent">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <FileSpreadsheet className="h-3 w-3 shrink-0 text-muted-foreground" />
+                    <span className="truncate" title={f.name}>{f.name}</span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 text-muted-foreground">
+                    <span>{f.sizeMB} MB</span>
+                    <span>{new Date(f.mtime).toLocaleString("vi-VN", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+                  </div>
+                </div>
+              ))}
+              {uploadedFiles.length > 15 && (
+                <div className="text-[10px] text-muted-foreground text-center py-1">
+                  +{uploadedFiles.length - 15} more files…
+                </div>
+              )}
+            </div>
+            <Button
+              size="sm"
+              variant="default"
+              className="w-full bg-emerald-600 hover:bg-emerald-700"
+              disabled={importing}
+              onClick={handleImport}
+            >
+              {importing ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Importing DATA sheets…</>
+              ) : (
+                <><Boxes className="mr-2 h-4 w-4" /> Import DATA sheet from newest files</>
+              )}
+            </Button>
+            <p className="text-[10px] text-muted-foreground text-center">
+              Auto-detects newest file per product (MAFATE/ONYX/MIZUNO) from file name.
+              Replaces existing data per product.
+            </p>
+          </div>
+        )}
+
+        {importResult && (
+          <div className={cn(
+            "rounded-md border p-3 text-xs space-y-2",
+            importResult.ok
+              ? "border-emerald-200 dark:border-emerald-900 bg-emerald-50/50 dark:bg-emerald-950/20"
+              : "border-amber-200 dark:border-amber-900 bg-amber-50/50 dark:bg-amber-950/20"
+          )}>
+            <div className={cn(
+              "flex items-center gap-1.5 font-medium",
+              importResult.ok ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"
+            )}>
+              {importResult.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
+              {importResult.ok ? "Import complete" : "Import completed with errors"}
+            </div>
+            {importResult.results?.map((r: any, i: number) => (
+              <div key={i} className={cn(
+                "rounded p-2 text-[11px]",
+                r.status === "ok" ? "bg-background/50" : "bg-destructive/5 border border-destructive/20"
+              )}>
+                <div className="flex items-center justify-between font-medium">
+                  <span>{r.fileName}</span>
+                  <Badge variant={r.status === "ok" ? "secondary" : "destructive"} className="text-[9px]">
+                    {r.productType}
+                  </Badge>
+                </div>
+                {r.status === "ok" ? (
+                  <div className="text-muted-foreground mt-0.5">
+                    Total: {r.totalRows} · Valid: {r.validRows} · Pending skip: {r.pendingSkipped} · Invalid: {r.invalidSkipped} · Dup: {r.duplicatesSkipped} · Groups: {r.groups}
+                  </div>
+                ) : (
+                  <div className="text-destructive mt-0.5">{r.error}</div>
+                )}
+              </div>
+            ))}
+            {importResult.verification && (
+              <div className="border-t pt-2 mt-2">
+                <div className="font-medium mb-1">DB verification:</div>
+                <div className="grid grid-cols-3 gap-2">
+                  {importResult.verification.map((v: any) => (
+                    <div key={v.productType} className="rounded bg-background/60 p-1.5 text-center">
+                      <div className="font-medium text-[11px]">{v.productType}</div>
+                      <div className="text-[10px] text-muted-foreground">{v.rows} rows</div>
+                      <div className="text-[10px] text-muted-foreground">{v.groups} groups</div>
+                      <div className="text-[10px] text-muted-foreground">pending: {v.pending}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

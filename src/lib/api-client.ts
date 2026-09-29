@@ -41,6 +41,57 @@ export const api = {
     return jsonOrThrow(res);
   },
 
+  // Upload Excel files to server filesystem (/home/z/my-project/upload/).
+  uploadExcelFiles: async (files: File[]): Promise<{
+    ok: boolean;
+    uploaded: number;
+    skipped: number;
+    errors: number;
+    total: number;
+    files: Array<{ fileName: string; size: number; savedPath: string; status: "ok" | "skipped" | "error"; message?: string }>;
+  }> => {
+    const fd = new FormData();
+    for (const f of files) fd.append("files", f);
+    const res = await fetch("/api/excel/upload", { method: "POST", body: fd });
+    return jsonOrThrow(res);
+  },
+
+  // List Excel files already on the server filesystem.
+  listUploadedFiles: async (): Promise<{
+    files: Array<{ name: string; size: number; sizeMB: number; mtime: string }>;
+    total: number;
+  }> => {
+    const res = await fetch("/api/excel/upload");
+    return jsonOrThrow(res);
+  },
+
+  // Import DATA sheet from uploaded files into DB.
+  // If `files` omitted, auto-detects newest file per product type.
+  importDataFromUpload: async (files?: Array<{ fileName: string; productType: string }>): Promise<{
+    ok: boolean;
+    results: Array<{
+      fileName: string;
+      productType: string;
+      totalRows: number;
+      validRows: number;
+      pendingSkipped: number;
+      invalidSkipped: number;
+      duplicatesSkipped: number;
+      groups: number;
+      status: "ok" | "error";
+      error?: string;
+    }>;
+    verification: Array<{ productType: string; rows: number; groups: number; pending: number }>;
+  }> => {
+    const res = await fetch("/api/excel/import-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files }),
+    });
+    return jsonOrThrow(res);
+  },
+
+
   importExcel: async (body: {
     fileName: string;
     sheetName: string;
