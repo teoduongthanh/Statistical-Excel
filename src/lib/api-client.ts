@@ -91,6 +91,120 @@ export const api = {
     return jsonOrThrow(res);
   },
 
+  // ── Reconciliation (partner file vs website) ────────────────────────────────
+  // Upload partner Excel file to server.
+  reconciliationUpload: async (file: File): Promise<{
+    ok: boolean;
+    fileName: string;
+    savedPath: string;
+    size: number;
+    sizeMB: number;
+  }> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch("/api/reconciliation/upload", { method: "POST", body: fd });
+    return jsonOrThrow(res);
+  },
+
+  // Preview uploaded partner file (sheets, headers, row counts).
+  reconciliationPreview: async (body: {
+    fileName: string;
+    mapping?: any;
+  }): Promise<{
+    ok: boolean;
+    preview: {
+      fileName: string;
+      sheets: string[];
+      ordersCount: number;
+      summaryCount: number;
+      transactionsCount: number;
+      headers: { orders: string[]; summary: string[]; transactions: string[] };
+      preview: { orders: any[]; summary: any[]; transactions: any[] };
+    };
+  }> => {
+    const res = await fetch("/api/reconciliation/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  // Run reconciliation (parse partner, load website, compare, save results).
+  reconciliationRun: async (body: {
+    fileName: string;
+    productType: string;
+    dateFrom?: string;
+    dateTo?: string;
+    asOfDate?: string;
+    mapping?: any;
+    uploadedBy?: string;
+  }): Promise<{
+    ok: boolean;
+    runId: string;
+    runNumber: string;
+    summary: any;
+    resultsCount: number;
+  }> => {
+    const res = await fetch("/api/reconciliation/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  // List past reconciliation runs.
+  reconciliationHistory: async (limit = 20): Promise<{
+    ok: boolean;
+    runs: any[];
+    total: number;
+  }> => {
+    const res = await fetch(`/api/reconciliation/history?limit=${limit}`);
+    return jsonOrThrow(res);
+  },
+
+  // Get run summary.
+  reconciliationSummary: async (runId: string): Promise<{ ok: boolean; summary: any }> => {
+    const res = await fetch(`/api/reconciliation/${runId}/summary`);
+    return jsonOrThrow(res);
+  },
+
+  // Get paginated comparison details with filters.
+  reconciliationDetails: async (
+    runId: string,
+    filters: { status?: string; po?: string; factoryPo?: string; size?: string; model?: string; page?: number; pageSize?: number } = {}
+  ): Promise<{ ok: boolean; page: number; pageSize: number; total: number; totalPages: number; rows: any[] }> => {
+    const q = new URLSearchParams();
+    if (filters.status) q.set("status", filters.status);
+    if (filters.po) q.set("po", filters.po);
+    if (filters.factoryPo) q.set("factoryPo", filters.factoryPo);
+    if (filters.size) q.set("size", filters.size);
+    if (filters.model) q.set("model", filters.model);
+    q.set("page", String(filters.page ?? 1));
+    q.set("pageSize", String(filters.pageSize ?? 50));
+    const res = await fetch(`/api/reconciliation/${runId}/details?${q}`);
+    return jsonOrThrow(res);
+  },
+
+  // Get only mismatched/error rows (issues only).
+  reconciliationIssues: async (
+    runId: string,
+    filters: { status?: string; page?: number; pageSize?: number } = {}
+  ): Promise<{ ok: boolean; page: number; pageSize: number; total: number; totalPages: number; rows: any[] }> => {
+    const q = new URLSearchParams();
+    if (filters.status) q.set("status", filters.status);
+    q.set("page", String(filters.page ?? 1));
+    q.set("pageSize", String(filters.pageSize ?? 50));
+    const res = await fetch(`/api/reconciliation/${runId}/issues?${q}`);
+    return jsonOrThrow(res);
+  },
+
+  // Export URL (returns .xlsx).
+  reconciliationExportUrl: (runId: string, sheet: string = "all"): string =>
+    `/api/reconciliation/${runId}/export?sheet=${sheet}`,
+
+
 
   importExcel: async (body: {
     fileName: string;

@@ -1,1542 +1,689 @@
 "use client";
 
-// ProductReconciliationView
-// Data Reconciliation & Duplicate Check view — upload an Excel file, select a sheet,
-// auto-map columns, choose a date range, then compare Excel rows against Website
-// (MasterData) rows. READ-ONLY — never writes data. Reports status per group:
-// MATCHED / QTY_MISMATCH / MISSING_ON_WEBSITE / MISSING_IN_EXCEL /
-// POSSIBLE_WRONG_FACTORY_PO / POSSIBLE_WRONG_SIZE / POSSIBLE_DUPLICATE /
-// EXACT_DUPLICATE / INVALID_DATA.
+// ProductReconciliationView (NEW — Partner File vs Website)
+// Upload partner Excel → preview → run reconciliation → view summary + comparison + issues.
 //
-// Pipeline (spec §27):
-//   Excel Data → Filter By Date → Normalize → Group By (FactoryPO+Size) → SUM Qty
-//   Website Data → Filter Same Date Range → Normalize → Group → SUM Qty
-//   FULL OUTER COMPARISON → MATCH / MISMATCH / MISSING / DUPLICATE
+// Spec: 53 sections covering partner file (orders, order_size_summary, transactions)
+//   compared against Website MasterData by business key (PO NO# + Factory PO + Size).
+//   READ-ONLY — never modifies Website data. Only reports.
 //
-// Comparison key: Factory PO + Size (PO NO# is NOT compared).
-//
-// API contracts (see src/lib/api-client.ts):
-//   - api.parseExcel(file, sheet?) → { headers, preview(50 rows), sheets, autoMapping, ... }
-//   - api.reconcileData({ productType, dateFrom, dateTo, excelRows }) → { ok, summary, results }
-// Excel full parse (client-side):
-//   - readWorkbook(ArrayBuffer) → { wb, sheets }
-//   - parseSheet(wb, sheetName, maxRows?) → { headers, rows: Record<string,string>[] }
+// 4-section layout (spec §53):
+//   1. Import Partner File (upload + date range + run button)
+//   2. Summary (matched / mismatch / missing / duplicate counts)
+//   3. Comparison Table (filterable)
+//   4. Issue Detail (drill-down to transactions)
 
 import * as React from "react";
 import {
   GitCompare,
-  ClipboardPaste,
-  ClipboardCheck,
-  Calendar,
-  Search,
+  Upload,
+  FileSpreadsheet,
+  Loader2,
   CheckCircle2,
   AlertTriangle,
   AlertCircle,
   Eye,
-  Loader2,
-  X,
   Filter,
-  Copy,
-  Info,
   RefreshCw,
-  Trash2,
-  Layers,
+  Download,
+  History,
+  X,
+  ArrowRight,
+  Calendar,
+  Boxes,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
-import { buildAutoMapping, mappingOptions } from "@/lib/header-normalize";
-import type { CanonicalField } from "@/lib/fields";
-import { FIELD_LABELS } from "@/lib/fields";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from "@/components/ui/dialog";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-// ===== Constants =====
-
-// Required canonical fields for reconciliation. Mapping must cover all of these
-// before the "Compare with Website Data" button is enabled.
-// NOTE: PO NO# is NOT a comparison key — only Factory PO + Size + Qty.
-const REQUIRED_FIELDS: CanonicalField[] = ["date", "factoryPO", "size", "qty1"];
-
-// Sentinel value used for unmapped columns (Radix Select can't use empty string).
-const SKIP_VALUE = "__skip__";
-
-// Sample paste template — users can click "Load Sample" to prefill the paste area.
-// Tab-separated (the format Excel copies to clipboard).
-const SAMPLE_PASTE_TEMPLATE = [
-  "Date\tFactory PO\tSize\tQty",
-  "26/08/2026\tMH25100234\tM(07)/W(08)\t10",
-  "26/08/2026\tMH25100234\tM(07)/W(08)\t16",
-  "27/08/2026\tMH26110226\tM(07)/W(08)\t8",
-  "28/08/2026\tMH98060122\tM(04T)/W(05T)\t1",
-  "31/08/2026\tMH25100234\tM(08)/W(09)\t20",
-].join("\n");
-
-// Placeholder shown in the empty paste area.
-const SAMPLE_PLACEHOLDER = "Date\tFactory PO\tSize\tQty\n26/08/2026\tMH25100234\tM(07)/W(08)\t10\n27/08/2026\tMH26110226\tM(07)/W(08)\t8\n...\n\n(Click \"Load Sample\" to prefill this area with example data)";
-
-// Status tone map (row tint + badge color).
-type Tone = "emerald" | "amber" | "rose" | "slate";
-
-const STATUS_TONE: Record<string, Tone> = {
-  MATCHED: "emerald",
-  QTY_MISMATCH: "amber",
-  MISSING_ON_WEBSITE: "rose",
-  MISSING_IN_EXCEL: "amber",
-  POSSIBLE_WRONG_FACTORY_PO: "amber",
-  POSSIBLE_WRONG_SIZE: "amber",
-  POSSIBLE_DUPLICATE: "rose",
-  EXACT_DUPLICATE: "rose",
-  INVALID_DATA: "slate",
+// Status color mapping (spec §23 — must be explicit text, not just colors)
+const STATUS_META: Record<string, { color: string; label: string }> = {
+  MATCHED: { color: "bg-emerald-100 text-emerald-700 border-emerald-300", label: "Matched" },
+  ORDER_QTY_MISMATCH: { color: "bg-amber-100 text-amber-700 border-amber-300", label: "Order Qty Mismatch" },
+  OUTPUT_MISMATCH: { color: "bg-orange-100 text-orange-700 border-orange-300", label: "Output Mismatch" },
+  INPUT_MISMATCH: { color: "bg-orange-100 text-orange-700 border-orange-300", label: "Input Mismatch" },
+  MISSING_ON_WEBSITE: { color: "bg-rose-100 text-rose-700 border-rose-300", label: "Missing on Website" },
+  MISSING_ON_PARTNER: { color: "bg-violet-100 text-violet-700 border-violet-300", label: "Missing on Partner" },
+  OVER_OUTPUT: { color: "bg-red-100 text-red-700 border-red-300", label: "Over Output" },
+  OVER_INPUT: { color: "bg-red-100 text-red-700 border-red-300", label: "Over Input" },
+  POSSIBLE_DUPLICATE: { color: "bg-yellow-100 text-yellow-700 border-yellow-300", label: "Possible Duplicate" },
+  DATE_DISTRIBUTION_MISMATCH: { color: "bg-blue-100 text-blue-700 border-blue-300", label: "Date Diff" },
+  INVALID_DATA: { color: "bg-red-100 text-red-700 border-red-300", label: "Invalid Data" },
+  POSSIBLE_WRONG_FACTORY_PO: { color: "bg-orange-100 text-orange-700 border-orange-300", label: "Wrong FPO" },
+  POSSIBLE_WRONG_SIZE: { color: "bg-orange-100 text-orange-700 border-orange-300", label: "Wrong Size" },
 };
 
-const STATUS_ROW_TINT: Record<Tone, string> = {
-  emerald: "bg-emerald-50/50 dark:bg-emerald-950/20 hover:bg-emerald-50 dark:hover:bg-emerald-950/30",
-  amber: "bg-amber-50/50 dark:bg-amber-950/20 hover:bg-amber-50 dark:hover:bg-amber-950/30",
-  rose: "bg-rose-50/50 dark:bg-rose-950/20 hover:bg-rose-50 dark:hover:bg-rose-950/30",
-  slate: "bg-slate-50/50 dark:bg-slate-900/20 hover:bg-slate-50 dark:hover:bg-slate-900/30",
-};
-
-const STATUS_BADGE: Record<Tone, string> = {
-  emerald: "bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800",
-  amber: "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800",
-  rose: "bg-rose-100 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800",
-  slate: "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/50 dark:text-slate-300 dark:border-slate-700",
-};
-
-const STATUS_ICON: Record<Tone, React.ComponentType<{ className?: string }>> = {
-  emerald: CheckCircle2,
-  amber: AlertTriangle,
-  rose: AlertCircle,
-  slate: Info,
-};
-
-// Filter tabs.
-type FilterKey =
-  | "all"
-  | "MATCHED"
-  | "QTY_MISMATCH"
-  | "MISSING_ON_WEBSITE"
-  | "MISSING_IN_EXCEL"
-  | "DUPLICATE"
-  | "FACTORY_PO_ERROR"
-  | "SIZE_ERROR";
-
-const FILTER_TABS: { key: FilterKey; label: string }[] = [
-  { key: "all", label: "ALL" },
-  { key: "MATCHED", label: "MATCHED" },
-  { key: "QTY_MISMATCH", label: "QTY MISMATCH" },
-  { key: "MISSING_ON_WEBSITE", label: "MISSING ON WEBSITE" },
-  { key: "MISSING_IN_EXCEL", label: "MISSING IN EXCEL" },
-  { key: "DUPLICATE", label: "DUPLICATE" },
-  { key: "FACTORY_PO_ERROR", label: "FACTORY PO ERROR" },
-  { key: "SIZE_ERROR", label: "SIZE ERROR" },
-];
-
-// ===== Helpers =====
-
-// Parse a date string to yyyy-MM-dd. Mirrors server logic in
-// reconciliation-service.ts:parseDate. Handles Excel serials, dd/MM/yyyy, ISO.
-function parseDateToISO(raw: string | number | null | undefined): string | null {
-  if (raw === null || raw === undefined || raw === "") return null;
-  const s = String(raw).trim();
-  if (!s) return null;
-  // Excel serial (number of days since 1899-12-30).
-  const n = Number(s);
-  if (!isNaN(n) && n > 1000 && n < 100000) {
-    const epoch = new Date(Date.UTC(1899, 11, 30));
-    epoch.setDate(epoch.getDate() + n);
-    return epoch.toISOString().slice(0, 10);
-  }
-  // dd/MM/yyyy
-  const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (dmy) {
-    const d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
-    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
-  }
-  // yyyy-MM-dd or generic ISO
-  const iso = new Date(s);
-  if (!isNaN(iso.getTime())) return iso.toISOString().slice(0, 10);
-  return null;
+function StatusBadge({ status }: { status: string }) {
+  const meta = STATUS_META[status] ?? { color: "bg-muted text-muted-foreground border-border", label: status };
+  return (
+    <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold", meta.color)} title={status}>
+      {meta.label}
+    </span>
+  );
 }
-
-// Convert raw Excel rows (keyed by Excel header) → canonical rows keyed by
-// { date, factoryPO, size, qty } using the user's column mapping.
-// PO NO# is intentionally NOT extracted — it is no longer a comparison key.
-// mapping values can be canonicalField strings or "__skip__".
-function buildCanonicalRows(
-  allRows: Record<string, string>[],
-  mapping: Record<string, string>
-): Array<{ date?: string; factoryPO?: string; size?: string; qty?: string }> {
-  // Build reverse lookup: canonicalField → excelHeader (first match wins).
-  const reverse: Partial<Record<CanonicalField, string>> = {};
-  for (const [header, field] of Object.entries(mapping)) {
-    if (!field || field === SKIP_VALUE) continue;
-    if (!reverse[field as CanonicalField]) {
-      reverse[field as CanonicalField] = header;
-    }
-  }
-  const dh = reverse.date;
-  const fh = reverse.factoryPO;
-  const sh = reverse.size;
-  const qh = reverse.qty1;
-  return allRows.map((row) => {
-    const out: { date?: string; factoryPO?: string; size?: string; qty?: string } = {};
-    if (dh) out.date = row[dh] ?? "";
-    if (fh) out.factoryPO = row[fh] ?? "";
-    if (sh) out.size = row[sh] ?? "";
-    if (qh) out.qty = row[qh] ?? "";
-    return out;
-  });
-}
-
-// Filter canonical rows by date range. Rows without a parseable date or outside
-// the [from, to] window are excluded (matches server-side filter logic).
-// Generic in T so the caller's row shape (canonical fields) is preserved.
-function filterRowsByDate<T extends { date?: string }>(
-  rows: T[],
-  from: string,
-  to: string
-): T[] {
-  if (!from || !to) return rows;
-  return rows.filter((r) => {
-    if (!r.date) return false;
-    const iso = parseDateToISO(r.date);
-    if (!iso) return false;
-    return iso >= from && iso <= to;
-  });
-}
-
-// Format a number with thousands separator. Empty/NaN → em dash.
-function fmtNum(n: number | undefined | null): string {
-  if (n === null || n === undefined || isNaN(n)) return "—";
-  return n.toLocaleString();
-}
-
-// Format a difference with explicit + or - sign.
-function fmtDiff(n: number | undefined | null): string {
-  if (n === null || n === undefined || isNaN(n) || n === 0) return "0";
-  return n > 0 ? `+${n.toLocaleString()}` : n.toLocaleString();
-}
-
-// Human-readable explanation for each comparison status.
-function statusExplanation(status: string): string {
-  switch (status) {
-    case "MATCHED":
-      return "Excel and Website have the same Qty for this Factory PO + Size combination. No action needed.";
-    case "QTY_MISMATCH":
-      return "Both sources have this combination, but the summed quantities differ. Verify which side is correct, then update.";
-    case "MISSING_ON_WEBSITE":
-      return "This combination exists in Excel but is missing on the Website (MasterData). Consider importing it into Master Data.";
-    case "MISSING_IN_EXCEL":
-      return "This combination exists on the Website but is missing in the uploaded Excel file. Possibly not yet shipped, or filtered out by date.";
-    case "POSSIBLE_WRONG_FACTORY_PO":
-      return "The Excel Factory PO was not found on the Website, but a different Factory PO for the same Size exists. Likely a typo in the Factory PO column.";
-    case "POSSIBLE_WRONG_SIZE":
-      return "The Excel Size was not found on the Website, but a different Size for the same Factory PO exists. Likely a typo or wrong size code.";
-    case "POSSIBLE_DUPLICATE":
-      return "Excel and Website totals match, but multiple rows were grouped together — possibly the same record was entered more than once.";
-    case "EXACT_DUPLICATE":
-      return "An identical record (same Date + Factory PO + Size + Qty) appears more than once within a single source. Likely a duplicate entry.";
-    case "INVALID_DATA":
-      return "Row is missing required Factory PO or Size — skipped from comparison. Fix the source data and re-upload.";
-    default:
-      return "Unknown status.";
-  }
-}
-
-// Get today - 6 days as { from, to } in yyyy-MM-dd (last 7 days inclusive).
-function last7DaysRange(): { from: string; to: string } {
-  const today = new Date();
-  const start = new Date(today);
-  start.setDate(today.getDate() - 6);
-  return {
-    from: start.toISOString().slice(0, 10),
-    to: today.toISOString().slice(0, 10),
-  };
-}
-
-// Apply filter tab to a result row (multiple statuses can fall under one tab).
-function rowMatchesFilter(status: string, filter: FilterKey): boolean {
-  if (filter === "all") return true;
-  if (filter === "DUPLICATE") return status === "POSSIBLE_DUPLICATE" || status === "EXACT_DUPLICATE";
-  if (filter === "FACTORY_PO_ERROR") return status === "POSSIBLE_WRONG_FACTORY_PO";
-  if (filter === "SIZE_ERROR") return status === "POSSIBLE_WRONG_SIZE";
-  return status === filter;
-}
-
-// ===== Component =====
 
 export function ProductReconciliationView() {
-  const { currentProduct, bumpRefresh, refreshKey } = useAppStore();
+  const { currentProduct, bumpRefresh } = useAppStore();
   const theme = PRODUCT_THEME[currentProduct];
 
-  // Spec-required state.
-  const [pastedText, setPastedText] = React.useState("");
-  const [parsing, setParsing] = React.useState(false);
-  const [parseResult, setParseResult] = React.useState<any>(null);
-  const [allRows, setAllRows] = React.useState<Record<string, string>[]>([]);
-  const [sheet, setSheet] = React.useState("");
-  const [mapping, setMapping] = React.useState<Record<string, string>>({});
+  // Step 1: Upload state
+  const [fileName, setFileName] = React.useState("");
+  const [uploading, setUploading] = React.useState(false);
+  const [previewing, setPreviewing] = React.useState(false);
+  const [preview, setPreview] = React.useState<any>(null);
+  const [running, setRunning] = React.useState(false);
+  const [runResult, setRunResult] = React.useState<any>(null);
+  const [summary, setSummary] = React.useState<any>(null);
+
+  // Date filters
   const [dateFrom, setDateFrom] = React.useState("");
   const [dateTo, setDateTo] = React.useState("");
-  const [comparing, setComparing] = React.useState(false);
-  const [result, setResult] = React.useState<any>(null);
-  const [filter, setFilter] = React.useState<string>("all");
-  const [showOnlyIssues, setShowOnlyIssues] = React.useState(true);
-  const [detailRow, setDetailRow] = React.useState<any>(null);
 
-  // Initialize date range default (last 7 days).
-  React.useEffect(() => {
-    const r = last7DaysRange();
-    setDateFrom(r.from);
-    setDateTo(r.to);
-  }, []);
+  // Step 3: Comparison table state
+  const [details, setDetails] = React.useState<any[]>([]);
+  const [detailsLoading, setDetailsLoading] = React.useState(false);
+  const [detailsTotal, setDetailsTotal] = React.useState(0);
+  const [detailsPage, setDetailsPage] = React.useState(1);
+  const [detailsStatus, setDetailsStatus] = React.useState("");
+  const [detailsPo, setDetailsPo] = React.useState("");
+  const [detailsFactoryPo, setDetailsFactoryPo] = React.useState("");
+  const [detailsSize, setDetailsSize] = React.useState("");
 
-  // ===== Parse pasted TSV text into rows + auto-detect column mapping.
-  // Accepts tab-separated values copied from Excel. First row = headers.
-  function handlePaste() {
-    const text = pastedText.trim();
-    if (!text) {
-      toast.error("Please paste some data first.");
-      return;
-    }
-    setParsing(true);
-    setParseResult(null);
-    setAllRows([]);
-    setMapping({});
-    setResult(null);
-    setFilter("all");
+  // Step 4: Issue detail dialog
+  const [issueRow, setIssueRow] = React.useState<any>(null);
+
+  // History dialog
+  const [historyOpen, setHistoryOpen] = React.useState(false);
+  const [historyRuns, setHistoryRuns] = React.useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = React.useState(false);
+
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = React.useState(false);
+
+  async function handleFile(file: File) {
+    setUploading(true);
+    setPreview(null);
+    setRunResult(null);
+    setSummary(null);
+    setDetails([]);
     try {
-      const lines = text.split(/\r\n|\n|\r/).filter((l) => l.trim() !== "");
-      if (lines.length < 2) {
-        toast.error("Need at least a header row + 1 data row.");
-        setParsing(false);
-        return;
-      }
-      // First line = headers (split by tab).
-      const rawHeaders = lines[0].split("\t").map((h) => h.trim());
-      const headers = rawHeaders.map((h, i) => h || `Column_${i + 1}`);
-
-      // Remaining lines = data rows.
-      const rows: Record<string, string>[] = [];
-      for (let i = 1; i < lines.length; i++) {
-        const cells = lines[i].split("\t");
-        const row: Record<string, string> = {};
-        headers.forEach((h, idx) => {
-          row[h] = (cells[idx] ?? "").trim();
-        });
-        rows.push(row);
-      }
-
-      setAllRows(rows);
-      setParseResult({ headers, preview: rows.slice(0, 50) });
-
-      // Auto-map headers to canonical fields via buildAutoMapping.
-      const autoMapping = buildAutoMapping(headers);
-      const initMapping: Record<string, string> = {};
-      for (const h of headers) {
-        const f = autoMapping[h] || "";
-        initMapping[h] = f || SKIP_VALUE;
-      }
-      setMapping(initMapping);
-
-      toast.success(
-        `Parsed ${rows.length.toLocaleString()} rows from pasted data (${headers.length} columns detected).`
-      );
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to parse pasted data";
-      toast.error(msg);
+      const r = await api.reconciliationUpload(file);
+      setFileName(r.fileName);
+      toast.success(`Uploaded ${r.fileName}`, { description: `${r.sizeMB} MB` });
+      // Auto-preview
+      await loadPreview(r.fileName);
+    } catch (e: any) {
+      toast.error("Upload failed", { description: e?.message });
     } finally {
-      setParsing(false);
+      setUploading(false);
     }
   }
 
-  // ===== Update a single column mapping entry.
-  function handleMappingChange(header: string, value: string) {
-    setMapping((prev) => ({ ...prev, [header]: value }));
-    setResult(null);
-  }
-
-  // ===== Compare Excel rows with Website data.
-  async function handleCompare() {
-    if (!allRows.length) {
-      toast.error("No data to compare. Paste your Excel data first.");
-      return;
-    }
-    // Required-field coverage check.
-    const mappedFields = new Set(
-      Object.values(mapping).filter((v) => v && v !== SKIP_VALUE) as CanonicalField[]
-    );
-    const missing = REQUIRED_FIELDS.filter((f) => !mappedFields.has(f));
-    if (missing.length > 0) {
-      toast.error(
-        `Missing required columns: ${missing.map((f) => FIELD_LABELS[f]).join(", ")}`
-      );
-      return;
-    }
-    if (!dateFrom || !dateTo) {
-      toast.error("Please select a date range (From + To).");
-      return;
-    }
-    if (dateFrom > dateTo) {
-      toast.error("Date From must be on or before Date To.");
-      return;
-    }
-
-    setComparing(true);
-    setResult(null);
+  async function loadPreview(fname: string) {
+    setPreviewing(true);
     try {
-      // Build canonical rows from raw rows + user mapping.
-      const canonicalRows = buildCanonicalRows(allRows, mapping);
-      const res = await api.reconcileData({
+      const r = await api.reconciliationPreview({ fileName: fname });
+      setPreview(r.preview);
+    } catch (e: any) {
+      toast.error("Preview failed", { description: e?.message });
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  async function handleRun() {
+    if (!fileName) return;
+    setRunning(true);
+    setRunResult(null);
+    setSummary(null);
+    setDetails([]);
+    try {
+      const r = await api.reconciliationRun({
+        fileName,
         productType: currentProduct,
-        dateFrom,
-        dateTo,
-        excelRows: canonicalRows,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
       });
-      setResult(res);
-      setFilter("all");
-      const issues = res.summary?.totalIssues ?? 0;
-      const matched = res.summary?.matched ?? 0;
-      if (issues > 0) {
-        toast.warning(
-          `Reconciled ${res.summary.totalGroups} groups — ${matched} matched, ${issues} issue(s).`
-        );
-      } else {
-        toast.success(
-          `Reconciled ${res.summary.totalGroups} groups — all matched!`
-        );
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Reconciliation failed";
-      toast.error(msg);
+      setRunResult(r);
+      setSummary(r.summary);
+      toast.success(`Reconciliation ${r.runNumber} complete`, {
+        description: `${r.summary.matchedLines} matched, ${r.summary.mismatchLines} mismatch of ${r.summary.totalLines} lines`,
+      });
+      bumpRefresh();
+      // Load details
+      await loadDetails(r.runId);
+    } catch (e: any) {
+      toast.error("Reconciliation failed", { description: e?.message });
     } finally {
-      setComparing(false);
+      setRunning(false);
     }
   }
 
-  // ===== Reset everything.
-  function resetAll() {
-    setPastedText("");
-    setParsing(false);
-    setParseResult(null);
-    setAllRows([]);
-    setMapping({});
-    setResult(null);
-    setFilter("all");
-    setShowOnlyIssues(true);
-    setDetailRow(null);
+  async function loadDetails(runId: string, page = 1) {
+    setDetailsLoading(true);
+    try {
+      const r = await api.reconciliationDetails(runId, {
+        status: detailsStatus || undefined,
+        po: detailsPo || undefined,
+        factoryPo: detailsFactoryPo || undefined,
+        size: detailsSize || undefined,
+        page,
+        pageSize: 50,
+      });
+      setDetails(r.rows);
+      setDetailsTotal(r.total);
+      setDetailsPage(r.page);
+    } catch (e: any) {
+      toast.error("Load details failed", { description: e?.message });
+    } finally {
+      setDetailsLoading(false);
+    }
   }
 
-  // ===== Derived values.
-  const headers = parseResult?.headers ?? [];
-  const previewRows: Record<string, string>[] = parseResult?.preview ?? [];
-  const sheets = parseResult?.sheets ?? [];
-
-  // In-range Excel rows (canonical) for preview table + counts.
-  const canonicalRows = React.useMemo(
-    () => buildCanonicalRows(allRows, mapping),
-    [allRows, mapping]
-  );
-  const inRangeRows = React.useMemo(
-    () => filterRowsByDate(canonicalRows, dateFrom, dateTo),
-    [canonicalRows, dateFrom, dateTo]
-  );
-  const excelTotalRecords = allRows.length;
-  const excelInDateRange = inRangeRows.length;
-  const excelExcluded = Math.max(0, excelTotalRecords - excelInDateRange);
-
-  // Required-field coverage.
-  const mappedFields = new Set(
-    Object.values(mapping).filter((v) => v && v !== SKIP_VALUE) as CanonicalField[]
-  );
-  const missingRequired = REQUIRED_FIELDS.filter((f) => !mappedFields.has(f));
-  const hasMappingError = headers.length > 0 && missingRequired.length > 0;
-  const canCompare =
-    !comparing &&
-    !parsing &&
-    allRows.length > 0 &&
-    missingRequired.length === 0 &&
-    excelInDateRange > 0 &&
-    !!dateFrom &&
-    !!dateTo;
-
-  // Filtered result rows.
-  const allResults: any[] = result?.results ?? [];
-  const filteredResults = React.useMemo(() => {
-    let list = allResults;
-    if (filter !== "all") {
-      list = list.filter((r) => rowMatchesFilter(r.status, filter as FilterKey));
+  async function loadHistory() {
+    setHistoryOpen(true);
+    setHistoryLoading(true);
+    try {
+      const r = await api.reconciliationHistory(20);
+      setHistoryRuns(r.runs);
+    } catch (e: any) {
+      toast.error("Load history failed", { description: e?.message });
+    } finally {
+      setHistoryLoading(false);
     }
-    if (showOnlyIssues) {
-      list = list.filter((r) => r.status !== "MATCHED");
-    }
-    return list;
-  }, [allResults, filter, showOnlyIssues]);
+  }
 
-  // Tab counts.
-  const tabCounts = React.useMemo(() => {
-    const m: Record<FilterKey, number> = {
-      all: allResults.length,
-      MATCHED: 0,
-      QTY_MISMATCH: 0,
-      MISSING_ON_WEBSITE: 0,
-      MISSING_IN_EXCEL: 0,
-      DUPLICATE: 0,
-      FACTORY_PO_ERROR: 0,
-      SIZE_ERROR: 0,
-    };
-    for (const r of allResults) {
-      if (r.status === "MATCHED") m.MATCHED++;
-      else if (r.status === "QTY_MISMATCH") m.QTY_MISMATCH++;
-      else if (r.status === "MISSING_ON_WEBSITE") m.MISSING_ON_WEBSITE++;
-      else if (r.status === "MISSING_IN_EXCEL") m.MISSING_IN_EXCEL++;
-      else if (r.status === "POSSIBLE_DUPLICATE" || r.status === "EXACT_DUPLICATE")
-        m.DUPLICATE++;
-      else if (r.status === "POSSIBLE_WRONG_FACTORY_PO") m.FACTORY_PO_ERROR++;
-      else if (r.status === "POSSIBLE_WRONG_SIZE") m.SIZE_ERROR++;
-    }
-    return m;
-  }, [allResults]);
+  // Reload details when filters change
+  React.useEffect(() => {
+    if (runResult?.runId) loadDetails(runResult.runId, 1);
+  }, [detailsStatus, detailsPo, detailsFactoryPo, detailsSize, runResult?.runId]);
 
-  // Suppress unused warning for refreshKey (reserved for query keys).
-  void refreshKey;
-  // bumpRefresh is included per spec; reconcile is read-only so we don't
-  // need to call it, but keep the destructure for consistency with sibling views.
-  void bumpRefresh;
-
-  const summary = result?.summary;
+  const hasRun = !!runResult;
 
   return (
-    <div className="space-y-5">
-      {/* ===== Header ===== */}
-      <div
-        className={cn(
-          "relative overflow-hidden rounded-xl border bg-gradient-to-r p-5 text-white shadow-sm",
-          theme.gradient
-        )}
-      >
+    <div className="space-y-6">
+      {/* Header banner */}
+      <div className={cn("relative overflow-hidden rounded-xl bg-gradient-to-r p-6 text-white", theme.gradient)}>
         <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-white/10" />
+        <div className="absolute -bottom-10 right-24 h-32 w-32 rounded-full bg-white/5" />
         <div className="relative flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white/15 backdrop-blur">
               <GitCompare className="h-6 w-6" />
             </div>
             <div>
-              <p className="text-[11px] font-medium uppercase tracking-wider text-white/80">
-                Data Reconciliation &amp; Duplicate Check
-              </p>
-              <h1 className="text-2xl font-bold tracking-tight">
-                Reconciliation · {currentProduct}
-              </h1>
-              <p className="text-xs text-white/80">
-                Paste Excel data → filter by date → compare with Website MasterData →
-                spot mismatches, missing rows, duplicates, and likely typos.
+              <div className="text-xs uppercase tracking-wider text-white/70">Reconciliation</div>
+              <h1 className="text-2xl font-bold">{currentProduct} · Data Compare</h1>
+              <p className="text-xs text-white/70 mt-1">
+                Upload partner Excel → compare with Website data by PO NO# + Factory PO + Size. READ-ONLY.
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Badge className="border-white/30 bg-white/15 text-white">{currentProduct}</Badge>
-            {allRows.length > 0 && (
-              <Badge className="flex items-center gap-1 border-white/30 bg-white/15 text-white">
-                <ClipboardCheck className="h-3 w-3" /> {allRows.length.toLocaleString()} rows
-              </Badge>
-            )}
+            <Button size="sm" variant="secondary" className="bg-white/20 text-white hover:bg-white/30" onClick={loadHistory}>
+              <History className="mr-1.5 h-4 w-4" /> History
+            </Button>
           </div>
         </div>
       </div>
 
-      {/* ===== Section 1: Paste Excel Data ===== */}
+      {/* Section 1: Import Partner File */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ClipboardPaste className="h-4 w-4 text-primary" />
-            Paste Excel Data
-            {allRows.length > 0 && (
-              <Badge variant="outline" className="ml-1 text-[10px]">
-                {allRows.length.toLocaleString()} rows
-              </Badge>
-            )}
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <span className={cn("flex h-6 w-6 items-center justify-center rounded-full text-xs text-white", theme.bg)}>1</span>
+            Import Partner File
+            {fileName && <Badge variant="secondary" className="ml-auto text-[10px]">{fileName}</Badge>}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Paste area */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-xs font-medium">
-                Paste tab-separated data from Excel (Ctrl+V)
-              </Label>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="gap-1.5"
-                  onClick={() => setPastedText(SAMPLE_PASTE_TEMPLATE)}
-                  disabled={parsing}
-                >
-                  <Info className="h-3.5 w-3.5" /> Load Sample
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="gap-1.5 text-rose-600 hover:text-rose-700"
-                  onClick={resetAll}
-                  disabled={parsing || comparing || (!pastedText && allRows.length === 0)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" /> Clear
-                </Button>
-              </div>
-            </div>
-            <textarea
-              className={cn(
-                "w-full min-h-[180px] rounded-md border border-input bg-background px-3 py-2 font-mono text-xs",
-                "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1",
-                "placeholder:text-muted-foreground"
-              )}
-              placeholder={SAMPLE_PLACEHOLDER}
-              value={pastedText}
-              onChange={(e) => setPastedText(e.target.value)}
-              disabled={parsing}
-              spellCheck={false}
+          <p className="text-xs text-muted-foreground">
+            Upload Excel file from partner (must contain sheets: <code className="px-1 bg-muted rounded">orders</code>,{" "}
+            <code className="px-1 bg-muted rounded">order_size_summary</code>,{" "}
+            <code className="px-1 bg-muted rounded">transactions</code>). File is parsed and compared against Website
+            MasterData. <b>Website data is never modified</b>.
+          </p>
+
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              const f = e.dataTransfer.files[0];
+              if (f) handleFile(f);
+            }}
+            className={cn(
+              "rounded-lg border-2 border-dashed p-6 text-center transition-colors cursor-pointer",
+              dragOver ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30" : "border-muted-foreground/30 hover:border-emerald-400"
+            )}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleFile(f);
+                e.target.value = "";
+              }}
             />
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                className={cn("gap-1.5 text-white hover:opacity-90", theme.bg)}
-                onClick={handlePaste}
-                disabled={parsing || !pastedText.trim()}
-              >
-                {parsing ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <ClipboardCheck className="h-3.5 w-3.5" />
-                )}
-                {parsing ? "Parsing…" : "Parse Pasted Data"}
-              </Button>
-              {allRows.length > 0 && (
-                <Badge variant="outline" className="text-[10px]">
-                  {allRows.length.toLocaleString()} rows parsed · {headers.length} columns
-                </Badge>
-              )}
-            </div>
+            {uploading ? (
+              <><Loader2 className="h-8 w-8 mx-auto text-emerald-500 mb-2 animate-spin" />
+              <div className="text-sm font-medium">Uploading…</div></>
+            ) : (
+              <><Upload className="h-8 w-8 mx-auto text-emerald-500 mb-2" />
+              <div className="text-sm font-medium">Drop Excel file here or click to browse</div>
+              <div className="text-[11px] text-muted-foreground mt-1">.xlsx, .xls · single file</div></>
+            )}
           </div>
 
-          {/* Sample template helper */}
-          <Alert className="border-primary/20 bg-primary/5">
-            <Info className="h-4 w-4 text-primary" />
-            <AlertTitle className="text-xs font-medium">How to copy from Excel</AlertTitle>
-            <AlertDescription className="text-xs">
-              <ol className="ml-4 list-decimal space-y-0.5">
-                <li>Select the cells in Excel (including the header row).</li>
-                <li>Press <kbd className="rounded bg-muted px-1">Ctrl+C</kbd> to copy.</li>
-                <li>Click the paste area above, press <kbd className="rounded bg-muted px-1">Ctrl+V</kbd>.</li>
-                <li>Click <strong>Parse Pasted Data</strong> — columns will be auto-detected.</li>
-              </ol>
-              <p className="mt-1.5 text-muted-foreground">
-                Required columns: <strong>Date, Factory PO, Size, Qty</strong>.
-                Column names can vary (e.g. "PO#" or "PO Number" are no longer required) — you can remap after parsing.
-              </p>
-            </AlertDescription>
-          </Alert>
+          {/* Date range filter */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs flex items-center gap-1"><Calendar className="h-3 w-3" /> Transaction Date From</Label>
+              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-9" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs flex items-center gap-1"><Calendar className="h-3 w-3" /> Transaction Date To</Label>
+              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-9" />
+            </div>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            Filters apply to <b>transactions</b> (OUT/IN) only — Order Qty is not date-filtered.
+          </p>
+
+          {preview && (
+            <div className="rounded-md border border-emerald-200 dark:border-emerald-900 bg-emerald-50/50 dark:bg-emerald-950/20 p-3 text-xs space-y-2">
+              <div className="flex items-center gap-1.5 font-medium text-emerald-700 dark:text-emerald-300">
+                <CheckCircle2 className="h-3.5 w-3.5" /> Preview: {preview.fileName}
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="rounded bg-background/60 p-2">
+                  <div className="font-bold text-base">{preview.ordersCount}</div>
+                  <div className="text-[10px] text-muted-foreground">Orders</div>
+                </div>
+                <div className="rounded bg-background/60 p-2">
+                  <div className="font-bold text-base">{preview.summaryCount}</div>
+                  <div className="text-[10px] text-muted-foreground">Size Lines</div>
+                </div>
+                <div className="rounded bg-background/60 p-2">
+                  <div className="font-bold text-base">{preview.transactionsCount}</div>
+                  <div className="text-[10px] text-muted-foreground">Transactions</div>
+                </div>
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                Sheets detected: {preview.sheets.join(", ")}
+              </div>
+            </div>
+          )}
+
+          <Button
+            size="sm"
+            className="w-full bg-emerald-600 hover:bg-emerald-700"
+            disabled={!fileName || running || previewing}
+            onClick={handleRun}
+          >
+            {running ? (
+              <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Running reconciliation…</>
+            ) : (
+              <><Boxes className="mr-2 h-4 w-4" /> Start Reconciliation</>
+            )}
+          </Button>
         </CardContent>
       </Card>
 
-      {/* ===== Section 2: Column Mapping ===== */}
-      {headers.length > 0 && (
+      {/* Section 2: Summary */}
+      {summary && (
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Layers className="h-4 w-4 text-primary" />
-              Column Mapping
-              <Badge variant="outline" className="ml-1 text-[10px]">
-                {headers.length} columns
-              </Badge>
-              {hasMappingError ? (
-                <Badge className="ml-1 bg-rose-100 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800 text-[10px]">
-                  MISSING REQUIRED COLUMN
-                </Badge>
-              ) : (
-                <Badge className="ml-1 bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800 text-[10px]">
-                  Required OK
-                </Badge>
-              )}
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <span className={cn("flex h-6 w-6 items-center justify-center rounded-full text-xs text-white", theme.bg)}>2</span>
+              Reconciliation Summary
+              {runResult?.runNumber && <Badge variant="secondary" className="ml-auto text-[10px]">{runResult.runNumber}</Badge>}
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {hasMappingError && (
-              <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
-                <AlertTitle>Missing required column(s)</AlertTitle>
-                <AlertDescription>
-                  These required columns are not mapped:{" "}
-                  <strong>
-                    {missingRequired.map((f) => FIELD_LABELS[f]).join(", ")}
-                  </strong>
-                  . Either rename the column in Excel to match a known alias, or
-                  manually map it below.
-                </AlertDescription>
-              </Alert>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <SummaryCard label="Total Lines" value={summary.totalLines} color="bg-slate-100 text-slate-700" />
+              <SummaryCard label="Matched" value={summary.matchedLines} color="bg-emerald-100 text-emerald-700" />
+              <SummaryCard label="Mismatch" value={summary.mismatchLines} color="bg-amber-100 text-amber-700" />
+              <SummaryCard label="Missing on Website" value={summary.missingOnWebsite} color="bg-rose-100 text-rose-700" />
+              <SummaryCard label="Missing on Partner" value={summary.missingOnPartner} color="bg-violet-100 text-violet-700" />
+              <SummaryCard label="Duplicates" value={summary.duplicateLines} color="bg-yellow-100 text-yellow-700" />
+              <SummaryCard label="Over Output" value={summary.overOutputLines} color="bg-red-100 text-red-700" />
+              <SummaryCard label="Over Input" value={summary.overInputLines} color="bg-red-100 text-red-700" />
+              <SummaryCard label="Date Diff" value={summary.dateDiffLines} color="bg-blue-100 text-blue-700" />
+              <SummaryCard label="Invalid" value={summary.invalidLines} color="bg-red-100 text-red-700" />
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+              <QtyCard label="Order Qty" partner={summary.totalOrderQty} website={summary.totalOrderQty} />
+              <QtyCard label="OUT / Output" partner={summary.totalPartnerOut} website={summary.totalWebsiteOutput} />
+              <QtyCard label="IN / Input" partner={summary.totalPartnerIn} website={summary.totalWebsiteInput} />
+              <div className="rounded-md border p-2">
+                <div className="text-[10px] text-muted-foreground">OUT Difference</div>
+                <div className={cn("font-bold text-sm", summary.totalPartnerOut - summary.totalWebsiteOutput === 0 ? "text-emerald-700" : "text-rose-700")}>
+                  {summary.totalPartnerOut - summary.totalWebsiteOutput > 0 ? "+" : ""}{summary.totalPartnerOut - summary.totalWebsiteOutput}
+                </div>
+              </div>
+              <div className="rounded-md border p-2">
+                <div className="text-[10px] text-muted-foreground">IN Difference</div>
+                <div className={cn("font-bold text-sm", summary.totalPartnerIn - summary.totalWebsiteInput === 0 ? "text-emerald-700" : "text-rose-700")}>
+                  {summary.totalPartnerIn - summary.totalWebsiteInput > 0 ? "+" : ""}{summary.totalPartnerIn - summary.totalWebsiteInput}
+                </div>
+              </div>
+            </div>
+
+            {runResult?.runId && (
+              <div className="mt-3 flex gap-2">
+                <a href={api.reconciliationExportUrl(runResult.runId, "all")} download>
+                  <Button size="sm" variant="outline"><Download className="mr-1.5 h-3.5 w-3.5" /> Export Report (.xlsx)</Button>
+                </a>
+              </div>
             )}
-            <div className="max-h-96 overflow-y-auto scroll-thin rounded-md border">
-              <Table>
-                <TableHeader className="sticky top-0 z-10 bg-muted/80 backdrop-blur">
-                  <TableRow>
-                    <TableHead className="w-1/3 text-[10px] uppercase">Excel Column</TableHead>
-                    <TableHead className="w-1/3 text-[10px] uppercase">Sample Value</TableHead>
-                    <TableHead className="w-12 text-[10px] uppercase text-center">→</TableHead>
-                    <TableHead className="w-1/3 text-[10px] uppercase">System Field</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {headers.map((h: string) => {
-                    const canonical = mapping[h] || SKIP_VALUE;
-                    const sample = previewRows[0]?.[h] ?? allRows[0]?.[h] ?? "";
-                    const isRequired =
-                      canonical !== SKIP_VALUE &&
-                      REQUIRED_FIELDS.includes(canonical as CanonicalField);
-                    return (
-                      <TableRow key={h} className="border-t">
-                        <TableCell className="px-3 py-2 text-xs font-medium break-all">
-                          {h}
-                          {REQUIRED_FIELDS.includes(canonical as CanonicalField) && (
-                            <span className="ml-1 text-rose-600">*</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="px-3 py-2 text-xs text-muted-foreground break-all">
-                          {sample ? (
-                            <span className="line-clamp-1">{sample}</span>
-                          ) : (
-                            <span className="text-muted-foreground/40">—</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="px-3 py-2 text-center text-muted-foreground">
-                          →
-                        </TableCell>
-                        <TableCell className="px-3 py-2">
-                          <Select
-                            value={canonical}
-                            onValueChange={(v) => handleMappingChange(h, v)}
-                          >
-                            <SelectTrigger size="sm" className="w-full">
-                              <SelectValue placeholder="— skip —" />
-                            </SelectTrigger>
-                            <SelectContent className="max-h-72 scroll-thin">
-                              <SelectItem value={SKIP_VALUE}>— skip —</SelectItem>
-                              {mappingOptions().map((opt) => (
-                                <SelectItem key={opt.value} value={opt.value}>
-                                  {opt.label}
-                                  {REQUIRED_FIELDS.includes(opt.value as CanonicalField)
-                                    ? " *"
-                                    : ""}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          {isRequired && (
-                            <div className="mt-0.5 text-[10px] text-rose-600 dark:text-rose-400">
-                              required
-                            </div>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <Info className="h-3 w-3" />
-              Fields marked <strong>*</strong> are required for reconciliation:
-              Date, Factory PO, Size, Q&apos;ty 1.
-            </div>
           </CardContent>
         </Card>
       )}
 
-      {/* ===== Section 3: Date Range Filter ===== */}
-      {allRows.length > 0 && (
+      {/* Section 3: Comparison Table */}
+      {hasRun && (
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Calendar className="h-4 w-4 text-primary" />
-              Date Range Filter
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <span className={cn("flex h-6 w-6 items-center justify-center rounded-full text-xs text-white", theme.bg)}>3</span>
+              Comparison ({detailsTotal} lines)
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div>
-                <Label htmlFor="date-from" className="text-xs font-medium">
-                  From
-                </Label>
-                <Input
-                  id="date-from"
-                  type="date"
-                  value={dateFrom}
-                  onChange={(e) => {
-                    setDateFrom(e.target.value);
-                    setResult(null);
-                  }}
-                  className="mt-1"
-                />
-              </div>
-              <div>
-                <Label htmlFor="date-to" className="text-xs font-medium">
-                  To
-                </Label>
-                <Input
-                  id="date-to"
-                  type="date"
-                  value={dateTo}
-                  onChange={(e) => {
-                    setDateTo(e.target.value);
-                    setResult(null);
-                  }}
-                  className="mt-1"
-                />
-              </div>
+            {/* Filters */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <Select value={detailsStatus || "__all__"} onValueChange={(v) => setDetailsStatus(v === "__all__" ? "" : v)}>
+                <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="All status" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">All status</SelectItem>
+                  {Object.keys(STATUS_META).map((s) => (
+                    <SelectItem key={s} value={s}>{STATUS_META[s].label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input placeholder="PO NO#" value={detailsPo} onChange={(e) => setDetailsPo(e.target.value)} className="h-8 text-xs" />
+              <Input placeholder="Factory PO" value={detailsFactoryPo} onChange={(e) => setDetailsFactoryPo(e.target.value)} className="h-8 text-xs" />
+              <Input placeholder="Size" value={detailsSize} onChange={(e) => setDetailsSize(e.target.value)} className="h-8 text-xs" />
             </div>
-            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <Info className="h-3 w-3" />
-              Only data with <strong>Date</strong> in this range will be compared. Rows
-              without a parseable Date or outside this window are excluded.
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
-      {/* ===== Section 4: Preview Filtered Data ===== */}
-      {allRows.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Search className="h-4 w-4 text-primary" />
-              Preview Filtered Data
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid grid-cols-3 gap-3">
-              <StatBox label="Total Excel Rows" value={excelTotalRecords} tone="slate" />
-              <StatBox label="In Date Range" value={excelInDateRange} tone="emerald" />
-              <StatBox label="Excluded" value={excelExcluded} tone="rose" />
-            </div>
-            {/* First 10 in-range rows */}
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader className="bg-muted/80 backdrop-blur">
-                  <TableRow>
-                    <TableHead className="text-[10px] uppercase">#</TableHead>
-                    <TableHead className="text-[10px] uppercase">Date</TableHead>
-                    <TableHead className="text-[10px] uppercase">Factory PO</TableHead>
-                    <TableHead className="text-[10px] uppercase">Size</TableHead>
-                    <TableHead className="text-[10px] uppercase text-right">Qty</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {inRangeRows.length === 0 ? (
-                    <TableRow>
-                      <TableCell
-                        colSpan={5}
-                        className="py-8 text-center text-xs text-muted-foreground"
-                      >
-                        No rows in the selected date range.
-                      </TableCell>
-                    </TableRow>
+            {/* Table */}
+            <div className="overflow-x-auto scroll-thin rounded-md border max-h-[600px]">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                  <tr>
+                    <th className="px-2 py-1.5 text-left">Status</th>
+                    <th className="px-2 py-1.5 text-left">PO NO#</th>
+                    <th className="px-2 py-1.5 text-left">Factory PO</th>
+                    <th className="px-2 py-1.5 text-left">Size</th>
+                    <th className="px-2 py-1.5 text-right">P.Order</th>
+                    <th className="px-2 py-1.5 text-right">W.Order</th>
+                    <th className="px-2 py-1.5 text-right">P.OUT</th>
+                    <th className="px-2 py-1.5 text-right">W.Output</th>
+                    <th className="px-2 py-1.5 text-right">P.IN</th>
+                    <th className="px-2 py-1.5 text-right">W.Input</th>
+                    <th className="px-2 py-1.5 text-center">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailsLoading ? (
+                    <tr><td colSpan={11} className="py-8 text-center text-muted-foreground">
+                      <Loader2 className="h-5 w-5 mx-auto animate-spin" />
+                    </td></tr>
+                  ) : details.length === 0 ? (
+                    <tr><td colSpan={11} className="py-8 text-center text-muted-foreground">No rows found</td></tr>
                   ) : (
-                    inRangeRows.slice(0, 10).map((r, i) => (
-                      <TableRow key={i} className="border-t">
-                        <TableCell className="px-3 py-1.5 text-[10px] tabular-nums text-muted-foreground">
-                          {i + 1}
-                        </TableCell>
-                        <TableCell className="px-3 py-1.5 text-xs whitespace-nowrap">
-                          {r.date || "—"}
-                        </TableCell>
-                        <TableCell className="px-3 py-1.5 text-xs font-medium whitespace-nowrap">
-                          {r.factoryPO || "—"}
-                        </TableCell>
-                        <TableCell className="px-3 py-1.5">
-                          {r.size ? (
-                            <Badge variant="outline" className="text-[9px] font-mono">
-                              {r.size}
-                            </Badge>
-                          ) : (
-                            "—"
-                          )}
-                        </TableCell>
-                        <TableCell className="px-3 py-1.5 text-xs text-right tabular-nums">
-                          {r.qty ?? "—"}
-                        </TableCell>
-                      </TableRow>
+                    details.map((r) => (
+                      <tr key={r.id} className="border-t hover:bg-accent/30">
+                        <td className="px-2 py-1.5"><StatusBadge status={r.status} /></td>
+                        <td className="px-2 py-1.5 font-mono">{r.poNo}</td>
+                        <td className="px-2 py-1.5 font-mono">{r.factoryPO}</td>
+                        <td className="px-2 py-1.5">{r.size}</td>
+                        <td className="px-2 py-1.5 text-right">{r.partnerOrderQty}</td>
+                        <td className="px-2 py-1.5 text-right">{r.websiteOrderQty}</td>
+                        <td className="px-2 py-1.5 text-right">{r.partnerOutQty}</td>
+                        <td className="px-2 py-1.5 text-right">{r.websiteOutputQty}</td>
+                        <td className="px-2 py-1.5 text-right">{r.partnerInQty}</td>
+                        <td className="px-2 py-1.5 text-right">{r.websiteInputQty}</td>
+                        <td className="px-2 py-1.5 text-center">
+                          <Button size="sm" variant="ghost" className="h-6 w-6 p-0" onClick={() => setIssueRow(r)}>
+                            <Eye className="h-3 w-3" />
+                          </Button>
+                        </td>
+                      </tr>
                     ))
                   )}
-                </TableBody>
-              </Table>
+                </tbody>
+              </table>
             </div>
-            {inRangeRows.length > 10 && (
-              <div className="text-center text-[11px] text-muted-foreground">
-                Showing first 10 of {inRangeRows.length.toLocaleString()} in-range rows.
-              </div>
-            )}
-            <div className="flex justify-end">
-              <Button
-                onClick={handleCompare}
-                disabled={!canCompare}
-                className={cn("gap-1.5", theme.bg, "text-white hover:opacity-90")}
-              >
-                {comparing ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <GitCompare className="h-4 w-4" />
-                )}
-                {comparing ? "Comparing…" : "Compare with Website Data"}
-              </Button>
-            </div>
-            {!canCompare && allRows.length > 0 && (
-              <div className="text-right text-[11px] text-muted-foreground">
-                {missingRequired.length > 0
-                  ? `Map required columns first: ${missingRequired
-                      .map((f) => FIELD_LABELS[f])
-                      .join(", ")}`
-                  : excelInDateRange === 0
-                  ? "No rows in date range — adjust the filter or upload a different file."
-                  : ""}
+
+            {/* Pagination */}
+            {detailsTotal > 50 && (
+              <div className="flex items-center justify-between text-xs">
+                <div className="text-muted-foreground">Page {detailsPage} of {Math.ceil(detailsTotal / 50)}</div>
+                <div className="flex gap-1">
+                  <Button size="sm" variant="outline" disabled={detailsPage <= 1} onClick={() => loadDetails(runResult.runId, detailsPage - 1)}>Prev</Button>
+                  <Button size="sm" variant="outline" disabled={detailsPage >= Math.ceil(detailsTotal / 50)} onClick={() => loadDetails(runResult.runId, detailsPage + 1)}>Next</Button>
+                </div>
               </div>
             )}
           </CardContent>
         </Card>
       )}
 
-      {/* ===== Section 5: Comparison Summary ===== */}
-      {summary && (
-        <>
-          {/* 9 summary cards */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <SummaryCard
-              label="Matched"
-              value={summary.matched}
-              icon={CheckCircle2}
-              tone="emerald"
-            />
-            <SummaryCard
-              label="Qty Mismatch"
-              value={summary.qtyMismatch}
-              icon={AlertTriangle}
-              tone="amber"
-            />
-            <SummaryCard
-              label="Missing on Website"
-              value={summary.missingOnWebsite}
-              icon={AlertCircle}
-              tone="rose"
-            />
-            <SummaryCard
-              label="Missing in Excel"
-              value={summary.missingInExcel}
-              icon={AlertTriangle}
-              tone="amber"
-            />
-            <SummaryCard
-              label="Possible Wrong Factory PO"
-              value={summary.possibleWrongFactoryPO}
-              icon={AlertTriangle}
-              tone="amber"
-            />
-            <SummaryCard
-              label="Possible Wrong Size"
-              value={summary.possibleWrongSize}
-              icon={AlertTriangle}
-              tone="amber"
-            />
-            <SummaryCard
-              label="Possible Duplicate"
-              value={summary.possibleDuplicate}
-              icon={AlertCircle}
-              tone="rose"
-            />
-            <SummaryCard
-              label="Exact Duplicate"
-              value={summary.exactDuplicate}
-              icon={AlertCircle}
-              tone="rose"
-            />
-            <SummaryCard
-              label="Total Issues"
-              value={summary.totalIssues}
-              icon={AlertCircle}
-              tone="rose"
-            />
-          </div>
-
-          {/* Date Range Safety card */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Info className="h-4 w-4 text-primary" />
-                Date Range Safety
-                <Badge variant="outline" className="ml-1 text-[10px]">
-                  {summary.dateRange?.from} → {summary.dateRange?.to}
-                </Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                {/* Excel */}
-                <div className="rounded-md border bg-muted/30 p-3">
-                  <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
-                    <ClipboardCheck className="h-3.5 w-3.5" /> Excel Source
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 text-xs">
-                    <StatBox
-                      label="Total"
-                      value={summary.excelTotalRecords}
-                      tone="slate"
-                      compact
-                    />
-                    <StatBox
-                      label="In Range"
-                      value={summary.excelRecordsInDateRange}
-                      tone="emerald"
-                      compact
-                    />
-                    <StatBox
-                      label="Excluded"
-                      value={summary.excelExcluded}
-                      tone="rose"
-                      compact
-                    />
-                  </div>
-                </div>
-                {/* Website */}
-                <div className="rounded-md border bg-muted/30 p-3">
-                  <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
-                    <GitCompare className="h-3.5 w-3.5" /> Website Source
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 text-xs">
-                    <StatBox
-                      label="Total"
-                      value={summary.websiteTotalRecords}
-                      tone="slate"
-                      compact
-                    />
-                    <StatBox
-                      label="In Range"
-                      value={summary.websiteRecordsInDateRange}
-                      tone="emerald"
-                      compact
-                    />
-                    <StatBox
-                      label="Excluded"
-                      value={summary.websiteExcluded}
-                      tone="rose"
-                      compact
-                    />
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </>
-      )}
-
-      {/* ===== Section 6 & 7: Filter Tabs + Results Table ===== */}
-      {result && (
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <ClipboardCheck className="h-4 w-4 text-primary" />
-                Comparison Results
-                <Badge variant="outline" className="ml-1 text-[10px]">
-                  {allResults.length.toLocaleString()} groups
-                </Badge>
-              </CardTitle>
-              <label className="flex items-center gap-2 text-xs">
-                <Switch
-                  checked={showOnlyIssues}
-                  onCheckedChange={(v) => {
-                    setShowOnlyIssues(v);
-                    setFilter("all");
-                  }}
-                />
-                Show only issues
-              </label>
-            </div>
-            <Tabs
-              value={filter}
-              onValueChange={(v) => setFilter(v as string)}
-              className="mt-2"
-            >
-              <TabsList className="flex w-full flex-wrap gap-1">
-                {FILTER_TABS.map((t) => (
-                  <TabsTrigger key={t.key} value={t.key} className="text-[10px]">
-                    {t.label}
-                    <Badge variant="secondary" className="ml-1 text-[9px]">
-                      {tabCounts[t.key]}
-                    </Badge>
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="max-h-[600px] overflow-y-auto scroll-thin">
-              <Table>
-                <TableHeader className="sticky top-0 z-10 bg-muted/80 backdrop-blur">
-                  <TableRow>
-                    <TableHead className="w-[120px] text-[10px] uppercase">Status</TableHead>
-                    <TableHead className="text-[10px] uppercase">Factory PO</TableHead>
-                    <TableHead className="text-[10px] uppercase">Size</TableHead>
-                    <TableHead className="text-[10px] uppercase text-right">Excel Qty</TableHead>
-                    <TableHead className="text-[10px] uppercase text-right">Website Qty</TableHead>
-                    <TableHead className="text-[10px] uppercase text-right">Difference</TableHead>
-                    <TableHead className="w-[100px] text-[10px] uppercase text-center">
-                      Actions
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredResults.length === 0 ? (
-                    <TableRow>
-                      <TableCell
-                        colSpan={7}
-                        className="py-10 text-center text-xs text-muted-foreground"
-                      >
-                        No rows match this filter.
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    filteredResults.map((r: any, idx: number) => {
-                      const tone = STATUS_TONE[r.status] || "slate";
-                      const Icon = STATUS_ICON[tone];
-                      const diff = r.difference ?? 0;
-                      const diffTone =
-                        diff > 0
-                          ? "text-emerald-600 dark:text-emerald-400"
-                          : diff < 0
-                          ? "text-rose-600 dark:text-rose-400"
-                          : "text-muted-foreground";
-                      return (
-                        <TableRow
-                          key={`${r.factoryPO}-${r.size}-${idx}`}
-                          className={cn(
-                            "cursor-pointer border-t",
-                            STATUS_ROW_TINT[tone]
-                          )}
-                          onClick={() => setDetailRow(r)}
-                        >
-                          <TableCell className="px-3 py-1.5">
-                            <Badge
-                              variant="outline"
-                              className={cn("text-[9px]", STATUS_BADGE[tone])}
-                            >
-                              <Icon className="mr-0.5 h-2.5 w-2.5" />
-                              {r.status.replace(/_/g, " ")}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="px-3 py-1.5 text-xs font-medium whitespace-nowrap">
-                            {r.factoryPO || "—"}
-                          </TableCell>
-                          <TableCell className="px-3 py-1.5">
-                            {r.size ? (
-                              <Badge variant="outline" className="text-[9px] font-mono">
-                                {r.size}
-                              </Badge>
-                            ) : (
-                              "—"
-                            )}
-                          </TableCell>
-                          <TableCell className="px-3 py-1.5 text-xs text-right tabular-nums">
-                            {fmtNum(r.excelQty)}
-                          </TableCell>
-                          <TableCell className="px-3 py-1.5 text-xs text-right tabular-nums">
-                            {fmtNum(r.websiteQty)}
-                          </TableCell>
-                          <TableCell
-                            className={cn(
-                              "px-3 py-1.5 text-xs text-right tabular-nums font-semibold",
-                              diffTone
-                            )}
-                          >
-                            {fmtDiff(diff)}
-                          </TableCell>
-                          <TableCell className="px-3 py-1.5 text-center">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 px-2 gap-1"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDetailRow(r);
-                              }}
-                            >
-                              <Eye className="h-3.5 w-3.5" />
-                              <span className="text-[10px]">View</span>
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-            <div className="flex items-center justify-between border-t px-4 py-2 text-xs text-muted-foreground">
-              <span>
-                Showing {filteredResults.length.toLocaleString()} of{" "}
-                {allResults.length.toLocaleString()} groups
-              </span>
-              <span className="flex items-center gap-1">
-                <Filter className="h-3 w-3" /> Click a row to view detail
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ===== Section 8: Detail Dialog (READ-ONLY) ===== */}
-      <Dialog open={!!detailRow} onOpenChange={(o) => !o && setDetailRow(null)}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto scroll-thin">
+      {/* Section 4: Issue Detail Dialog */}
+      <Dialog open={!!issueRow} onOpenChange={(o) => !o && setIssueRow(null)}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Eye className="h-5 w-5 text-primary" />
-              Reconciliation Detail
-              {detailRow && (
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "ml-1 text-[10px]",
-                    STATUS_BADGE[STATUS_TONE[detailRow.status] || "slate"]
-                  )}
-                >
-                  {detailRow.status.replace(/_/g, " ")}
-                </Badge>
-              )}
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <StatusBadge status={issueRow?.status ?? ""} />
+              Issue Detail
             </DialogTitle>
             <DialogDescription>
-              Read-only detail of one comparison group (Factory PO + Size).
+              PO: <span className="font-mono font-medium">{issueRow?.poNo}</span> · Factory PO: <span className="font-mono font-medium">{issueRow?.factoryPO}</span> · Size: <span className="font-mono font-medium">{issueRow?.size}</span>
             </DialogDescription>
           </DialogHeader>
-          {detailRow && (
-            <div className="space-y-4">
-              {/* Identity */}
-              <div className="grid grid-cols-2 gap-3">
-                <DetailField label="Factory PO" value={detailRow.factoryPO} />
-                <DetailField label="Size" value={detailRow.size} mono />
-              </div>
-
+          {issueRow && (
+            <div className="space-y-4 text-xs">
               {/* Quantities */}
-              <div className="grid grid-cols-3 gap-3 rounded-md border bg-muted/30 p-3">
-                <DetailNumber label="Excel Qty" value={detailRow.excelQty} />
-                <DetailNumber label="Website Qty" value={detailRow.websiteQty} />
-                <div>
-                  <div className="text-[10px] font-medium uppercase text-muted-foreground">
-                    Difference
-                  </div>
-                  <div
-                    className={cn(
-                      "text-sm font-bold tabular-nums",
-                      (detailRow.difference ?? 0) > 0
-                        ? "text-emerald-600 dark:text-emerald-400"
-                        : (detailRow.difference ?? 0) < 0
-                        ? "text-rose-600 dark:text-rose-400"
-                        : "text-foreground"
-                    )}
-                  >
-                    {fmtDiff(detailRow.difference)}
-                  </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-md border p-2">
+                  <div className="text-[10px] text-muted-foreground">Order Qty</div>
+                  <div className="font-mono text-sm">P: {issueRow.partnerOrderQty} · W: {issueRow.websiteOrderQty}</div>
+                  <div className={cn("text-[10px]", issueRow.orderDifference === 0 ? "text-emerald-600" : "text-rose-600")}>Diff: {issueRow.orderDifference > 0 ? "+" : ""}{issueRow.orderDifference}</div>
+                </div>
+                <div className="rounded-md border p-2">
+                  <div className="text-[10px] text-muted-foreground">OUT / Output</div>
+                  <div className="font-mono text-sm">P: {issueRow.partnerOutQty} · W: {issueRow.websiteOutputQty}</div>
+                  <div className={cn("text-[10px]", issueRow.outDifference === 0 ? "text-emerald-600" : "text-rose-600")}>Diff: {issueRow.outDifference > 0 ? "+" : ""}{issueRow.outDifference}</div>
+                </div>
+                <div className="rounded-md border p-2">
+                  <div className="text-[10px] text-muted-foreground">IN / Input</div>
+                  <div className="font-mono text-sm">P: {issueRow.partnerInQty} · W: {issueRow.websiteInputQty}</div>
+                  <div className={cn("text-[10px]", issueRow.inDifference === 0 ? "text-emerald-600" : "text-rose-600")}>Diff: {issueRow.inDifference > 0 ? "+" : ""}{issueRow.inDifference}</div>
                 </div>
               </div>
 
-              {/* Status + explanation */}
-              <div
-                className={cn(
-                  "rounded-md border p-3 text-xs",
-                  STATUS_BADGE[STATUS_TONE[detailRow.status] || "slate"]
-                )}
-              >
-                <div className="flex items-center gap-1.5 font-semibold">
-                  <Badge
-                    variant="outline"
-                    className={cn("text-[9px]", STATUS_BADGE[STATUS_TONE[detailRow.status] || "slate"])}
-                  >
-                    {detailRow.status.replace(/_/g, " ")}
-                  </Badge>
-                  Status Explanation
-                </div>
-                <p className="mt-1.5 text-foreground/90">
-                  {statusExplanation(detailRow.status)}
-                </p>
-              </div>
-
-              {/* Suggestions for typo statuses */}
-              {detailRow.status === "POSSIBLE_WRONG_FACTORY_PO" &&
-                detailRow.suggestedFactoryPO && (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-3 text-xs">
-                    <div className="mb-1 flex items-center gap-1.5 font-semibold text-amber-700 dark:text-amber-300">
-                      <AlertTriangle className="h-3.5 w-3.5" /> Suggested Factory PO
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <code className="rounded bg-amber-100 dark:bg-amber-950/60 px-2 py-1 font-mono text-amber-800 dark:text-amber-200">
-                        {detailRow.suggestedFactoryPO}
-                      </code>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 gap-1"
-                        onClick={() => {
-                          navigator.clipboard
-                            .writeText(detailRow.suggestedFactoryPO)
-                            .then(() => toast.success("Copied to clipboard."))
-                            .catch(() => toast.error("Failed to copy."));
-                        }}
-                      >
-                        <Copy className="h-3 w-3" /> Copy
-                      </Button>
-                    </div>
-                    <p className="mt-2 text-amber-700/80 dark:text-amber-300/80">
-                      A different Factory PO for the same Size exists on the
-                      Website — likely a typo in the Excel file.
-                    </p>
-                  </div>
-                )}
-
-              {detailRow.status === "POSSIBLE_WRONG_SIZE" && detailRow.suggestedSize && (
-                <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-3 text-xs">
-                  <div className="mb-1 flex items-center gap-1.5 font-semibold text-amber-700 dark:text-amber-300">
-                    <AlertTriangle className="h-3.5 w-3.5" /> Suggested Size
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <code className="rounded bg-amber-100 dark:bg-amber-950/60 px-2 py-1 font-mono text-amber-800 dark:text-amber-200">
-                      {detailRow.suggestedSize}
-                    </code>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 gap-1"
-                      onClick={() => {
-                        navigator.clipboard
-                          .writeText(detailRow.suggestedSize)
-                          .then(() => toast.success("Copied to clipboard."))
-                          .catch(() => toast.error("Failed to copy."));
-                      }}
-                    >
-                      <Copy className="h-3 w-3" /> Copy
-                    </Button>
-                  </div>
-                  <p className="mt-2 text-amber-700/80 dark:text-amber-300/80">
-                    A different Size for the same Factory PO exists on the
-                    Website — likely a typo or wrong size code in the Excel file.
-                  </p>
+              {/* Reason */}
+              {issueRow.reason && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-2">
+                  <div className="font-medium text-amber-700 dark:text-amber-300 mb-0.5">Explanation</div>
+                  <div className="text-[11px] text-muted-foreground">{issueRow.reason}</div>
                 </div>
               )}
 
-              {detailRow.status === "EXACT_DUPLICATE" &&
-                typeof detailRow.duplicateCount === "number" && (
-                  <div className="rounded-md border border-rose-200 bg-rose-50 dark:border-rose-800 dark:bg-rose-950/30 p-3 text-xs">
-                    <div className="mb-1 flex items-center gap-1.5 font-semibold text-rose-700 dark:text-rose-300">
-                      <AlertCircle className="h-3.5 w-3.5" /> Duplicate Count
+              {/* Issues list */}
+              {(() => {
+                try {
+                  const issues = JSON.parse(issueRow.issues || "[]");
+                  if (issues.length === 0) return null;
+                  return (
+                    <div>
+                      <div className="font-medium mb-1">Issues ({issues.length})</div>
+                      <div className="flex flex-wrap gap-1">
+                        {issues.map((iss: string, i: number) => (
+                          <StatusBadge key={i} status={iss} />
+                        ))}
+                      </div>
                     </div>
-                    <p>
-                      An identical record (Date + Factory PO + Size + Qty) appears{" "}
-                      <strong>{detailRow.duplicateCount}</strong> time(s) within a single
-                      source. Likely a duplicate entry that should be removed.
-                    </p>
-                  </div>
-                )}
+                  );
+                } catch { return null; }
+              })()}
 
-              {/* Row counts */}
-              <div className="grid grid-cols-2 gap-3">
-                <DetailNumber
-                  label="Excel Row Count"
-                  value={detailRow.excelRowCount}
-                  tone="default"
-                />
-                <DetailNumber
-                  label="Website Row Count"
-                  value={detailRow.websiteRowCount}
-                  tone="default"
-                />
+              {/* Partner transactions */}
+              <div>
+                <div className="font-medium mb-1">Partner Transactions</div>
+                <div className="rounded-md border max-h-40 overflow-y-auto scroll-thin">
+                  {(() => {
+                    try {
+                      const tx = JSON.parse(issueRow.partnerTransactions || "[]");
+                      if (tx.length === 0) return <div className="p-2 text-muted-foreground text-[11px]">No partner transactions</div>;
+                      return (
+                        <table className="w-full text-[11px]">
+                          <thead className="bg-muted/50 sticky top-0">
+                            <tr><th className="px-2 py-1 text-left">Date</th><th className="px-2 py-1 text-left">Type</th><th className="px-2 py-1 text-right">Qty</th></tr>
+                          </thead>
+                          <tbody>
+                            {tx.map((t: any, i: number) => (
+                              <tr key={i} className="border-t">
+                                <td className="px-2 py-1 font-mono">{t.date}</td>
+                                <td className="px-2 py-1">{t.type}</td>
+                                <td className="px-2 py-1 text-right font-mono">{t.qty}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      );
+                    } catch { return <div className="p-2 text-muted-foreground text-[11px]">Parse error</div>; }
+                  })()}
+                </div>
               </div>
 
-              {/* Read-only notice */}
-              <Alert>
-                <Info className="h-4 w-4" />
-                <AlertDescription>
-                  This view is <strong>read-only</strong>. Edit data in Data Entry or
-                  Master Data.
-                </AlertDescription>
-              </Alert>
+              {/* Website transactions */}
+              <div>
+                <div className="font-medium mb-1">Website Transactions</div>
+                <div className="rounded-md border max-h-40 overflow-y-auto scroll-thin">
+                  {(() => {
+                    try {
+                      const tx = JSON.parse(issueRow.websiteTransactions || "[]");
+                      if (tx.length === 0) return <div className="p-2 text-muted-foreground text-[11px]">No website transactions</div>;
+                      return (
+                        <table className="w-full text-[11px]">
+                          <thead className="bg-muted/50 sticky top-0">
+                            <tr><th className="px-2 py-1 text-left">Date</th><th className="px-2 py-1 text-left">Type</th><th className="px-2 py-1 text-right">Qty</th></tr>
+                          </thead>
+                          <tbody>
+                            {tx.map((t: any, i: number) => (
+                              <tr key={i} className="border-t">
+                                <td className="px-2 py-1 font-mono">{t.date}</td>
+                                <td className="px-2 py-1">{t.type}</td>
+                                <td className="px-2 py-1 text-right font-mono">{t.qty}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      );
+                    } catch { return <div className="p-2 text-muted-foreground text-[11px]">Parse error</div>; }
+                  })()}
+                </div>
+              </div>
+
+              {/* Balances */}
+              <div className="grid grid-cols-3 gap-2 text-[11px]">
+                <div className="rounded-md border p-2">
+                  <div className="text-muted-foreground">Pending Partner</div>
+                  <div className="font-mono font-bold">{issueRow.pendingPartner}</div>
+                  <div className="text-[9px] text-muted-foreground">OUT - IN (partner)</div>
+                </div>
+                <div className="rounded-md border p-2">
+                  <div className="text-muted-foreground">Pending Website</div>
+                  <div className="font-mono font-bold">{issueRow.pendingWebsite}</div>
+                  <div className="text-[9px] text-muted-foreground">Output - Input (website)</div>
+                </div>
+                <div className="rounded-md border p-2">
+                  <div className="text-muted-foreground">Remaining Order</div>
+                  <div className="font-mono font-bold">{issueRow.remainingOrder}</div>
+                  <div className="text-[9px] text-muted-foreground">Order - Output</div>
+                </div>
+              </div>
             </div>
           )}
-          <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setDetailRow(null)}>
-              <X className="h-3.5 w-3.5" /> Close
-            </Button>
-          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* History Dialog */}
+      <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><History className="h-4 w-4" /> Reconciliation History</DialogTitle>
+            <DialogDescription>Past reconciliation runs (most recent 20)</DialogDescription>
+          </DialogHeader>
+          {historyLoading ? (
+            <div className="py-8 text-center"><Loader2 className="h-6 w-6 mx-auto animate-spin" /></div>
+          ) : historyRuns.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">No runs yet</div>
+          ) : (
+            <div className="space-y-2">
+              {historyRuns.map((run) => (
+                <div key={run.id} className="rounded-md border p-3 text-xs space-y-1">
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium">{run.runNumber}</div>
+                    <Badge variant="secondary" className="text-[9px]">{run.status}</Badge>
+                  </div>
+                  <div className="text-muted-foreground">{run.fileName} · {run.productType}</div>
+                  <div className="text-muted-foreground">
+                    {new Date(run.createdAt).toLocaleString("vi-VN")} · {run.totalLines} lines · {run.matchedLines} matched · {run.mismatchLines} mismatch
+                  </div>
+                  <div className="flex gap-1 mt-1">
+                    <a href={api.reconciliationExportUrl(run.id, "all")} download>
+                      <Button size="sm" variant="outline" className="h-6 text-[10px]"><Download className="mr-1 h-3 w-3" /> Export</Button>
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
   );
 }
 
-export default ProductReconciliationView;
-
-// ===== Sub-components =====
-
-function SummaryCard({
-  label,
-  value,
-  icon: Icon,
-  tone = "slate",
-}: {
-  label: string;
-  value: number | string;
-  icon: React.ComponentType<{ className?: string }>;
-  tone?: Tone;
-}) {
-  const toneClass = (() => {
-    switch (tone) {
-      case "emerald":
-        return "text-emerald-600 dark:text-emerald-400";
-      case "amber":
-        return "text-amber-600 dark:text-amber-400";
-      case "rose":
-        return "text-rose-600 dark:text-rose-400";
-      default:
-        return "text-slate-700 dark:text-slate-200";
-    }
-  })();
-  const iconBg = (() => {
-    switch (tone) {
-      case "emerald":
-        return "bg-emerald-100 dark:bg-emerald-950/40";
-      case "amber":
-        return "bg-amber-100 dark:bg-amber-950/40";
-      case "rose":
-        return "bg-rose-100 dark:bg-rose-950/40";
-      default:
-        return "bg-slate-100 dark:bg-slate-900/40";
-    }
-  })();
+function SummaryCard({ label, value, color }: { label: string; value: number; color: string }) {
   return (
-    <Card className="border-border/60">
-      <CardContent className="flex items-center gap-3 p-3">
-        <div className={cn("flex h-9 w-9 items-center justify-center rounded-lg", iconBg)}>
-          <Icon className={cn("h-4 w-4", toneClass)} />
-        </div>
-        <div className="min-w-0">
-          <div className={cn("text-xl font-bold tabular-nums leading-tight", toneClass)}>
-            {typeof value === "number" ? value.toLocaleString() : value}
-          </div>
-          <div className="text-[11px] text-muted-foreground leading-tight">{label}</div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function StatBox({
-  label,
-  value,
-  tone = "slate",
-  compact = false,
-}: {
-  label: string;
-  value: number | string;
-  tone?: Tone;
-  compact?: boolean;
-}) {
-  const toneClass = (() => {
-    switch (tone) {
-      case "emerald":
-        return "text-emerald-600 dark:text-emerald-400";
-      case "amber":
-        return "text-amber-600 dark:text-amber-400";
-      case "rose":
-        return "text-rose-600 dark:text-rose-400";
-      default:
-        return "text-slate-700 dark:text-slate-200";
-    }
-  })();
-  return (
-    <div className="rounded-md border bg-card p-2 text-center">
-      <div className={cn("font-bold tabular-nums", compact ? "text-sm" : "text-lg", toneClass)}>
-        {typeof value === "number" ? value.toLocaleString() : value}
-      </div>
-      <div className="text-[10px] text-muted-foreground leading-tight">{label}</div>
+    <div className="rounded-md border p-2 text-center">
+      <div className={cn("inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold", color)}>{label}</div>
+      <div className="font-bold text-lg mt-1">{value.toLocaleString()}</div>
     </div>
   );
 }
 
-function DetailField({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: string | undefined | null;
-  mono?: boolean;
-}) {
+function QtyCard({ label, partner, website }: { label: string; partner: number; website: number }) {
   return (
-    <div>
-      <div className="text-[10px] font-medium uppercase text-muted-foreground">{label}</div>
-      <div className={cn("text-xs font-medium break-words", mono && "font-mono")}>
-        {value || <span className="text-muted-foreground/40">—</span>}
-      </div>
-    </div>
-  );
-}
-
-function DetailNumber({
-  label,
-  value,
-  tone = "default",
-}: {
-  label: string;
-  value: number | undefined | null;
-  tone?: "default" | "emerald";
-}) {
-  const toneClass = tone === "emerald" ? "text-emerald-600 dark:text-emerald-400" : "text-foreground";
-  return (
-    <div>
-      <div className="text-[10px] font-medium uppercase text-muted-foreground">{label}</div>
-      <div className={cn("text-sm font-bold tabular-nums", toneClass)}>
-        {typeof value === "number" ? value.toLocaleString() : "—"}
-      </div>
+    <div className="rounded-md border p-2">
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className="font-mono text-[11px]">P: {partner} · W: {website}</div>
     </div>
   );
 }

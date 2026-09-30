@@ -296,3 +296,95 @@ model ShipmentBatch {
   @@index([productType, date])
   @@index([createdAt])
 }
+
+/// Reconciliation Run — mỗi lần user upload file đối tác + chạy compare.
+model ReconciliationRun {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  runNumber       String   @unique // e.g. "RECON-000001"
+  fileName        String
+  uploadedBy      String?
+  uploadedAt      DateTime @default(now())
+  dateFrom        String?  // transaction date range
+  dateTo          String?
+  asOfDate        String?  // snapshot mode
+  productType     String?
+  status          String   @default("running") // running | completed | failed
+  // Mapping config (JSON): { ordersSheet, summarySheet, transactionsSheet,
+  //   partnerOutType, partnerInType, partnerPoField, partnerPurchasePoField }
+  mappingConfig   String   @default("{}")
+  // Counts (filled after run completes)
+  totalLines      Int      @default(0)
+  matchedLines    Int      @default(0)
+  mismatchLines   Int      @default(0)
+  missingOnWebsite Int     @default(0)
+  missingOnPartner Int     @default(0)
+  duplicateLines  Int      @default(0)
+  overOutputLines Int      @default(0)
+  overInputLines  Int      @default(0)
+  dateDiffLines   Int      @default(0)
+  invalidLines    Int      @default(0)
+  // Aggregate totals
+  totalOrderQty   Int      @default(0)
+  totalPartnerOut Int      @default(0)
+  totalWebsiteOutput Int   @default(0)
+  totalPartnerIn  Int      @default(0)
+  totalWebsiteInput Int    @default(0)
+  // Preview stats (before run)
+  previewOrdersCount Int   @default(0)
+  previewSummaryCount Int  @default(0)
+  previewTxCount   Int     @default(0)
+  error           String?
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([fileName])
+  @@index([status])
+  @@index([createdAt])
+  @@index([productType])
+}
+
+/// Reconciliation Result — 1 row = 1 business line (PO + FactoryPO + Size).
+model ReconciliationResult {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  runId           String
+  // Business key
+  poNo            String
+  factoryPO       String
+  size            String
+  // Optional context
+  model           String?
+  sku             String?
+  colorCode       String?
+  // Partner quantities
+  partnerOrderQty Int      @default(0)
+  partnerOutQty   Int      @default(0)
+  partnerInQty    Int      @default(0)
+  // Website quantities
+  websiteOrderQty Int      @default(0)
+  websiteOutputQty Int     @default(0)
+  websiteInputQty Int      @default(0)
+  // Differences (Partner - Website)
+  orderDifference Int      @default(0)
+  outDifference   Int      @default(0)
+  inDifference    Int      @default(0)
+  // Balances
+  pendingPartner  Int      @default(0) // OUT - IN at partner
+  pendingWebsite  Int      @default(0) // Output - Input on website
+  remainingOrder  Int      @default(0) // Order - Output
+  // Status + issues
+  status          String   @default("MATCHED") // MATCHED | QTY_MISMATCH | OUTPUT_MISMATCH | INPUT_MISMATCH | ORDER_QTY_MISMATCH | MISSING_ON_WEBSITE | MISSING_ON_PARTNER | OVER_OUTPUT | OVER_INPUT | STILL_WITH_PARTNER | POSSIBLE_DUPLICATE | DATE_DISTRIBUTION_MISMATCH | POSSIBLE_WRONG_FACTORY_PO | POSSIBLE_WRONG_SIZE | INVALID_DATA | AMBIGUOUS
+  issues          String   @default("[]") // JSON array of issue codes
+  reason          String?  // human-readable explanation
+  // Transaction details (JSON arrays for drill-down)
+  partnerTransactions String @default("[]")
+  websiteTransactions String @default("[]")
+  // Date distribution check
+  dateDiff       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  @@index([runId])
+  @@index([runId, status])
+  @@index([runId, poNo])
+  @@index([runId, poNo, factoryPO])
+  @@index([runId, poNo, factoryPO, size])
+}
