@@ -103,7 +103,7 @@ const EDITABLE_FIELDS: CanonicalField[] = [
  * `productType: currentProduct` so only rows belonging to the active product
  * are shown — no productType filter dropdown needed.
  */
-export function ProductMasterDataView() {
+export function ProductMasterDataView({ statusFilter }: { statusFilter?: string }) {
   const qc = useQueryClient();
   const { currentProduct, refreshKey, bumpRefresh } = useAppStore();
   const theme = PRODUCT_THEME[currentProduct];
@@ -150,6 +150,7 @@ export function ProductMasterDataView() {
     search: debouncedSearch,
     ...filters,
     productType: currentProduct,
+    shippingStatus: statusFilter || undefined,
     sort: sort.key,
     order: sort.order,
   };
