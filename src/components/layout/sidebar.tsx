@@ -23,6 +23,7 @@ import {
   FileOutput,
   GitCompare,
   Monitor,
+  ArrowLeftRight,
 } from "lucide-react";
 import { useAppStore, PRODUCT_THEME, type ProductType, type ViewKey } from "@/store/app-store";
 import { cn } from "@/lib/utils";
@@ -73,6 +74,7 @@ const PRODUCT_NAV: NavGroup[] = [
       { key: "product-order-monitor", label: "Order Monitor", icon: Monitor },
       { key: "product-output-slip", label: "Output Slips", icon: FileOutput },
       { key: "product-reconciliation", label: "Reconciliation", icon: GitCompare },
+      { key: "product-fvo-stech", label: "FVO ↔ STECH", icon: ArrowLeftRight },
       { key: "product-import", label: "Import Excel", icon: Upload },
       { key: "product-export", label: "Export Excel", icon: Download },
     ],

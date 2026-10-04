@@ -204,6 +204,38 @@ export const api = {
   reconciliationExportUrl: (runId: string, sheet: string = "all"): string =>
     `/api/reconciliation/${runId}/export?sheet=${sheet}`,
 
+  // ── FVO ↔ STECH Tracking ────────────────────────────────────────────────
+  fvoStechTracking: async (filters: {
+    poNo?: string;
+    art?: string;
+    size?: string;
+    model?: string;
+    colorCode?: string;
+    status?: string;
+    page?: number;
+    pageSize?: number;
+  } = {}): Promise<{
+    ok: boolean;
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+    rows: any[];
+    summary: any;
+  }> => {
+    const q = new URLSearchParams();
+    if (filters.poNo) q.set("poNo", filters.poNo);
+    if (filters.art) q.set("art", filters.art);
+    if (filters.size) q.set("size", filters.size);
+    if (filters.model) q.set("model", filters.model);
+    if (filters.colorCode) q.set("colorCode", filters.colorCode);
+    if (filters.status) q.set("status", filters.status);
+    q.set("page", String(filters.page ?? 1));
+    q.set("pageSize", String(filters.pageSize ?? 50));
+    const res = await fetch(`/api/fvo-stech-tracking?${q}`);
+    return jsonOrThrow(res);
+  },
+
   // ── Entry Staging (bulk data entry → validate → confirm) ───────────────────
   stagingCreate: async (body: {
     productType: string;

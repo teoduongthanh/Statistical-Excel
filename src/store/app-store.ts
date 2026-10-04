@@ -18,6 +18,7 @@ export type ViewKey =
   | "product-order-monitor"
   | "product-output-slip"
   | "product-reconciliation"
+  | "product-fvo-stech"
   | "product-import"
   | "product-export"
   | "product-review"
