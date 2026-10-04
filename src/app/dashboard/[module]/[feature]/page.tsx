@@ -43,8 +43,7 @@ export default function FeaturePage() {
 
   const renderView = () => {
     switch (feature.view) {
-      case "data-entry":
-        return <ProductDataEntryView />;
+      case "data-entry": return <ProductDataEntryView />;
       case "master-data":
         return (
           <div className="space-y-0">
@@ -57,32 +56,19 @@ export default function FeaturePage() {
             <ProductMasterDataView statusFilter={feature.statusFilter} />
           </div>
         );
-      case "production-tracking":
-        return <ProductProductionTrackingView />;
-      case "statistics":
-        return <ProductStatisticsView />;
-      case "shipment":
-        return <ProductShipmentView />;
-      case "report":
-        return <ProductReportView />;
-      case "bulk-check":
-        return <ProductBulkCheckView />;
-      case "order-monitor":
-        return <ProductOrderMonitorView />;
-      case "output-slip":
-        return <ProductOutputSlipView />;
-      case "reconciliation":
-        return <ProductReconciliationView />;
-      case "fvo-stech":
-        return <FvoStechTrackingView />;
-      case "import":
-        return <ProductImportView />;
-      case "export":
-        return <ProductExportView />;
-      case "review":
-        return <ProductReviewView />;
-      default:
-        return <div>Unknown view: {feature.view}</div>;
+      case "production-tracking": return <ProductProductionTrackingView />;
+      case "statistics": return <ProductStatisticsView />;
+      case "shipment": return <ProductShipmentView />;
+      case "report": return <ProductReportView />;
+      case "bulk-check": return <ProductBulkCheckView />;
+      case "order-monitor": return <ProductOrderMonitorView />;
+      case "output-slip": return <ProductOutputSlipView />;
+      case "reconciliation": return <ProductReconciliationView />;
+      case "fvo-stech": return <FvoStechTrackingView />;
+      case "import": return <ProductImportView />;
+      case "export": return <ProductExportView />;
+      case "review": return <ProductReviewView />;
+      default: return <div>Unknown view: {feature.view}</div>;
     }
   };
 
