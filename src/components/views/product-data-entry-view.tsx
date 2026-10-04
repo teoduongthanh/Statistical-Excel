@@ -408,8 +408,19 @@ export function ProductDataEntryView() {
     if (!factoryPO) errs.push("Factory PO is required");
     if (!size) errs.push("Size is required");
     if (!qty) errs.push("Qty is required");
-    else if (isNaN(Number(qty))) errs.push("Qty must be a number");
-    else if (Number(qty) <= 0) errs.push("Qty must be greater than 0");
+    else {
+      // If qty still contains an expression (user hasn't blurred yet), try to evaluate.
+      let valToCheck = qty;
+      if (/[+\-*/]/.test(qty.replace(/^\s*-/, "").trim())) {
+        const { value, computed } = evaluateQtyExpression(qty);
+        if (computed) valToCheck = value;
+        else { errs.push("Qty expression is invalid — press Enter to calculate"); }
+      }
+      if (errs.length === 0) {
+        if (isNaN(Number(valToCheck))) errs.push("Qty must be a number");
+        else if (Number(valToCheck) <= 0) errs.push("Qty must be greater than 0");
+      }
+    }
     return errs;
   }, [shippingStatus, poNo, factoryPO, size, qty]);
 
@@ -1129,20 +1140,73 @@ export function ProductDataEntryView() {
                 )}
               </div>
 
-              {/* Step 5: Qty (spec §9) */}
+              {/* Step 5: Qty (spec §9).
+                  Supports simple math expressions like "5+6+2+7+8" (Excel-like).
+                  User types the expression → on blur or Enter, it's evaluated
+                  and the field auto-fills with the result. */}
               <div className="space-y-1.5">
-                <Label className="text-xs">Qty <span className="text-destructive">*</span></Label>
+                <Label className="flex items-center justify-between text-xs">
+                  <span>Qty <span className="text-destructive">*</span></span>
+                  <span className="text-[10px] text-muted-foreground">
+                    Supports math: 5+6+2+7+8 → 28
+                  </span>
+                </Label>
                 <Input
                   ref={qtyRef}
                   value={qty}
-                  onChange={(e) => setQty(e.target.value.replace(/[^0-9.\-]/g, ""))}
-                  onKeyDown={(e) => handleEnter(e, "qty")}
-                  placeholder="e.g. 100"
+                  onChange={(e) => {
+                    // Allow digits, + - * / ( ) . and whitespace (for expressions).
+                    const v = e.target.value;
+                    setQty(v);
+                  }}
+                  onBlur={() => {
+                    // On blur, evaluate the expression if it contains operators.
+                    if (/[+\-*/]/.test(qty.replace(/^\s*-/, "").trim())) {
+                      const { value, computed } = evaluateQtyExpression(qty);
+                      if (computed) {
+                        setQty(value);
+                        toast.success(`Calculated: ${qty.trim()} = ${value}`);
+                      }
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    // On Enter, evaluate expression first, then proceed with save.
+                    if (e.key === "Enter") {
+                      if (/[+\-*/]/.test(qty.replace(/^\s*-/, "").trim())) {
+                        const { value, computed } = evaluateQtyExpression(qty);
+                        if (computed) {
+                          setQty(value);
+                          toast.success(`Calculated: ${qty.trim()} = ${value}`);
+                          // Don't proceed with save yet — let user see the result.
+                          e.preventDefault();
+                          return;
+                        }
+                      }
+                    }
+                    handleEnter(e, "qty");
+                  }}
+                  placeholder="e.g. 100 or 5+6+2+7+8"
                   className="h-11"
-                  inputMode="numeric"
+                  inputMode="text"
                   disabled={shippingDisabled}
                 />
-                {qty && !isNaN(Number(qty)) && (
+                {/* Expression preview — shows live result while typing */}
+                {qty && /[+\-*/]/.test(qty.replace(/^\s*-/, "").trim()) && (
+                  (() => {
+                    const { value, computed } = evaluateQtyExpression(qty);
+                    if (computed) {
+                      return (
+                        <p className="text-[11px] text-emerald-600 flex items-center gap-1">
+                          <Calculator className="h-3 w-3" />
+                          {qty.trim()} = <span className="font-mono font-bold">{value}</span>
+                          <span className="text-muted-foreground ml-1">(press Enter or click outside to apply)</span>
+                        </p>
+                      );
+                    }
+                    return null;
+                  })()
+                )}
+                {qty && !isNaN(Number(qty)) && !/[+\-*/]/.test(qty.replace(/^\s*-/, "").trim()) && (
                   <p className="text-[11px] text-muted-foreground">
                     Q'ty 1 = {qty} · Q'ty 2 ={" "}
                     <span className="font-mono font-medium text-foreground">
@@ -1892,6 +1956,56 @@ function ValidationCheck({ ok, warn, label }: { ok: boolean; warn?: boolean; lab
       </span>
     </div>
   );
+}
+
+// ── Qty expression evaluator ──────────────────────────────────────────────
+// Lets the user type simple math expressions like "5+6+2+7+8" or "100-20"
+// in the Qty field. The result is auto-computed (like Excel).
+//
+// Supported operators: + - * / and parentheses ( ).
+// Safe eval: only digits, operators, whitespace, parens allowed.
+// Returns the evaluated number (number) or the original input (string) if
+// the expression is invalid or has no operators.
+//
+// Examples:
+//   "5+6+2+7+8"   → 28
+//   "100-20"      → 80
+//   "10*5"        → 50
+//   "100/4"       → 25
+//   "(5+5)*2"     → 20
+//   "28"          → 28 (no operators — plain number)
+//   "5+"           → "5+" (incomplete — returns original)
+function evaluateQtyExpression(input: string): { value: string; computed: boolean } {
+  if (!input) return { value: "", computed: false };
+  const trimmed = input.trim();
+
+  // If already a plain number, return as-is (no need to compute).
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+    return { value: trimmed, computed: false };
+  }
+
+  // Validate: only digits, + - * / ( ) . and whitespace.
+  if (!/^[\d+\-*/().\s]+$/.test(trimmed)) {
+    return { value: input, computed: false };
+  }
+
+  // Must contain at least one operator (otherwise it's a plain number).
+  if (!/[+\-*/]/.test(trimmed.replace(/^\s*-/, ""))) {
+    return { value: input, computed: false };
+  }
+
+  try {
+    // Safe evaluation using Function (only safe chars allowed at this point).
+    const result = Function(`"use strict"; return (${trimmed})`)();
+    if (typeof result === "number" && !isNaN(result) && isFinite(result)) {
+      // Use integer if whole number, else keep decimals.
+      const formatted = Number.isInteger(result) ? String(result) : String(result);
+      return { value: formatted, computed: true };
+    }
+  } catch {
+    // Invalid expression — return original input.
+  }
+  return { value: input, computed: false };
 }
 
 // Compute Q'ty 2 preview client-side (mirrors server logic).
