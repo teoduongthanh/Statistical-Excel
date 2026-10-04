@@ -3143,6 +3143,19 @@ function BulkStagingPanel({ currentProduct, theme, onImported }: BulkStagingPane
   const [history, setHistory] = React.useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = React.useState(false);
 
+  // ── "Use Existing Entries Data" dialog ──────────────────────────────────
+  const [showFromEntries, setShowFromEntries] = React.useState(false);
+  const [fromEntriesLoading, setFromEntriesLoading] = React.useState(false);
+  const [fromEntriesFilters, setFromEntriesFilters] = React.useState({
+    shippingStatus: "",
+    dateFrom: "",
+    dateTo: "",
+    poNo: "",
+    factoryPO: "",
+    size: "",
+    limit: "500",
+  });
+
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
   // Reset state when batch changes.
@@ -3188,6 +3201,45 @@ function BulkStagingPanel({ currentProduct, theme, onImported }: BulkStagingPane
       toast.error(e instanceof Error ? e.message : "Failed to create batch");
     } finally {
       setCreating(false);
+    }
+  }
+
+  // ── Create batch from existing EntryData ────────────────────────────────
+  async function handleCreateFromEntries() {
+    if (!currentProduct) {
+      toast.error("No product selected.");
+      return;
+    }
+    setFromEntriesLoading(true);
+    resetBatchState();
+    try {
+      const filters: any = {};
+      if (fromEntriesFilters.shippingStatus) filters.shippingStatus = fromEntriesFilters.shippingStatus;
+      if (fromEntriesFilters.dateFrom) filters.dateFrom = fromEntriesFilters.dateFrom;
+      if (fromEntriesFilters.dateTo) filters.dateTo = fromEntriesFilters.dateTo;
+      if (fromEntriesFilters.poNo) filters.poNo = fromEntriesFilters.poNo;
+      if (fromEntriesFilters.factoryPO) filters.factoryPO = fromEntriesFilters.factoryPO;
+      if (fromEntriesFilters.size) filters.size = fromEntriesFilters.size;
+      const limitNum = parseInt(fromEntriesFilters.limit, 10);
+      if (!isNaN(limitNum) && limitNum > 0) filters.limit = limitNum;
+
+      const result = await api.stagingCreateFromEntries({
+        productType: currentProduct,
+        createdBy: "ui-user",
+        filters,
+      });
+      setBatchDbId(result.batchDbId);
+      setBatchMeta({ batchId: result.batchId, totalRows: result.totalRows });
+      toast.success(
+        `Created batch ${result.batchId} from ${result.sourceCount} EntryData rows.`
+      );
+      setShowFromEntries(false);
+      // Auto-load summary
+      setTimeout(() => loadSummary(result.batchDbId), 50);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to create batch from entries");
+    } finally {
+      setFromEntriesLoading(false);
     }
   }
 
@@ -3442,6 +3494,14 @@ function BulkStagingPanel({ currentProduct, theme, onImported }: BulkStagingPane
               }}
             >
               <Database className="h-3.5 w-3.5 mr-1" /> History
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowFromEntries(true)}
+              className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+            >
+              <Database className="h-3.5 w-3.5 mr-1" /> Use Existing Entries Data
             </Button>
             <span className="text-[10px] text-muted-foreground ml-auto">
               Columns: status · po · factoryPO · size · qty · date [· deadline]
@@ -4095,6 +4155,126 @@ function BulkStagingPanel({ currentProduct, theme, onImported }: BulkStagingPane
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowHistory(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── "Use Existing Entries Data" dialog ─────────────────────────── */}
+      <Dialog open={showFromEntries} onOpenChange={setShowFromEntries}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Database className="h-4 w-4" /> Create Batch from Existing Entries Data
+            </DialogTitle>
+            <DialogDescription>
+              Load EntryData rows into a staging batch (no copy-paste needed).
+              Filters are optional — leave blank to load all rows for{" "}
+              <b>{currentProduct}</b>.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-xs">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label className="text-[10px]">Shipping Status</Label>
+                <Select
+                  value={fromEntriesFilters.shippingStatus || "__all__"}
+                  onValueChange={(v) =>
+                    setFromEntriesFilters((f) => ({ ...f, shippingStatus: v === "__all__" ? "" : v }))
+                  }
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="All status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__all__">All status</SelectItem>
+                    <SelectItem value="1.Order">1.Order</SelectItem>
+                    <SelectItem value="2.Output">2.Output</SelectItem>
+                    <SelectItem value="3.Pending">3.Pending</SelectItem>
+                    <SelectItem value="4.Input">4.Input</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px]">Limit (max 5000)</Label>
+                <Input
+                  type="number"
+                  value={fromEntriesFilters.limit}
+                  onChange={(e) => setFromEntriesFilters((f) => ({ ...f, limit: e.target.value }))}
+                  className="h-8 text-xs"
+                  min={1}
+                  max={5000}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label className="text-[10px]">Date From</Label>
+                <Input
+                  type="date"
+                  value={fromEntriesFilters.dateFrom}
+                  onChange={(e) => setFromEntriesFilters((f) => ({ ...f, dateFrom: e.target.value }))}
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px]">Date To</Label>
+                <Input
+                  type="date"
+                  value={fromEntriesFilters.dateTo}
+                  onChange={(e) => setFromEntriesFilters((f) => ({ ...f, dateTo: e.target.value }))}
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="space-y-1">
+                <Label className="text-[10px]">PO NO#</Label>
+                <Input
+                  value={fromEntriesFilters.poNo}
+                  onChange={(e) => setFromEntriesFilters((f) => ({ ...f, poNo: e.target.value }))}
+                  className="h-8 text-xs"
+                  placeholder="contains…"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px]">Factory PO</Label>
+                <Input
+                  value={fromEntriesFilters.factoryPO}
+                  onChange={(e) => setFromEntriesFilters((f) => ({ ...f, factoryPO: e.target.value }))}
+                  className="h-8 text-xs"
+                  placeholder="contains…"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px]">Size</Label>
+                <Input
+                  value={fromEntriesFilters.size}
+                  onChange={(e) => setFromEntriesFilters((f) => ({ ...f, size: e.target.value }))}
+                  className="h-8 text-xs"
+                  placeholder="contains…"
+                />
+              </div>
+            </div>
+            <div className="rounded-md border border-emerald-200 bg-emerald-50/50 p-2 text-[11px] text-muted-foreground">
+              <b>Tip:</b> Loaded rows will go through the same validation pipeline
+              (normalize → auto-match Order → validate). You can review warnings
+              and re-import without copy-pasting.
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowFromEntries(false)}>Cancel</Button>
+            <Button
+              className={cn(theme.bg, "hover:opacity-90")}
+              disabled={fromEntriesLoading}
+              onClick={handleCreateFromEntries}
+            >
+              {fromEntriesLoading ? (
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              ) : (
+                <Database className="h-4 w-4 mr-1.5" />
+              )}
+              {fromEntriesLoading ? "Loading…" : "Load Entries & Create Batch"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

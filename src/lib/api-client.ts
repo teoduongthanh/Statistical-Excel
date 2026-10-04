@@ -218,6 +218,36 @@ export const api = {
     return jsonOrThrow(res);
   },
 
+  // Create staging batch from EXISTING EntryData rows (no copy-paste needed).
+  // Useful for re-validating already-entered data against current MasterData.
+  stagingCreateFromEntries: async (body: {
+    productType: string;
+    createdBy?: string;
+    filters?: {
+      dateFrom?: string;
+      dateTo?: string;
+      shippingStatus?: string;
+      poNo?: string;
+      factoryPO?: string;
+      size?: string;
+      limit?: number;
+    };
+  }): Promise<{
+    ok: boolean;
+    batchId: string;
+    batchDbId: string;
+    totalRows: number;
+    sourceCount: number;
+    filters?: any;
+  }> => {
+    const res = await fetch("/api/entry-staging/create-from-entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
   stagingValidate: async (
     batchDbId: string
   ): Promise<{
