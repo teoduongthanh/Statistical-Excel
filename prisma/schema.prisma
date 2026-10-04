@@ -388,3 +388,115 @@ model ReconciliationResult {
   @@index([runId, poNo, factoryPO])
   @@index([runId, poNo, factoryPO, size])
 }
+
+/// Entry Batch — a staging batch of pasted rows awaiting validation + confirm.
+/// Spec §4: data goes to Staging first, NOT directly to DB.
+model EntryBatch {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  batchId         String   @unique // e.g. "ENTRY-20261004-0001"
+  productType     String
+  createdBy       String?
+  createdAt       DateTime @default(now())
+  status          String   @default("staging") // staging | validated | importing | imported | cancelled
+  totalRows       Int      @default(0)
+  validRows       Int      @default(0)
+  warningRows     Int      @default(0)
+  errorRows       Int      @default(0)
+  reviewedRows    Int      @default(0)
+  importedRows    Int      @default(0)
+  // Raw paste text (for audit)
+  rawText         String?
+  // Last validation run summary (JSON)
+  lastValidation  String   @default("{}")
+  importedAt      DateTime?
+  createdAt2      DateTime @default(now()) @map("created_at_2")
+  updatedAt       DateTime @updatedAt
+
+  @@index([productType])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// Entry Staging Row — one row in a batch, with raw + normalized + validation.
+/// Spec §48: must keep both raw input and normalized data.
+model EntryStagingRow {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  batchId         String
+  rowNumber       Int
+  // Business fields (normalized)
+  shippingStatus  String?
+  date            String?
+  poNo            String?
+  factoryPO       String?
+  size            String?
+  qty             Int      @default(0)
+  deadline        String?
+  // Auto-filled from matching Order (spec §34: show source)
+  model           String?
+  sku             String?
+  item            String?
+  season          String?
+  colorCode       String?
+  colorCode2      String?
+  painting        String?
+  printingColor   String?
+  autoFillSource  String? // e.g. "ORDER:MH25100234" or "MASTER_GROUP"
+  matchedOrderKey String? // poNo|factoryPO|size of matched 1.Order
+  // Raw input (spec §48)
+  rawData         String   @default("{}")
+  // Validation
+  validationStatus String  @default("PENDING") // PENDING | VALID | WARNING | ERROR | REVIEWED
+  validationErrors String  @default("[]") // JSON array of issues
+  // Warning acceptance (spec §31)
+  warningAccepted Boolean  @default(false)
+  warningAcceptedBy String?
+  warningAcceptedAt DateTime?
+  warningAcceptReason String?
+  // Import tracking
+  imported        Boolean  @default(false)
+  importedEntryId String? // ref to EntryData after import
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([batchId])
+  @@index([batchId, validationStatus])
+  @@index([batchId, poNo, factoryPO, size])
+}
+
+/// Entry Validation Run — each validation pass is recorded (spec §67).
+model EntryValidationRun {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  batchId         String
+  runNumber       Int
+  runAt           DateTime @default(now())
+  totalRows       Int      @default(0)
+  validRows       Int      @default(0)
+  warningRows     Int      @default(0)
+  errorRows       Int      @default(0)
+  reviewedRows    Int      @default(0)
+  // Full results snapshot (JSON array of {rowId, status, issues})
+  results         String   @default("[]")
+  duration        Int?
+
+  @@index([batchId])
+  @@index([runNumber])
+}
+
+/// Entry Audit Log — all actions on staging rows (spec §46).
+model EntryAuditLog {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  batchId         String
+  rowId           String?
+  action          String // CREATE | EDIT | ACCEPT_WARNING | ADD_MASTER | REVALIDATE | IMPORT
+  field           String?
+  oldValue        String?
+  newValue        String?
+  user            String?
+  detail          String?
+  createdAt       DateTime @default(now())
+
+  @@index([batchId])
+  @@index([rowId])
+  @@index([action])
+  @@index([createdAt])
+}

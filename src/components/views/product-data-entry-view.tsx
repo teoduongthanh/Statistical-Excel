@@ -60,6 +60,14 @@ import {
 } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableHead,
+  TableRow,
+  TableCell,
+} from "@/components/ui/table";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -209,8 +217,8 @@ export function ProductDataEntryView() {
   // ===== Bulk Entry mode =====
   // Toggle between "single" (one row at a time with autocomplete lookup) and
   // "bulk" (paste many rows from Excel, validate, then confirm import).
-  // ===== Entry mode: "single" | "bulk" | "order" =====
-  const [entryMode, setEntryMode] = React.useState<"single" | "bulk" | "order">("single");
+  // ===== Entry mode: "single" | "bulk" | "order" | "bulk-staging" =====
+  const [entryMode, setEntryMode] = React.useState<"single" | "bulk" | "order" | "bulk-staging">("single");
   const [bulkPastedText, setBulkPastedText] = React.useState("");
   const [bulkHasHeader, setBulkHasHeader] = React.useState(true);
   const [bulkValidating, setBulkValidating] = React.useState(false);
@@ -921,13 +929,16 @@ export function ProductDataEntryView() {
 
       {/* Entry mode toggle: Single vs Bulk */}
       <div className="flex items-center justify-center">
-        <Tabs value={entryMode} onValueChange={(v) => setEntryMode(v as "single" | "bulk" | "order")}>
+        <Tabs value={entryMode} onValueChange={(v) => setEntryMode(v as "single" | "bulk" | "order" | "bulk-staging")}>
           <TabsList>
             <TabsTrigger value="single" className="px-4">
               <PenLine className="h-4 w-4 mr-1.5" /> Single Entry
             </TabsTrigger>
             <TabsTrigger value="bulk" className="px-4">
               <ClipboardPaste className="h-4 w-4 mr-1.5" /> Bulk Entry
+            </TabsTrigger>
+            <TabsTrigger value="bulk-staging" className="px-4">
+              <ShieldCheck className="h-4 w-4 mr-1.5" /> Bulk Staging
             </TabsTrigger>
             <TabsTrigger value="order" className="px-4">
               <FileSpreadsheet className="h-4 w-4 mr-1.5" /> Order Entry
@@ -1320,6 +1331,18 @@ export function ProductDataEntryView() {
           mapping={bulkMapping}
           currentProduct={currentProduct}
           theme={theme}
+        />
+      )}
+
+      {/* ===== Bulk Staging panel (staging service: parse → validate → review → confirm) ===== */}
+      {entryMode === "bulk-staging" && (
+        <BulkStagingPanel
+          currentProduct={currentProduct}
+          theme={theme}
+          onImported={() => {
+            bumpRefresh();
+            qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+          }}
         />
       )}
 
@@ -3014,6 +3037,1066 @@ function OrderEntryPanel({ currentProduct, theme, onImported }: OrderEntryPanelP
             {importing ? "Importing…" : "Confirm Import"}
           </Button>
         </DialogFooter>
+      </Dialog>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// BULK STAGING PANEL — uses the staging service (parse → auto-fill → validate
+// → review → confirm). Spec §1, §62.
+// ────────────────────────────────────────────────────────────────────────────
+
+interface BulkStagingPanelProps {
+  currentProduct: string;
+  theme: { bg: string; text: string; border: string; gradient: string };
+  onImported: () => void;
+}
+
+const STAGING_STATUS_META: Record<
+  string,
+  { label: string; badge: string; card: string; dot: string }
+> = {
+  VALID: {
+    label: "Valid",
+    badge: "bg-emerald-100 text-emerald-700 border-emerald-200",
+    card: "border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30",
+    dot: "bg-emerald-500",
+  },
+  WARNING: {
+    label: "Warning",
+    badge: "bg-amber-100 text-amber-700 border-amber-200",
+    card: "border-amber-200 bg-amber-50 dark:bg-amber-950/30",
+    dot: "bg-amber-500",
+  },
+  ERROR: {
+    label: "Error",
+    badge: "bg-rose-100 text-rose-700 border-rose-200",
+    card: "border-rose-200 bg-rose-50 dark:bg-rose-950/30",
+    dot: "bg-rose-500",
+  },
+  REVIEWED: {
+    label: "Reviewed",
+    badge: "bg-blue-100 text-blue-700 border-blue-200",
+    card: "border-blue-200 bg-blue-50 dark:bg-blue-950/30",
+    dot: "bg-blue-500",
+  },
+  PENDING: {
+    label: "Pending",
+    badge: "bg-slate-100 text-slate-600 border-slate-200",
+    card: "border-slate-200 bg-slate-50 dark:bg-slate-900/40",
+    dot: "bg-slate-400",
+  },
+};
+
+const STAGING_STATUS_FILTERS = [
+  { value: "all", label: "All" },
+  { value: "VALID", label: "Valid" },
+  { value: "WARNING", label: "Warning" },
+  { value: "ERROR", label: "Error" },
+  { value: "REVIEWED", label: "Reviewed" },
+  { value: "PENDING", label: "Pending" },
+];
+
+const STAGING_SAMPLE_TEXT =
+  "2.Output\tH411040101\tMH25100234\tM(04)/W(05)\t10\t2026-10-04\n4.Input\tH411040101\tMH25100234\tM(04)/W(05)\t5\t2026-10-04";
+
+function BulkStagingPanel({ currentProduct, theme, onImported }: BulkStagingPanelProps) {
+  // ── Paste + create state ──────────────────────────────────────────────
+  const [pastedText, setPastedText] = React.useState("");
+  const [creating, setCreating] = React.useState(false);
+  const [batchDbId, setBatchDbId] = React.useState<string | null>(null);
+  const [batchMeta, setBatchMeta] = React.useState<{
+    batchId: string;
+    totalRows: number;
+  } | null>(null);
+
+  // ── Validate state ────────────────────────────────────────────────────
+  const [validating, setValidating] = React.useState(false);
+  const [lastValidation, setLastValidation] = React.useState<any>(null);
+
+  // ── Summary + rows state ───────────────────────────────────────────────
+  const [summary, setSummary] = React.useState<any>(null);
+  const [statusFilter, setStatusFilter] = React.useState<string>("all");
+  const [page, setPage] = React.useState(1);
+  const [pageSize] = React.useState(25);
+  const [rowsData, setRowsData] = React.useState<any>({ rows: [], total: 0, totalPages: 1 });
+  const [loadingRows, setLoadingRows] = React.useState(false);
+
+  // ── Row detail dialog ─────────────────────────────────────────────────
+  const [selectedRow, setSelectedRow] = React.useState<any>(null);
+  const [editMode, setEditMode] = React.useState(false);
+  const [editForm, setEditForm] = React.useState<Record<string, string>>({});
+  const [savingEdit, setSavingEdit] = React.useState(false);
+  const [acceptingWarning, setAcceptingWarning] = React.useState(false);
+  const [acceptReason, setAcceptReason] = React.useState("");
+
+  // ── Confirm dialog ─────────────────────────────────────────────────────
+  const [showConfirm, setShowConfirm] = React.useState(false);
+  const [confirmMode, setConfirmMode] = React.useState<"valid_only" | "valid_and_accepted">(
+    "valid_only"
+  );
+  const [confirming, setConfirming] = React.useState(false);
+
+  // ── History dialog ─────────────────────────────────────────────────────
+  const [showHistory, setShowHistory] = React.useState(false);
+  const [history, setHistory] = React.useState<any[]>([]);
+  const [loadingHistory, setLoadingHistory] = React.useState(false);
+
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+
+  // Reset state when batch changes.
+  function resetBatchState() {
+    setBatchDbId(null);
+    setBatchMeta(null);
+    setLastValidation(null);
+    setSummary(null);
+    setRowsData({ rows: [], total: 0, totalPages: 1 });
+    setStatusFilter("all");
+    setPage(1);
+    setSelectedRow(null);
+    setShowConfirm(false);
+    setEditMode(false);
+  }
+
+  // ── Create batch ──────────────────────────────────────────────────────
+  async function handleCreate() {
+    const text = pastedText.trim();
+    if (!text) {
+      toast.error("Please paste some rows first.");
+      return;
+    }
+    if (!currentProduct) {
+      toast.error("No product selected.");
+      return;
+    }
+    setCreating(true);
+    try {
+      const result = await api.stagingCreate({
+        productType: currentProduct,
+        text,
+        createdBy: "ui-user",
+      });
+      setBatchDbId(result.batchDbId);
+      setBatchMeta({ batchId: result.batchId, totalRows: result.totalRows });
+      toast.success(
+        `Created batch ${result.batchId} with ${result.totalRows} rows.`
+      );
+      // Auto-load summary
+      setTimeout(() => loadSummary(result.batchDbId), 50);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to create batch");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  // ── Validate ──────────────────────────────────────────────────────────
+  async function handleValidate() {
+    if (!batchDbId) return;
+    setValidating(true);
+    try {
+      const result = await api.stagingValidate(batchDbId);
+      setLastValidation(result);
+      toast.success(
+        `Validation run #${result.runNumber}: ${result.validRows} valid, ${result.warningRows} warning, ${result.errorRows} error, ${result.reviewedRows} reviewed.`
+      );
+      await Promise.all([loadSummary(batchDbId), loadRows()]);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Validation failed");
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  // ── Load summary ───────────────────────────────────────────────────────
+  async function loadSummary(id?: string) {
+    const target = id ?? batchDbId;
+    if (!target) return;
+    try {
+      const result = await api.stagingSummary(target);
+      setSummary(result);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to load summary");
+    }
+  }
+
+  // ── Load rows (paginated, filtered) ───────────────────────────────────
+  async function loadRows() {
+    if (!batchDbId) return;
+    setLoadingRows(true);
+    try {
+      const result = await api.stagingRows(batchDbId, {
+        status: statusFilter === "all" ? undefined : statusFilter,
+        page,
+        pageSize,
+      });
+      setRowsData(result);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to load rows");
+    } finally {
+      setLoadingRows(false);
+    }
+  }
+
+  React.useEffect(() => {
+    if (batchDbId) loadRows();
+  }, [batchDbId, statusFilter, page, pageSize]);
+
+  // ── Open row detail ───────────────────────────────────────────────────
+  function openRow(row: any) {
+    setSelectedRow(row);
+    setEditMode(false);
+    setAcceptReason(row.warningAcceptedReason ?? "");
+    setEditForm({
+      shippingStatus: row.shippingStatus ?? "",
+      poNo: row.poNo ?? "",
+      factoryPO: row.factoryPO ?? "",
+      size: row.size ?? "",
+      qty: String(row.qty ?? ""),
+      date: row.date ?? "",
+      deadline: row.deadline ?? "",
+    });
+  }
+
+  // ── Save edit ─────────────────────────────────────────────────────────
+  async function handleSaveEdit() {
+    if (!batchDbId || !selectedRow) return;
+    setSavingEdit(true);
+    try {
+      await api.stagingEditRow(batchDbId, selectedRow.id, {
+        shippingStatus: editForm.shippingStatus,
+        poNo: editForm.poNo,
+        factoryPO: editForm.factoryPO,
+        size: editForm.size,
+        qty: editForm.qty,
+        date: editForm.date,
+        deadline: editForm.deadline,
+        user: "ui-user",
+      });
+      toast.success("Row updated. Status reset to PENDING — re-validate to refresh.");
+      setEditMode(false);
+      await Promise.all([loadSummary(), loadRows()]);
+      // Refresh the selected row from new data.
+      const fresh = await api.stagingRows(batchDbId, {
+        status: undefined,
+        page: 1,
+        pageSize: 200,
+      });
+      const found = fresh.rows.find((r: any) => r.id === selectedRow.id);
+      if (found) setSelectedRow(found);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to save edit");
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  // ── Accept warning ─────────────────────────────────────────────────────
+  async function handleAcceptWarning() {
+    if (!batchDbId || !selectedRow) return;
+    setAcceptingWarning(true);
+    try {
+      await api.stagingAcceptWarning(batchDbId, selectedRow.id, {
+        reason: acceptReason,
+        user: "ui-user",
+      });
+      toast.success("Warning accepted. Row marked as REVIEWED.");
+      await Promise.all([loadSummary(), loadRows()]);
+      // Refresh selected row
+      const fresh = await api.stagingRows(batchDbId, {
+        status: undefined,
+        page: 1,
+        pageSize: 200,
+      });
+      const found = fresh.rows.find((r: any) => r.id === selectedRow.id);
+      if (found) setSelectedRow(found);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to accept warning");
+    } finally {
+      setAcceptingWarning(false);
+    }
+  }
+
+  // ── Confirm import ────────────────────────────────────────────────────
+  async function handleConfirm() {
+    if (!batchDbId) return;
+    setConfirming(true);
+    try {
+      const result = await api.stagingConfirm(batchDbId, {
+        mode: confirmMode,
+        user: "ui-user",
+      });
+      toast.success(
+        `Imported ${result.imported} rows. ${result.remaining} remaining in staging.`
+      );
+      setShowConfirm(false);
+      await Promise.all([loadSummary(), loadRows()]);
+      onImported();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Confirm import failed");
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  // ── History ────────────────────────────────────────────────────────────
+  async function loadHistory() {
+    setLoadingHistory(true);
+    try {
+      const result = await api.stagingList(currentProduct, 20);
+      setHistory(result.batches);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to load history");
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  async function loadBatchById(id: string) {
+    setShowHistory(false);
+    resetBatchState();
+    setBatchDbId(id);
+    try {
+      const summaryResult = await api.stagingSummary(id);
+      setBatchMeta({
+        batchId: summaryResult.batch?.batchId ?? id,
+        totalRows: summaryResult.batch?.totalRows ?? 0,
+      });
+      setSummary(summaryResult);
+      setBatchDbId(id);
+      setPage(1);
+      setStatusFilter("all");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to load batch");
+    }
+  }
+
+  const counts = summary?.counts ?? {
+    total: 0,
+    valid: 0,
+    warning: 0,
+    error: 0,
+    reviewed: 0,
+    pending: 0,
+  };
+  const hasErrors = (counts.error ?? 0) > 0;
+
+  return (
+    <div ref={scrollRef} className="space-y-4">
+      {/* ── Paste area ─────────────────────────────────────────────────── */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <ClipboardPaste className="h-4 w-4 text-primary" /> 1. Paste Rows
+            <Badge variant="outline" className="ml-auto text-[10px]">{currentProduct}</Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Textarea
+            value={pastedText}
+            onChange={(e) => setPastedText(e.target.value)}
+            rows={6}
+            placeholder={
+              "TSV format: status<TAB>po<TAB>factoryPO<TAB>size<TAB>qty<TAB>date\n" +
+              "e.g.\n2.Output\tH411040101\tMH25100234\tM(04)/W(05)\t10\t2026-10-04\n4.Input\tH411040101\tMH25100234\tM(04)/W(05)\t5\t2026-10-04"
+            }
+            className="font-mono text-xs"
+          />
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button
+              onClick={handleCreate}
+              disabled={creating || !pastedText.trim()}
+              className={cn(theme.bg, "hover:opacity-90")}
+            >
+              {creating ? (
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              ) : (
+                <ClipboardCheck className="h-4 w-4 mr-1.5" />
+              )}
+              {creating ? "Creating…" : "Parse & Create Batch"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPastedText(STAGING_SAMPLE_TEXT)}
+            >
+              Load Sample
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                resetBatchState();
+                setPastedText("");
+              }}
+            >
+              <RotateCcw className="h-3.5 w-3.5 mr-1" /> Reset
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setShowHistory(true);
+                loadHistory();
+              }}
+            >
+              <Database className="h-3.5 w-3.5 mr-1" /> History
+            </Button>
+            <span className="text-[10px] text-muted-foreground ml-auto">
+              Columns: status · po · factoryPO · size · qty · date [· deadline]
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Batch info ──────────────────────────────────────────────────── */}
+      {batchMeta && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Database className="h-4 w-4 text-primary" /> 2. Batch Info
+              <Badge variant="secondary" className="ml-auto text-[10px]">
+                {summary?.batch?.status ?? "staging"}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+              <div className="rounded border p-2">
+                <div className="text-muted-foreground">Batch ID</div>
+                <div className="font-mono font-semibold break-all">{batchMeta.batchId}</div>
+              </div>
+              <div className="rounded border p-2">
+                <div className="text-muted-foreground">Total Rows</div>
+                <div className="text-lg font-bold">{batchMeta.totalRows}</div>
+              </div>
+              <div className="rounded border p-2">
+                <div className="text-muted-foreground">Validated</div>
+                <div className="text-lg font-bold">
+                  {lastValidation ? `Run #${lastValidation.runNumber}` : "—"}
+                </div>
+              </div>
+              <div className="rounded border p-2">
+                <div className="text-muted-foreground">Imported</div>
+                <div className="text-lg font-bold">
+                  {summary?.batch?.importedRows ?? 0} / {batchMeta.totalRows}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                onClick={handleValidate}
+                disabled={validating}
+                className={cn(theme.bg, "hover:opacity-90")}
+              >
+                {validating ? (
+                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="h-4 w-4 mr-1.5" />
+                )}
+                {validating ? "Validating…" : "Validate Batch"}
+              </Button>
+              {lastValidation && (
+                <Button
+                  onClick={() => setShowConfirm(true)}
+                  variant="outline"
+                >
+                  <Upload className="h-4 w-4 mr-1.5" /> Confirm Import
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" onClick={() => loadSummary()}>
+                <RefreshCw className="h-3.5 w-3.5 mr-1" /> Refresh Summary
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Validation summary cards ────────────────────────────────────── */}
+      {summary && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <ShieldCheck className="h-4 w-4 text-primary" /> 3. Validation Summary
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+              {[
+                { key: "total", label: "Total", count: counts.total, meta: STAGING_STATUS_META.PENDING },
+                { key: "valid", label: "Valid", count: counts.valid, meta: STAGING_STATUS_META.VALID },
+                { key: "warning", label: "Warning", count: counts.warning, meta: STAGING_STATUS_META.WARNING },
+                { key: "error", label: "Error", count: counts.error, meta: STAGING_STATUS_META.ERROR },
+                { key: "reviewed", label: "Reviewed", count: counts.reviewed, meta: STAGING_STATUS_META.REVIEWED },
+                { key: "pending", label: "Pending", count: counts.pending, meta: STAGING_STATUS_META.PENDING },
+              ].map((card) => (
+                <div
+                  key={card.key}
+                  className={cn(
+                    "rounded-md border p-3 text-center",
+                    card.meta.card
+                  )}
+                >
+                  <div className="flex items-center justify-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    <span className={cn("h-1.5 w-1.5 rounded-full", card.meta.dot)} />
+                    {card.label}
+                  </div>
+                  <div className="text-2xl font-bold">{card.count ?? 0}</div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Rows table ─────────────────────────────────────────────────── */}
+      {batchDbId && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Table2 className="h-4 w-4 text-primary" /> 4. Staging Rows
+              <span className="ml-auto flex items-center gap-2">
+                <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); }}>
+                  <SelectTrigger className="h-8 w-32 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STAGING_STATUS_FILTERS.map((f) => (
+                      <SelectItem key={f.value} value={f.value}>
+                        {f.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {loadingRows ? (
+              <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Loading rows…
+              </div>
+            ) : rowsData.rows.length === 0 ? (
+              <div className="text-center py-6 text-sm text-muted-foreground">
+                No rows match this filter.
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/40">
+                      <TableHead className="w-10 text-xs">#</TableHead>
+                      <TableHead className="text-xs">Status</TableHead>
+                      <TableHead className="text-xs">Shipping</TableHead>
+                      <TableHead className="text-xs">PO</TableHead>
+                      <TableHead className="text-xs">Factory PO</TableHead>
+                      <TableHead className="text-xs">Size</TableHead>
+                      <TableHead className="text-xs text-right">Qty</TableHead>
+                      <TableHead className="text-xs">Date</TableHead>
+                      <TableHead className="text-xs text-center">Issues</TableHead>
+                      <TableHead className="text-xs text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {rowsData.rows.map((row: any) => {
+                      const meta = STAGING_STATUS_META[row.validationStatus] ?? STAGING_STATUS_META.PENDING;
+                      const issueCount = (row.validationErrors ?? []).length;
+                      return (
+                        <TableRow
+                          key={row.id}
+                          className="cursor-pointer hover:bg-muted/30"
+                          onClick={() => openRow(row)}
+                        >
+                          <TableCell className="text-xs text-muted-foreground">{row.rowNumber}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className={cn("text-[10px]", meta.badge)}>
+                              {meta.label}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-xs">{row.shippingStatus || "—"}</TableCell>
+                          <TableCell className="text-xs font-mono">{row.poNo || "—"}</TableCell>
+                          <TableCell className="text-xs font-mono">{row.factoryPO || "—"}</TableCell>
+                          <TableCell className="text-xs">{row.size || "—"}</TableCell>
+                          <TableCell className="text-xs text-right tabular-nums">{row.qty}</TableCell>
+                          <TableCell className="text-xs">{row.date || "—"}</TableCell>
+                          <TableCell className="text-xs text-center">
+                            {issueCount > 0 ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] text-amber-700">
+                                <AlertTriangle className="h-3 w-3" /> {issueCount}
+                              </span>
+                            ) : row.validationStatus === "VALID" ? (
+                              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 inline" />
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-xs text-right">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openRow(row);
+                              }}
+                            >
+                              <Eye className="h-3.5 w-3.5 mr-1" /> View
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+
+            {/* Pagination */}
+            {(rowsData.totalPages ?? 1) > 1 && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">
+                  Page {rowsData.page} of {rowsData.totalPages} · {rowsData.total} rows
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={page <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    Prev
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={page >= rowsData.totalPages}
+                    onClick={() => setPage((p) => Math.min(rowsData.totalPages, p + 1))}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Row detail dialog ──────────────────────────────────────────── */}
+      <Dialog open={!!selectedRow} onOpenChange={(o) => { if (!o) { setSelectedRow(null); setEditMode(false); } }}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm">
+              Row #{selectedRow?.rowNumber}
+              {selectedRow && (
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "text-[10px]",
+                    (STAGING_STATUS_META[selectedRow.validationStatus] ?? STAGING_STATUS_META.PENDING).badge
+                  )}
+                >
+                  {(STAGING_STATUS_META[selectedRow.validationStatus] ?? STAGING_STATUS_META.PENDING).label}
+                </Badge>
+              )}
+              {selectedRow?.warningAccepted && (
+                <Badge className="text-[10px] bg-blue-100 text-blue-700 border-blue-200">
+                  Warning Accepted
+                </Badge>
+              )}
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Review input data, matched order info, and validation issues.
+            </DialogDescription>
+          </DialogHeader>
+
+          {selectedRow && (
+            <div className="space-y-4">
+              {/* Input data */}
+              <div className="rounded border p-3 bg-muted/20">
+                <div className="text-xs font-semibold mb-2 flex items-center gap-1">
+                  <Info className="h-3.5 w-3.5" /> Input Data
+                </div>
+                {editMode ? (
+                  <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                    <div>
+                      <Label className="text-[10px]">Shipping Status</Label>
+                      <Input
+                        className="h-8 text-xs"
+                        value={editForm.shippingStatus}
+                        onChange={(e) => setEditForm({ ...editForm, shippingStatus: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px]">PO NO#</Label>
+                      <Input
+                        className="h-8 text-xs font-mono"
+                        value={editForm.poNo}
+                        onChange={(e) => setEditForm({ ...editForm, poNo: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px]">Factory PO</Label>
+                      <Input
+                        className="h-8 text-xs font-mono"
+                        value={editForm.factoryPO}
+                        onChange={(e) => setEditForm({ ...editForm, factoryPO: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px]">Size</Label>
+                      <Input
+                        className="h-8 text-xs"
+                        value={editForm.size}
+                        onChange={(e) => setEditForm({ ...editForm, size: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px]">Qty</Label>
+                      <Input
+                        className="h-8 text-xs"
+                        type="number"
+                        value={editForm.qty}
+                        onChange={(e) => setEditForm({ ...editForm, qty: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px]">Date</Label>
+                      <Input
+                        className="h-8 text-xs"
+                        value={editForm.date}
+                        onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px]">Deadline</Label>
+                      <Input
+                        className="h-8 text-xs"
+                        value={editForm.deadline}
+                        onChange={(e) => setEditForm({ ...editForm, deadline: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                    {[
+                      ["Shipping", selectedRow.shippingStatus],
+                      ["PO NO#", selectedRow.poNo],
+                      ["Factory PO", selectedRow.factoryPO],
+                      ["Size", selectedRow.size],
+                      ["Qty", String(selectedRow.qty ?? "")],
+                      ["Date", selectedRow.date],
+                      ["Deadline", selectedRow.deadline],
+                      ["Source", selectedRow.autoFillSource || "—"],
+                    ].map(([label, val]) => (
+                      <div key={label}>
+                        <div className="text-[10px] text-muted-foreground">{label}</div>
+                        <div className="font-mono text-xs break-all">{val || "—"}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Matched order info */}
+              {selectedRow.matchedOrderKey && (
+                <div className="rounded border p-3 bg-emerald-50 dark:bg-emerald-950/30">
+                  <div className="text-xs font-semibold mb-2 flex items-center gap-1 text-emerald-700">
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Matched Order
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                    {[
+                      ["Model", selectedRow.model],
+                      ["SKU", selectedRow.sku],
+                      ["Item", selectedRow.item],
+                      ["Season", selectedRow.season],
+                      ["Color Code", selectedRow.colorCode],
+                      ["Color Code 2", selectedRow.colorCode2],
+                      ["Painting", selectedRow.painting],
+                      ["Printing Color", selectedRow.printingColor],
+                    ].map(([label, val]) => (
+                      <div key={label}>
+                        <div className="text-[10px] text-muted-foreground">{label}</div>
+                        <div className="text-xs">{val || "—"}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground mt-2">
+                    Source: <span className="font-mono">{selectedRow.autoFillSource}</span>
+                    {" · "}Key: <span className="font-mono">{selectedRow.matchedOrderKey}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Validation issues */}
+              <div className="rounded border p-3">
+                <div className="text-xs font-semibold mb-2 flex items-center gap-1">
+                  <AlertTriangle className="h-3.5 w-3.5" /> Validation Issues
+                  <Badge variant="secondary" className="ml-auto text-[10px]">
+                    {(selectedRow.validationErrors ?? []).length} found
+                  </Badge>
+                </div>
+                {(selectedRow.validationErrors ?? []).length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No issues — row is clean.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {(selectedRow.validationErrors ?? []).map((iss: any, i: number) => (
+                      <div
+                        key={i}
+                        className={cn(
+                          "rounded border p-2 text-xs",
+                          iss.severity === "ERROR"
+                            ? "border-rose-200 bg-rose-50 dark:bg-rose-950/30"
+                            : iss.severity === "WARNING"
+                            ? "border-amber-200 bg-amber-50 dark:bg-amber-950/30"
+                            : "border-slate-200 bg-slate-50 dark:bg-slate-900/40"
+                        )}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "text-[10px]",
+                              iss.severity === "ERROR"
+                                ? "border-rose-300 text-rose-700"
+                                : iss.severity === "WARNING"
+                                ? "border-amber-300 text-amber-700"
+                                : "border-slate-300 text-slate-600"
+                            )}
+                          >
+                            {iss.severity}
+                          </Badge>
+                          <span className="text-[10px] font-mono text-muted-foreground">{iss.category}</span>
+                          <span className="text-[10px] font-mono text-muted-foreground">{iss.code}</span>
+                        </div>
+                        <p className="mt-1 text-xs">{iss.message}</p>
+                        {iss.detail && (
+                          <pre className="mt-1 whitespace-pre-wrap rounded bg-background/60 p-2 text-[10px] font-mono">
+                            {iss.detail}
+                          </pre>
+                        )}
+                        {iss.recommendedAction && (
+                          <p className="mt-1 text-[10px] text-emerald-700 flex items-start gap-1">
+                            <Lightbulb className="h-3 w-3 mt-0.5" /> {iss.recommendedAction}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Accept warning form */}
+              {selectedRow.validationStatus === "WARNING" && (
+                <div className="rounded border border-blue-200 bg-blue-50 dark:bg-blue-950/30 p-3">
+                  <div className="text-xs font-semibold mb-2 flex items-center gap-1 text-blue-700">
+                    <ShieldCheck className="h-3.5 w-3.5" /> Accept Warning
+                  </div>
+                  <Label className="text-[10px]">Reason (optional)</Label>
+                  <Textarea
+                    rows={2}
+                    className="text-xs"
+                    placeholder="Why is this warning acceptable?"
+                    value={acceptReason}
+                    onChange={(e) => setAcceptReason(e.target.value)}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="flex gap-2 sm:justify-between">
+            <div className="flex gap-2">
+              {editMode ? (
+                <>
+                  <Button
+                    size="sm"
+                    onClick={handleSaveEdit}
+                    disabled={savingEdit}
+                    className={cn(theme.bg, "hover:opacity-90")}
+                  >
+                    {savingEdit ? (
+                      <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                    ) : (
+                      <Save className="h-3.5 w-3.5 mr-1" />
+                    )}
+                    Save
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setEditMode(false)}>
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button size="sm" variant="outline" onClick={() => setEditMode(true)}>
+                  <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
+                </Button>
+              )}
+              {selectedRow?.validationStatus === "WARNING" && (
+                <Button
+                  size="sm"
+                  onClick={handleAcceptWarning}
+                  disabled={acceptingWarning}
+                  className="bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  {acceptingWarning ? (
+                    <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="h-3.5 w-3.5 mr-1" />
+                  )}
+                  Accept Warning
+                </Button>
+              )}
+            </div>
+            <Button size="sm" variant="ghost" onClick={() => { setSelectedRow(null); setEditMode(false); }}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Confirm Import dialog ──────────────────────────────────────── */}
+      <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm">
+              <Upload className="h-4 w-4 text-primary" /> Confirm Import
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Import validated rows into EntryData. Errors must be fixed first.
+            </DialogDescription>
+          </DialogHeader>
+
+          {summary && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="rounded border p-2 bg-emerald-50 dark:bg-emerald-950/30">
+                  <div className="text-emerald-700">Valid</div>
+                  <div className="text-lg font-bold">{counts.valid}</div>
+                </div>
+                <div className="rounded border p-2 bg-blue-50 dark:bg-blue-950/30">
+                  <div className="text-blue-700">Reviewed</div>
+                  <div className="text-lg font-bold">{counts.reviewed}</div>
+                </div>
+                <div className="rounded border p-2 bg-rose-50 dark:bg-rose-950/30">
+                  <div className="text-rose-700">Errors</div>
+                  <div className="text-lg font-bold">{counts.error}</div>
+                </div>
+              </div>
+
+              {hasErrors && (
+                <Alert variant="destructive" className="text-xs">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>
+                    {counts.error} row(s) have errors and will be skipped. Fix them or accept the warnings and re-validate to clear them.
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              <div className="space-y-2">
+                <Label className="text-xs">Import Mode</Label>
+                <Select
+                  value={confirmMode}
+                  onValueChange={(v) => setConfirmMode(v as "valid_only" | "valid_and_accepted")}
+                >
+                  <SelectTrigger className="h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="valid_only">
+                      Valid only (skip warnings &amp; reviewed)
+                    </SelectItem>
+                    <SelectItem value="valid_and_accepted">
+                      Valid + accepted warnings (valid + reviewed)
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[10px] text-muted-foreground">
+                  {confirmMode === "valid_only"
+                    ? `Will import ${counts.valid} VALID row(s). Warnings/errors stay in staging.`
+                    : `Will import ${counts.valid + counts.reviewed} row(s) (VALID + REVIEWED). Warnings/errors stay in staging.`}
+                </p>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowConfirm(false)}>Cancel</Button>
+            <Button
+              onClick={handleConfirm}
+              disabled={confirming}
+              className={cn(theme.bg, "hover:opacity-90")}
+            >
+              {confirming ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Upload className="h-4 w-4 mr-1" />}
+              {confirming ? "Importing…" : "Confirm Import"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── History dialog ──────────────────────────────────────────────── */}
+      <Dialog open={showHistory} onOpenChange={setShowHistory}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm">
+              <Database className="h-4 w-4 text-primary" /> Recent Batches
+              <Badge variant="outline" className="text-[10px]">{currentProduct}</Badge>
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Click a batch to load it for review.
+            </DialogDescription>
+          </DialogHeader>
+          {loadingHistory ? (
+            <div className="flex items-center justify-center py-6">
+              <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading…
+            </div>
+          ) : history.length === 0 ? (
+            <div className="text-center py-6 text-xs text-muted-foreground">
+              No batches found.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded border">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/40">
+                    <TableHead className="text-xs">Batch ID</TableHead>
+                    <TableHead className="text-xs">Status</TableHead>
+                    <TableHead className="text-xs text-right">Total</TableHead>
+                    <TableHead className="text-xs text-right">Valid</TableHead>
+                    <TableHead className="text-xs text-right">Warn</TableHead>
+                    <TableHead className="text-xs text-right">Err</TableHead>
+                    <TableHead className="text-xs text-right">Imported</TableHead>
+                    <TableHead className="text-xs">Created</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {history.map((b) => (
+                    <TableRow
+                      key={b.id}
+                      className="cursor-pointer hover:bg-muted/30"
+                      onClick={() => loadBatchById(b.id)}
+                    >
+                      <TableCell className="text-xs font-mono">{b.batchId}</TableCell>
+                      <TableCell className="text-xs">
+                        <Badge variant="secondary" className="text-[10px]">{b.status}</Badge>
+                      </TableCell>
+                      <TableCell className="text-xs text-right tabular-nums">{b.totalRows}</TableCell>
+                      <TableCell className="text-xs text-right tabular-nums text-emerald-700">{b.validRows}</TableCell>
+                      <TableCell className="text-xs text-right tabular-nums text-amber-700">{b.warningRows}</TableCell>
+                      <TableCell className="text-xs text-right tabular-nums text-rose-700">{b.errorRows}</TableCell>
+                      <TableCell className="text-xs text-right tabular-nums">{b.importedRows}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {new Date(b.createdAt).toLocaleString()}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowHistory(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
       </Dialog>
     </div>
   );

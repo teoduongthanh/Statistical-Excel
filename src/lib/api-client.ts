@@ -204,6 +204,106 @@ export const api = {
   reconciliationExportUrl: (runId: string, sheet: string = "all"): string =>
     `/api/reconciliation/${runId}/export?sheet=${sheet}`,
 
+  // ── Entry Staging (bulk data entry → validate → confirm) ───────────────────
+  stagingCreate: async (body: {
+    productType: string;
+    text: string;
+    createdBy?: string;
+  }): Promise<{ ok: boolean; batchId: string; batchDbId: string; totalRows: number }> => {
+    const res = await fetch("/api/entry-staging/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  stagingValidate: async (
+    batchDbId: string
+  ): Promise<{
+    ok: boolean;
+    runNumber: number;
+    totalRows: number;
+    validRows: number;
+    warningRows: number;
+    errorRows: number;
+    reviewedRows: number;
+  }> => {
+    const res = await fetch(`/api/entry-staging/${batchDbId}/validate`, {
+      method: "POST",
+    });
+    return jsonOrThrow(res);
+  },
+
+  stagingSummary: async (batchDbId: string): Promise<{ ok: boolean; batch: any; counts: any }> => {
+    const res = await fetch(`/api/entry-staging/${batchDbId}/summary`);
+    return jsonOrThrow(res);
+  },
+
+  stagingRows: async (
+    batchDbId: string,
+    filters: { status?: string; page?: number; pageSize?: number } = {}
+  ): Promise<{ ok: boolean; page: number; pageSize: number; total: number; totalPages: number; rows: any[] }> => {
+    const q = new URLSearchParams();
+    if (filters.status) q.set("status", filters.status);
+    q.set("page", String(filters.page ?? 1));
+    q.set("pageSize", String(filters.pageSize ?? 50));
+    const res = await fetch(`/api/entry-staging/${batchDbId}/rows?${q}`);
+    return jsonOrThrow(res);
+  },
+
+  stagingEditRow: async (
+    batchDbId: string,
+    rowId: string,
+    body: any
+  ): Promise<{ ok: boolean; row: any }> => {
+    const res = await fetch(`/api/entry-staging/${batchDbId}/rows/${rowId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  stagingAcceptWarning: async (
+    batchDbId: string,
+    rowId: string,
+    body: { reason?: string; user?: string }
+  ): Promise<{ ok: boolean; row: any }> => {
+    const res = await fetch(
+      `/api/entry-staging/${batchDbId}/rows/${rowId}/accept-warning`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+    return jsonOrThrow(res);
+  },
+
+  stagingConfirm: async (
+    batchDbId: string,
+    body: { mode: "valid_only" | "valid_and_accepted"; user?: string }
+  ): Promise<{ ok: boolean; imported: number; remaining: number }> => {
+    const res = await fetch(`/api/entry-staging/${batchDbId}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  stagingList: async (
+    productType?: string,
+    limit = 20
+  ): Promise<{ ok: boolean; batches: any[] }> => {
+    const q = new URLSearchParams();
+    if (productType) q.set("productType", productType);
+    q.set("limit", String(limit));
+    const res = await fetch(`/api/entry-staging/list?${q}`);
+    return jsonOrThrow(res);
+  },
+
 
 
   importExcel: async (body: {
