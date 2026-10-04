@@ -2,34 +2,103 @@
 // Links two data sources (FVO and STECH) to track the full production flow:
 //   FVO Order → Send to STECH → STECH processes → Receive from STECH → FVO Stock → FVO Output
 //
-// Composite matching key (spec §1):
-//   FVO: poNo + factoryPO(ART) + size  →  "OCF26060136|3MH10325626|8.5"
-//   STECH: factoryPO + poNo + size     →  "OCF26060136|3MH10325626|8.5"
+// Composite matching key (spec §1 + user's size normalization rules):
+//   FVO: poNo + factoryPO(ART) + gender + canonicalSize
+//   STECH: factoryPO + poNo + gender + canonicalSize
 //   Both produce the SAME key → match!
 //
-// Size normalization (critical — FVO uses US sizes, STECH uses combined M/W):
-//   FVO: "8.5" (Men model) or "10" (Women model)
-//   STECH: "M08T/W10" (Men 8.5 / Women 10)
-//   Canonical: convert both to Men's US size number
-//     STECH "M08T/W10" → 8.5 (extract M part: M08=8, T=.5)
-//     FVO Men "8.5" → 8.5
-//     FVO Women "10" → 8.5 (W - 1.5 = M equivalent)
+// Size normalization (user's rules — gender-specific, NO W↔M conversion):
+//   STECH "M07/W08T" + Men model   → extract M07  = 7    (matches FVO Men "7")
+//   STECH "M05/W06T" + Women model → extract W06T = 6.5  (matches FVO Women "6.5")
+//   Rule: T suffix = +0.5
+//   Rule: Men sizes 7-14 (M07-M14), Women sizes 5-10.5 (W05-W10T)
+//   FVO sizes are plain numbers, already gender-specific (no conversion).
 //
 // READ-ONLY (spec §12): never modifies source data. Only reads + aggregates.
 
 import { db } from "./db";
 import { classifyShippingStatus } from "./quantity-service";
 
+// ── Gender detection ────────────────────────────────────────────────────────
+
+// Detect gender from model name.
+// FVO models: "CLOUDSWIFT ONYX M" → Men, "CLOUDSWIFT ONYX W" → Women
+// STECH models: same convention.
+export type Gender = "M" | "W" | "";
+
+export function detectGender(model: string | null | undefined): Gender {
+  if (!model) return "";
+  const m = model.trim().toUpperCase();
+  if (!m) return "";
+  // Check for explicit " M" or " W" as last word (most common pattern)
+  if (/\bMS\b\s*$/.test(m) || /\bM\b\s*$/.test(m)) return "M";
+  if (/\bWS\b\s*$/.test(m) || /\bW\b\s*$/.test(m)) return "W";
+  // Check for MEN/WOMEN keywords
+  if (/\bMEN\b/.test(m)) return "M";
+  if (/\bWOMEN\b/.test(m)) return "W";
+  // Check for "Men" or "Women" in mixed case
+  if (/Men\b/i.test(model) && !/Women/i.test(model)) return "M";
+  if (/Women\b/i.test(model)) return "W";
+  return "";
+}
+
 // ── Size normalization ──────────────────────────────────────────────────────
 
-// Convert STECH combined size (e.g., "M08T/W10") to canonical Men's US size.
-// "M08" → 8, "M08T" → 8.5, "M09" → 9, "M09T" → 9.5, "M10" → 10, etc.
-// If no M part, try W part and convert (W - 1.5 = M equivalent).
-function stechSizeToCanonical(size: string): string {
+// Size ranges (user's spec):
+//   Men:   7 to 14   (M07 to M14, M07T to M13T)
+//   Women: 5 to 10.5 (W05 to W10, W05T to W10T)
+
+export const MEN_SIZE_RANGE = { min: 7, max: 14 };
+export const WOMEN_SIZE_RANGE = { min: 5, max: 10.5 };
+
+// Validate a canonical size against gender-specific range.
+export function validateSizeRange(canonicalSize: string, gender: Gender): string | null {
+  const n = Number(canonicalSize);
+  if (isNaN(n)) return `Size "${canonicalSize}" is not a valid number.`;
+  if (gender === "M") {
+    if (n < MEN_SIZE_RANGE.min || n > MEN_SIZE_RANGE.max) {
+      return `Men size ${n} is out of range (${MEN_SIZE_RANGE.min}-${MEN_SIZE_RANGE.max}).`;
+    }
+  } else if (gender === "W") {
+    if (n < WOMEN_SIZE_RANGE.min || n > WOMEN_SIZE_RANGE.max) {
+      return `Women size ${n} is out of range (${WOMEN_SIZE_RANGE.min}-${WOMEN_SIZE_RANGE.max}).`;
+    }
+  }
+  return null;
+}
+
+// Convert STECH combined size to canonical gender-specific US size.
+// User's rules:
+//   - "M07/W08T" + Men model   → extract M07  = 7
+//   - "M05/W06T" + Women model → extract W06T = 6.5
+//   - T suffix = +0.5
+//   - If gender unknown, prefer M part (most STECH data is Men-model first)
+export function stechSizeToCanonical(size: string, gender: Gender = ""): string {
   const s = String(size || "").trim().toUpperCase();
   if (!s) return "";
 
-  // Try to extract M part: M## or M##T
+  // If gender is known, extract the matching part
+  if (gender === "M") {
+    // Extract M part: M## or M##T
+    const mMatch = s.match(/M(\d{1,2})(T)?/);
+    if (mMatch) {
+      const base = parseInt(mMatch[1], 10);
+      const half = mMatch[2] === "T" ? 0.5 : 0;
+      return String(base + half);
+    }
+  }
+
+  if (gender === "W") {
+    // Extract W part: W## or W##T
+    const wMatch = s.match(/W(\d{1,2})(T)?/);
+    if (wMatch) {
+      const base = parseInt(wMatch[1], 10);
+      const half = wMatch[2] === "T" ? 0.5 : 0;
+      return String(base + half);
+    }
+  }
+
+  // Gender unknown — try M first, then W (most STECH sizes have M prefix first)
   const mMatch = s.match(/M(\d{1,2})(T)?/);
   if (mMatch) {
     const base = parseInt(mMatch[1], 10);
@@ -37,48 +106,42 @@ function stechSizeToCanonical(size: string): string {
     return String(base + half);
   }
 
-  // Try W part: W## or W##T → convert to Men's (W - 1.5)
   const wMatch = s.match(/W(\d{1,2})(T)?/);
   if (wMatch) {
     const base = parseInt(wMatch[1], 10);
     const half = wMatch[2] === "T" ? 0.5 : 0;
-    const womenSize = base + half;
-    const menSize = womenSize - 1.5;
-    return String(menSize);
+    return String(base + half);
   }
 
-  // Already a plain number
+  // Already a plain number (FVO-style)
   const n = Number(s);
   if (!isNaN(n)) return s;
 
   return s; // fallback: return as-is
 }
 
-// Convert FVO size + model gender to canonical Men's US size.
-// FVO Men model: size as-is (already Men's)
-// FVO Women model: W - 1.5 = M equivalent
-function fvoSizeToCanonical(size: string, model: string | null | undefined): string {
+// Convert FVO size to canonical.
+// FVO sizes are plain numbers, already gender-specific (no W↔M conversion needed).
+// Just return as-is, ensuring proper number formatting.
+export function fvoSizeToCanonical(size: string, _gender: Gender = ""): string {
   const s = String(size || "").trim();
   if (!s) return "";
   const n = Number(s);
-  if (isNaN(n)) return s;
-
-  const modelUpper = String(model || "").toUpperCase();
-  // Women's model: convert W to M equivalent
-  if (/\bW\b/.test(modelUpper) && !/\bM\b/.test(modelUpper)) {
-    return String(n - 1.5);
+  if (!isNaN(n)) {
+    // Format: integer if whole, else keep decimal
+    return Number.isInteger(n) ? String(n) : String(n);
   }
-  // Men's model: size as-is
   return s;
 }
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export interface TrackingRow {
-  key: string; // canonical composite key: poNo|factoryPO|canonicalSize
+  key: string; // canonical composite key: poNo|factoryPO|gender|canonicalSize
   fvoPoNo: string;
   fvoArt: string; // = STECH PO NO#
-  size: string; // canonical size
+  gender: Gender; // "M" | "W" | ""
+  size: string; // canonical gender-specific US size
   rawFvoSize: string;
   rawStechSize: string;
   model: string | null;
@@ -108,6 +171,7 @@ export interface TrackingSummary {
   totalRemainingToOutput: number;
   shortageLines: number;
   statusCounts: Record<string, number>;
+  genderCounts: { M: number; W: number; unknown: number };
 }
 
 // ── Aggregate source data ────────────────────────────────────────────────────
@@ -115,8 +179,8 @@ export interface TrackingSummary {
 interface SourceAgg {
   poNo: string;
   factoryPO: string;
-  size: string;
-  canonicalSize: string;
+  gender: Gender;
+  size: string; // canonical size
   model: string | null;
   colorCode: string | null;
   colorName: string | null;
@@ -127,6 +191,7 @@ interface SourceAgg {
 }
 
 // Aggregate FVO data (productType = ONYX_FVO) by composite key.
+// Key: poNo|factoryPO|gender|canonicalSize
 async function aggregateFvo(): Promise<Map<string, SourceAgg>> {
   const rows = await db.masterData.findMany({
     where: { productType: "ONYX_FVO" },
@@ -143,13 +208,16 @@ async function aggregateFvo(): Promise<Map<string, SourceAgg>> {
     const factoryPO = String(r.factoryPO || "").trim(); // ART
     const rawSize = String(r.size || "").trim();
     if (!poNo || !factoryPO || !rawSize) continue;
-    const canonicalSize = fvoSizeToCanonical(rawSize, r.model);
-    const key = `${poNo}|${factoryPO}|${canonicalSize}`;
+
+    const gender = detectGender(r.model);
+    const canonicalSize = fvoSizeToCanonical(rawSize, gender);
+    // Key includes gender to prevent Men size 7 colliding with Women size 7
+    const key = `${poNo}|${factoryPO}|${gender}|${canonicalSize}`;
 
     let entry = map.get(key);
     if (!entry) {
       entry = {
-        poNo, factoryPO, size: canonicalSize, canonicalSize,
+        poNo, factoryPO, gender, size: canonicalSize,
         model: r.model, colorCode: r.colorCode, colorName: r.colorCode2,
         deadline: r.deadline, orderQty: 0, outputQty: 0, inputQty: 0,
       };
@@ -165,7 +233,8 @@ async function aggregateFvo(): Promise<Map<string, SourceAgg>> {
 }
 
 // Aggregate STECH data (productType = ONYX) by composite key.
-// STECH: factoryPO = FVO's poNo, poNo = FVO's ART → same key!
+// STECH: factoryPO = FVO's poNo, poNo = FVO's ART → same key format!
+// Key: factoryPO|poNo|gender|canonicalSize (same as FVO's poNo|factoryPO|gender|canonicalSize)
 async function aggregateStech(): Promise<Map<string, SourceAgg>> {
   const rows = await db.masterData.findMany({
     where: { productType: "ONYX" },
@@ -182,16 +251,18 @@ async function aggregateStech(): Promise<Map<string, SourceAgg>> {
     const poNo = String(r.poNo || "").trim(); // = FVO's ART
     const rawSize = String(r.size || "").trim();
     if (!factoryPO || !poNo || !rawSize) continue;
-    const canonicalSize = stechSizeToCanonical(rawSize);
-    // Key: factoryPO|poNo|canonicalSize = same as FVO's poNo|factoryPO|canonicalSize
-    const key = `${factoryPO}|${poNo}|${canonicalSize}`;
+
+    const gender = detectGender(r.model);
+    const canonicalSize = stechSizeToCanonical(rawSize, gender);
+    // Key: factoryPO|poNo|gender|canonicalSize = same as FVO's poNo|factoryPO|gender|canonicalSize
+    const key = `${factoryPO}|${poNo}|${gender}|${canonicalSize}`;
 
     let entry = map.get(key);
     if (!entry) {
       entry = {
-        poNo: factoryPO, // for display: FVO poNo = STECH factoryPO
-        factoryPO: poNo, // for display: FVO ART = STECH poNo
-        size: canonicalSize, canonicalSize,
+        poNo: factoryPO, // display: FVO poNo = STECH factoryPO
+        factoryPO: poNo, // display: FVO ART = STECH poNo
+        gender, size: canonicalSize,
         model: r.model, colorCode: r.colorCode, colorName: r.colorCode2,
         deadline: r.deadline, orderQty: 0, outputQty: 0, inputQty: 0,
       };
@@ -216,6 +287,7 @@ export async function buildTracking(
     model?: string;
     colorCode?: string;
     status?: string;
+    gender?: string;
     page?: number;
     pageSize?: number;
   }
@@ -241,12 +313,15 @@ export async function buildTracking(
     const remainingToOutput = fvoOrderQty - fvoOutputQty;
     const availableToOutput = stechReceivedQty - fvoOutputQty;
 
+    // Gender (from whichever source has it)
+    const gender: Gender = fvo?.gender ?? stech?.gender ?? "";
+    const canonicalSize = fvo?.size ?? stech?.size ?? "";
+
     // Determine status (spec §9)
     const issues: string[] = [];
     let status: string;
 
     if (fvoOutputQty > stechReceivedQty && stechReceivedQty > 0) {
-      // Spec §8: FVO Output > STECH Received → SHORTAGE
       status = "SHORTAGE";
       issues.push(
         `FVO Output (${fvoOutputQty}) exceeds STECH Received (${stechReceivedQty}) by ${fvoOutputQty - stechReceivedQty}.`
@@ -272,12 +347,18 @@ export async function buildTracking(
         `STECH Received (${stechReceivedQty}) exceeds FVO Order (${fvoOrderQty}).`
       );
     }
+    // Size range validation (user's spec)
+    if (gender && canonicalSize) {
+      const rangeErr = validateSizeRange(canonicalSize, gender);
+      if (rangeErr) issues.push(rangeErr);
+    }
 
     rows.push({
       key,
       fvoPoNo: fvo?.poNo ?? stech?.poNo ?? "",
       fvoArt: fvo?.factoryPO ?? stech?.factoryPO ?? "",
-      size: fvo?.canonicalSize ?? stech?.canonicalSize ?? "",
+      gender,
+      size: canonicalSize,
       rawFvoSize: fvo ? fvo.size : "",
       rawStechSize: stech ? stech.size : "",
       model: fvo?.model ?? stech?.model ?? null,
@@ -316,6 +397,9 @@ export async function buildTracking(
   if (filters?.status) {
     rows = rows.filter((r) => r.status === filters.status);
   }
+  if (filters?.gender) {
+    rows = rows.filter((r) => r.gender === filters.gender);
+  }
 
   // Sort: shortage first, then by status, then by poNo
   rows.sort((a, b) => {
@@ -351,6 +435,11 @@ export async function buildTracking(
       acc[r.status] = (acc[r.status] || 0) + 1;
       return acc;
     }, {} as Record<string, number>),
+    genderCounts: {
+      M: rows.filter((r) => r.gender === "M").length,
+      W: rows.filter((r) => r.gender === "W").length,
+      unknown: rows.filter((r) => r.gender === "").length,
+    },
   };
 
   return { rows: paginated, total, summary };

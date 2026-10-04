@@ -35,7 +35,7 @@ export function FvoStechTrackingView() {
   const [data, setData] = React.useState<any>(null);
   const [page, setPage] = React.useState(1);
   const [filters, setFilters] = React.useState({
-    poNo: "", art: "", size: "", model: "", colorCode: "", status: "",
+    poNo: "", art: "", size: "", model: "", colorCode: "", status: "", gender: "",
   });
   const [appliedFilters, setAppliedFilters] = React.useState<any>({});
 
@@ -64,12 +64,13 @@ export function FvoStechTrackingView() {
     if (filters.model) f.model = filters.model;
     if (filters.colorCode) f.colorCode = filters.colorCode;
     if (filters.status) f.status = filters.status;
+    if (filters.gender) f.gender = filters.gender;
     setAppliedFilters(f);
     loadData(1, f);
   }
 
   function resetFilters() {
-    setFilters({ poNo: "", art: "", size: "", model: "", colorCode: "", status: "" });
+    setFilters({ poNo: "", art: "", size: "", model: "", colorCode: "", status: "", gender: "" });
     setAppliedFilters({});
     loadData(1, {});
   }
@@ -113,7 +114,7 @@ export function FvoStechTrackingView() {
         </div>
       )}
 
-      {/* Status breakdown */}
+      {/* Status breakdown + Gender breakdown */}
       {summary?.statusCounts && (
         <div className="flex flex-wrap gap-2">
           {Object.entries(summary.statusCounts).map(([status, count]) => {
@@ -124,6 +125,21 @@ export function FvoStechTrackingView() {
               </Badge>
             );
           })}
+          {summary?.genderCounts && (
+            <>
+              <Badge className="text-xs bg-sky-100 text-sky-700 border-sky-300">
+                Men: {summary.genderCounts.M}
+              </Badge>
+              <Badge className="text-xs bg-pink-100 text-pink-700 border-pink-300">
+                Women: {summary.genderCounts.W}
+              </Badge>
+              {summary.genderCounts.unknown > 0 && (
+                <Badge className="text-xs bg-muted text-muted-foreground">
+                  Unknown: {summary.genderCounts.unknown}
+                </Badge>
+              )}
+            </>
+          )}
         </div>
       )}
 
@@ -135,7 +151,7 @@ export function FvoStechTrackingView() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
             <Input placeholder="PO NO#" value={filters.poNo} onChange={(e) => setFilters({ ...filters, poNo: e.target.value })} className="h-8 text-xs" />
             <Input placeholder="ART" value={filters.art} onChange={(e) => setFilters({ ...filters, art: e.target.value })} className="h-8 text-xs" />
             <Input placeholder="Size" value={filters.size} onChange={(e) => setFilters({ ...filters, size: e.target.value })} className="h-8 text-xs" />
@@ -148,6 +164,14 @@ export function FvoStechTrackingView() {
                 {Object.keys(STATUS_META).map((s) => (
                   <SelectItem key={s} value={s}>{STATUS_META[s].label}</SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+            <Select value={filters.gender || "__all__"} onValueChange={(v) => setFilters({ ...filters, gender: v === "__all__" ? "" : v })}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="All gender" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All gender</SelectItem>
+                <SelectItem value="M">Men</SelectItem>
+                <SelectItem value="W">Women</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -176,6 +200,7 @@ export function FvoStechTrackingView() {
                 <thead className="sticky top-0 bg-muted/80 backdrop-blur z-10">
                   <tr>
                     <th className="px-2 py-1.5 text-left">Status</th>
+                    <th className="px-2 py-1.5 text-left">Gender</th>
                     <th className="px-2 py-1.5 text-left">FVO PO NO#</th>
                     <th className="px-2 py-1.5 text-left">ART</th>
                     <th className="px-2 py-1.5 text-left">Size</th>
@@ -199,6 +224,15 @@ export function FvoStechTrackingView() {
                           <span className={cn("inline-flex items-center rounded-full border px-1.5 py-0.5 text-[9px] font-semibold", meta.color)}>
                             {meta.label}
                           </span>
+                        </td>
+                        <td className="px-2 py-1.5">
+                          {r.gender === "M" ? (
+                            <Badge className="text-[9px] bg-sky-100 text-sky-700">Men</Badge>
+                          ) : r.gender === "W" ? (
+                            <Badge className="text-[9px] bg-pink-100 text-pink-700">Women</Badge>
+                          ) : (
+                            <span className="text-[9px] text-muted-foreground">—</span>
+                          )}
                         </td>
                         <td className="px-2 py-1.5 font-mono">{r.fvoPoNo}</td>
                         <td className="px-2 py-1.5 font-mono text-muted-foreground">{r.fvoArt}</td>
@@ -240,17 +274,27 @@ export function FvoStechTrackingView() {
         </CardContent>
       </Card>
 
-      {/* Formula reference (spec §4-7) */}
+      {/* Formula reference (spec §4-7) + Size rules */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm">Quantity Formulas</CardTitle>
+          <CardTitle className="text-sm">Quantity Formulas & Size Rules</CardTitle>
         </CardHeader>
-        <CardContent className="text-xs space-y-1 text-muted-foreground">
+        <CardContent className="text-xs space-y-2 text-muted-foreground">
           <div><b>FVO Stock</b> = STECH Received − FVO Output</div>
           <div><b>Remaining to Receive</b> = FVO Order − STECH Received</div>
           <div><b>Remaining to Output</b> = FVO Order − FVO Output</div>
           <div><b>Available to Output</b> = STECH Received − FVO Output</div>
           <div className="text-rose-600"><b>SHORTAGE</b> when FVO Output &gt; STECH Received</div>
+          <div className="border-t pt-2 mt-2">
+            <b>Size Normalization:</b>
+            <div className="ml-3 mt-1 space-y-0.5">
+              <div>STECH "M07/W08T" + Men model → extract M07 = <b>7</b></div>
+              <div>STECH "M05/W06T" + Women model → extract W06T = <b>6.5</b> (T = +0.5)</div>
+              <div>Men range: 7–14 (M07–M14)</div>
+              <div>Women range: 5–10.5 (W05–W10T)</div>
+              <div>FVO sizes are plain numbers, gender-specific (no conversion)</div>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>

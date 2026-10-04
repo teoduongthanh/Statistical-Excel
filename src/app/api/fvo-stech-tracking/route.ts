@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// GET /api/fvo-stech-tracking?poNo=&art=&size=&model=&colorCode=&status=&page=1&pageSize=50
+// GET /api/fvo-stech-tracking?poNo=&art=&size=&model=&colorCode=&status=&gender=&page=1&pageSize=50
 // Returns paginated tracking rows + summary KPIs (spec §10, §14).
 export async function GET(req: NextRequest) {
   try {
@@ -17,6 +17,7 @@ export async function GET(req: NextRequest) {
       model: searchParams.get("model") || undefined,
       colorCode: searchParams.get("colorCode") || undefined,
       status: searchParams.get("status") || undefined,
+      gender: searchParams.get("gender") || undefined, // "M" | "W" | ""
       page: Math.max(1, Number(searchParams.get("page") || "1")),
       pageSize: Math.min(500, Number(searchParams.get("pageSize") || "50")),
     };

@@ -212,6 +212,7 @@ export const api = {
     model?: string;
     colorCode?: string;
     status?: string;
+    gender?: string;
     page?: number;
     pageSize?: number;
   } = {}): Promise<{
@@ -230,6 +231,7 @@ export const api = {
     if (filters.model) q.set("model", filters.model);
     if (filters.colorCode) q.set("colorCode", filters.colorCode);
     if (filters.status) q.set("status", filters.status);
+    if (filters.gender) q.set("gender", filters.gender);
     q.set("page", String(filters.page ?? 1));
     q.set("pageSize", String(filters.pageSize ?? 50));
     const res = await fetch(`/api/fvo-stech-tracking?${q}`);
