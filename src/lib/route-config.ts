@@ -121,6 +121,35 @@ export interface BreadcrumbItem {
 export function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
   const crumbs: BreadcrumbItem[] = [{ label: "Dashboard", href: "/dashboard" }];
 
+  // Top-level standalone routes (not under /dashboard).
+  if (pathname.startsWith("/comparison-studio")) {
+    crumbs.push({ label: "Comparison Studio", href: "/comparison-studio" });
+    return crumbs;
+  }
+  if (pathname.startsWith("/import-history")) {
+    crumbs.push({ label: "Import History", href: "/import-history" });
+    return crumbs;
+  }
+  if (pathname.startsWith("/order-notes")) {
+    crumbs.push({ label: "Order Notes", href: "/order-notes" });
+    return crumbs;
+  }
+  if (pathname.startsWith("/settings")) {
+    crumbs.push({ label: "Settings", href: "/settings/mapping" });
+    const parts = pathname.replace(/^\/settings\/?/, "").split("/").filter(Boolean);
+    if (parts.length >= 2) {
+      const labelMap: Record<string, string> = {
+        mapping: "Column Mapping",
+        lookup: "Lookup Rules",
+        validation: "Validation Rules",
+        products: "Products",
+      };
+      const label = labelMap[parts[0]] || parts[0];
+      crumbs.push({ label, href: `/settings/${parts[0]}` });
+    }
+    return crumbs;
+  }
+
   // /dashboard/[module]
   const parts = pathname.replace(/^\/dashboard\/?/, "").split("/").filter(Boolean);
   if (parts.length === 0) return crumbs;

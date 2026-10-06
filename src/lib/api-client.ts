@@ -1552,6 +1552,76 @@ export const api = {
       }>;
     }>(res);
   },
+
+  // ===== Comparison Studio (dynamic data relationship & comparison engine) =====
+  // Profiles CRUD
+  listComparisonProfiles: async () => {
+    const res = await fetch("/api/comparison-studio/profiles");
+    return jsonOrThrow<{ ok: boolean; profiles: any[] }>(res);
+  },
+  createComparisonProfile: async (body: any) => {
+    const res = await fetch("/api/comparison-studio/profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; profile: any }>(res);
+  },
+  getComparisonProfile: async (id: string) => {
+    const res = await fetch(`/api/comparison-studio/profiles/${id}`);
+    return jsonOrThrow<{ ok: boolean; profile: any }>(res);
+  },
+  updateComparisonProfile: async (id: string, body: any) => {
+    const res = await fetch(`/api/comparison-studio/profiles/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; profile: any }>(res);
+  },
+  deleteComparisonProfile: async (id: string) => {
+    const res = await fetch(`/api/comparison-studio/profiles/${id}`, { method: "DELETE" });
+    return jsonOrThrow<{ ok: boolean }>(res);
+  },
+  // Run a comparison
+  runComparison: async (body: { profileId: string; filters?: { dateFrom?: string; dateTo?: string; poNo?: string; factoryPO?: string } }) => {
+    const res = await fetch("/api/comparison-studio/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; runId: string; summary: any }>(res);
+  },
+  // Get paginated results
+  getComparisonResults: async (runId: string, params?: {
+    status?: string; poNo?: string; factoryPO?: string; size?: string;
+    page?: number; pageSize?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set("status", params.status);
+    if (params?.poNo) q.set("poNo", params.poNo);
+    if (params?.factoryPO) q.set("factoryPO", params.factoryPO);
+    if (params?.size) q.set("size", params.size);
+    if (params?.page) q.set("page", String(params.page));
+    if (params?.pageSize) q.set("pageSize", String(params.pageSize));
+    const res = await fetch(`/api/comparison-studio/${runId}/results?${q}`);
+    return jsonOrThrow<{ ok: boolean; rows: any[]; total: number; page: number; pageSize: number; totalPages: number; summary: any }>(res);
+  },
+  // Get summary for a run
+  getComparisonSummary: async (runId: string) => {
+    const res = await fetch(`/api/comparison-studio/${runId}/summary`);
+    return jsonOrThrow<{ ok: boolean; summary: any; run: any }>(res);
+  },
+  // List past runs
+  listComparisonRuns: async (limit = 20, profileId?: string) => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (profileId) q.set("profileId", profileId);
+    const res = await fetch(`/api/comparison-studio/runs?${q}`);
+    return jsonOrThrow<{ ok: boolean; runs: any[]; total: number }>(res);
+  },
+  // Build the export URL (browser opens it directly to download .xlsx)
+  comparisonExportUrl: (runId: string) =>
+    `/api/comparison-studio/${runId}/export`,
 };
 
 export type { CanonicalField };

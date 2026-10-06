@@ -521,3 +521,128 @@ model Product {
   @@index([active])
   @@index([sortOrder])
 }
+
+// ── Comparison Studio models (spec: Data Relationship & Comparison Studio) ──
+
+/// Comparison Profile — saved configuration for comparing 2 datasets.
+/// Spec §4: user creates profiles, each defines source/target datasets,
+/// field mappings, transformations, match keys, aggregation, metrics, rules.
+model ComparisonProfile {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  name            String   @unique
+  description     String?
+  sourceDataset   String   // productType of source (e.g., "ONYX")
+  targetDataset   String   // productType of target (e.g., "ONYX_FVO")
+  // Status mapping (spec §47): source status → target status
+  // JSON: { "2.Output": "4.Input", "1.Order": "1.Order" }
+  statusMapping   String   @default("{}")
+  // Match key fields (spec §14): JSON array of field names
+  // e.g., ["poNo", "factoryPO", "size"]
+  matchKeyFields  String   @default("[]")
+  // Field mappings (spec §6): JSON array of {sourceField, targetField, type, transformRule}
+  // type: EXACT | NORMALIZED | TRANSFORMED | COMPARE
+  fieldMappings   String   @default("[]")
+  // Aggregation config (spec §45): JSON { qtyField: "qty1", method: "SUM" }
+  aggregationConfig String @default("{}")
+  // Comparison metrics (spec §21): JSON array of metric configs
+  // e.g., [{ type: "DIFFERENCE", direction: "SOURCE_MINUS_TARGET" }, { type: "PERCENTAGE" }]
+  metrics         String   @default("[]")
+  // Rules (spec §26): JSON array of { condition, status, priority }
+  rules           String   @default("[]")
+  // Mode (spec §64): STRICT | BALANCED | SMART
+  mode            String   @default("SMART")
+  // Versioning (spec §55)
+  version         Int      @default(1)
+  // Active flag
+  active          Boolean  @default(true)
+  createdBy       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([sourceDataset, targetDataset])
+  @@index([active])
+}
+
+/// Comparison Run — each execution of a profile (spec §57).
+model ComparisonRun {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  runId           String   @unique // e.g., "CMP-000001"
+  profileId       String
+  profileName     String
+  profileVersion  Int      @default(1)
+  sourceDataset   String
+  targetDataset   String
+  // Filters applied (JSON)
+  filters         String   @default("{}")
+  // Summary stats
+  totalCompared   Int      @default(0)
+  matchedCount     Int      @default(0)
+  mismatchCount   Int      @default(0)
+  missingSource   Int      @default(0)
+  missingTarget   Int      @default(0)
+  ambiguousCount   Int      @default(0)
+  shortageCount   Int      @default(0)
+  overageCount    Int      @default(0)
+  // Totals
+  sourceTotalQty  Int      @default(0)
+  targetTotalQty  Int      @default(0)
+  totalDifference Int      @default(0)
+  matchPercentage Float    @default(0)
+  // Status
+  status          String   @default("running") // running | completed | failed
+  error           String?
+  duration        Int?
+  startedAt       DateTime @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([profileId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// Comparison Result — one row per matched/unmatched group (spec §32, §68).
+model ComparisonResult {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  runId           String   // ref to ComparisonRun.runId
+  // Business key (composite — spec §13)
+  key             String
+  // Source data (JSON: { poNo, factoryPO, size, qty, date, ... })
+  sourceData      String   @default("{}")
+  // Target data (JSON)
+  targetData      String   @default("{}")
+  // Match info
+  sourceQty       Int      @default(0)
+  targetQty       Int      @default(0)
+  difference      Int      @default(0)
+  percentage      Float    @default(0)
+  // Status (spec §25)
+  status          String   // MATCHED | QTY_MISMATCH | MISSING_SOURCE | MISSING_TARGET | AMBIGUOUS | OVERAGE | SHORTAGE
+  issues          String   @default("[]") // JSON array of issue strings
+  // Match metadata
+  matchType       String?  // EXACT | NORMALIZED | TRANSFORMED | MANUAL
+  // Source/target row refs (JSON arrays of row numbers for drill-down)
+  sourceRowRefs   String   @default("[]")
+  targetRowRefs   String   @default("[]")
+  createdAt       DateTime @default(now())
+
+  @@index([runId])
+  @@index([runId, status])
+  @@index([runId, key])
+}
+
+/// Manual Relationship — user-created links (spec §61).
+model ManualRelationship {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  profileId       String
+  sourceDataset   String
+  targetDataset   String
+  sourceKey       String   // composite key
+  targetKey       String
+  linkedBy        String?
+  linkedAt        DateTime @default(now())
+  reason          String?
+
+  @@index([profileId])
+  @@index([sourceDataset, targetDataset])
+}
