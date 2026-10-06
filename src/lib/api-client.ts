@@ -357,6 +357,10 @@ export const api = {
     return jsonOrThrow(res);
   },
 
+  // Export URL for staging batch (.xlsx with 8 sheets).
+  stagingExportUrl: (batchDbId: string, sheet: string = "all"): string =>
+    `/api/entry-staging/${batchDbId}/export?sheet=${sheet}`,
+
   stagingList: async (
     productType?: string,
     limit = 20

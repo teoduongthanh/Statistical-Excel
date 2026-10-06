@@ -23,6 +23,7 @@ import {
   ClipboardPaste,
   ClipboardCheck,
   Upload,
+  Download,
   RefreshCw,
   Eye,
   ShieldCheck,
@@ -3678,6 +3679,13 @@ function BulkStagingPanel({ currentProduct, theme, onImported }: BulkStagingPane
                 >
                   <Upload className="h-4 w-4 mr-1.5" /> Confirm Import
                 </Button>
+              )}
+              {batchDbId && (
+                <a href={api.stagingExportUrl(batchDbId, "all")} download>
+                  <Button variant="outline">
+                    <Download className="h-4 w-4 mr-1.5" /> Export Excel
+                  </Button>
+                </a>
               )}
               <Button variant="ghost" size="sm" onClick={() => loadSummary()}>
                 <RefreshCw className="h-3.5 w-3.5 mr-1" /> Refresh Summary
