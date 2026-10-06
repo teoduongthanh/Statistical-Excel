@@ -204,6 +204,48 @@ export const api = {
   reconciliationExportUrl: (runId: string, sheet: string = "all"): string =>
     `/api/reconciliation/${runId}/export?sheet=${sheet}`,
 
+  // ── Product Management (dynamic product registration) ──────────────────────
+  listProducts: async (): Promise<{ ok: boolean; products: any[] }> => {
+    const res = await fetch("/api/products");
+    return jsonOrThrow(res);
+  },
+
+  createProduct: async (body: {
+    productType: string;
+    label: string;
+    slug: string;
+    description?: string;
+    color?: string;
+  }): Promise<{ ok: boolean; product: any }> => {
+    const res = await fetch("/api/products", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  updateProduct: async (id: string, body: {
+    label?: string;
+    slug?: string;
+    description?: string;
+    color?: string;
+    active?: boolean;
+    sortOrder?: number;
+  }): Promise<{ ok: boolean; product: any }> => {
+    const res = await fetch(`/api/products/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  deleteProduct: async (id: string): Promise<{ ok: boolean; message: string }> => {
+    const res = await fetch(`/api/products/${id}`, { method: "DELETE" });
+    return jsonOrThrow(res);
+  },
+
   // ── FVO ↔ STECH Tracking ────────────────────────────────────────────────
   fvoStechTracking: async (filters: {
     poNo?: string;

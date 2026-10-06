@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
-import { MODULES, FEATURES } from "@/lib/route-config";
+import { getModules, FEATURES } from "@/lib/route-config";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 
@@ -29,7 +29,7 @@ function getPageMeta(pathname: string): { title: string; subtitle: string; produ
   // Module routes: /dashboard/[module] or /dashboard/[module]/[feature]
   const parts = pathname.replace(/^\/dashboard\/?/, "").split("/").filter(Boolean);
   if (parts.length >= 1) {
-    const moduleConfig = MODULES.find((m) => m.slug === parts[0]);
+    const moduleConfig = getModules().find((m) => m.slug === parts[0]);
     if (moduleConfig) {
       if (parts.length === 1) {
         return { title: `${moduleConfig.label} Dashboard`, subtitle: "Production KPIs & alerts", productScoped: true };
@@ -86,7 +86,7 @@ export function Header() {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-64">
           <DropdownMenuItem asChild><Link href="/dashboard">Global Dashboard</Link></DropdownMenuItem>
-          {MODULES.map((m) => (
+          {getModules().map((m) => (
             <DropdownMenuItem key={m.slug} asChild>
               <Link href={`/dashboard/${m.slug}`}>{m.label}</Link>
             </DropdownMenuItem>
@@ -122,7 +122,7 @@ export function Header() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {MODULES.map((m) => (
+              {getModules().map((m) => (
                 <DropdownMenuItem key={m.slug} asChild>
                   <Link href={`/dashboard/${m.slug}`}>
                     <span className={cn("h-2 w-2 rounded-full mr-2", PRODUCT_THEME[m.productType].bg)} />

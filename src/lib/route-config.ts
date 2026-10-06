@@ -1,6 +1,10 @@
 // Central route configuration — maps URL segments to modules and features.
 // Spec §12: manage routes centrally so adding a new module only requires
 // registering it here (no need to modify dozens of components).
+//
+// Products are now DYNAMIC — loaded from DB via /api/products.
+// The hardcoded MODULES array below is just a fallback for initial load
+// before the DB query completes. The sidebar dynamically merges DB products.
 
 import type { ProductType } from "@/store/app-store";
 import type { LucideIcon } from "lucide-react";
@@ -13,16 +17,29 @@ import {
 // ── Module configuration ─────────────────────────────────────────────────────
 
 export interface ModuleConfig {
-  slug: string; // URL segment: "onyx" | "mafate" | "mizuno"
-  productType: ProductType; // "ONYX" | "MAFATE" | "MIZUNO"
+  slug: string; // URL segment: "onyx" | "mafate" | "mizuno" | any new product slug
+  productType: ProductType; // "ONYX" | "MAFATE" | "MIZUNO" | any new product type
   label: string;
 }
 
-export const MODULES: ModuleConfig[] = [
-  { slug: "onyx", productType: "ONYX", label: "Onyx" },
+// Default modules (fallback before DB loads). DB products override these.
+export const DEFAULT_MODULES: ModuleConfig[] = [
   { slug: "mafate", productType: "MAFATE", label: "Mafate" },
+  { slug: "onyx", productType: "ONYX", label: "Onyx" },
   { slug: "mizuno", productType: "MIZUNO", label: "Mizuno" },
 ];
+
+// Current active modules (updated by sidebar on load from DB).
+// This is a mutable reference — sidebar calls setModules() after fetching from DB.
+let MODULES: ModuleConfig[] = [...DEFAULT_MODULES];
+
+export function getModules(): ModuleConfig[] {
+  return MODULES;
+}
+
+export function setModules(modules: ModuleConfig[]) {
+  MODULES = modules;
+}
 
 export function getModule(slug: string): ModuleConfig | undefined {
   return MODULES.find((m) => m.slug === slug);

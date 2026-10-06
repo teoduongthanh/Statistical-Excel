@@ -7,13 +7,17 @@ import {
   Search, ShieldCheck, StickyNote, ChevronDown, Factory,
   PenLine, Database, GitCompareArrows, Activity, BarChart3,
   Truck, ClipboardCheck, Monitor, FileOutput, GitCompare,
-  ArrowLeftRight, Upload, Download,
+  ArrowLeftRight, Upload, Download, Package,
 } from "lucide-react";
-import { useAppStore, PRODUCT_THEME, type ProductType } from "@/store/app-store";
-import { MODULES, FEATURES } from "@/lib/route-config";
+import { useAppStore, PRODUCT_THEME, themeFromColor, type ProductType } from "@/store/app-store";
+import { getModules, setModules, FEATURES } from "@/lib/route-config";
+import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import * as React from "react";
+
+// Dynamic modules — loaded from DB on mount.
+let MODULES = getModules();
 
 // Global nav links (not product-scoped)
 const GLOBAL_LINKS = [
@@ -26,6 +30,7 @@ const SETTINGS_LINKS = [
   { label: "Column Mapping", href: "/settings/mapping", icon: FileCog },
   { label: "Lookup Rules", href: "/settings/lookup", icon: Search },
   { label: "Validation Rules", href: "/settings/validation", icon: ShieldCheck },
+  { label: "Products", href: "/settings/products", icon: Package },
 ];
 
 // Features shown in sidebar per module.
@@ -53,14 +58,42 @@ const FEATURE_LINKS = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { currentProduct } = useAppStore();
+  const { currentProduct, setProducts } = useAppStore();
+  const [modules, setLocalModules] = React.useState(MODULES);
+
+  // Load products from DB on mount (dynamic product registration).
+  React.useEffect(() => {
+    api.listProducts().then((r) => {
+      if (r.ok && r.products.length > 0) {
+        const dbModules = r.products.map((p: any) => ({
+          slug: p.slug,
+          productType: p.productType,
+          label: p.label,
+        }));
+        setModules(dbModules);
+        setLocalModules(dbModules);
+        // Also update store's products + themes
+        const productConfigs = r.products.map((p: any) => ({
+          productType: p.productType,
+          label: p.label,
+          slug: p.slug,
+          description: p.description || "",
+          color: p.color || "blue",
+          active: p.active,
+          sortOrder: p.sortOrder,
+        }));
+        setProducts(productConfigs);
+      }
+    }).catch(() => {
+      // Fallback to default modules
+    });
+  }, [setProducts]);
 
   // Determine which module is active from URL.
-  // /dashboard/onyx/... → module slug = "onyx"
   const moduleSlug = pathname.startsWith("/dashboard/")
     ? pathname.split("/")[2]
     : "";
-  const activeModule = MODULES.find((m) => m.slug === moduleSlug);
+  const activeModule = modules.find((m) => m.slug === moduleSlug);
 
   return (
     <aside className="hidden md:flex h-full w-64 flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border shrink-0">
@@ -140,8 +173,10 @@ export function Sidebar() {
 
           {/* Product switcher */}
           <div className="mb-2 space-y-1">
-            {MODULES.map((m) => {
-              const t = PRODUCT_THEME[m.productType];
+            {modules.map((m) => {
+              // Use dynamic theme from store, fallback to PRODUCT_THEME, then to blue
+              const themes = useAppStore.getState().themes;
+              const t = themes[m.productType] || PRODUCT_THEME[m.productType] || themeFromColor("blue", m.label);
               const active = activeModule?.slug === m.slug;
               return (
                 <Link
@@ -197,7 +232,7 @@ export function Sidebar() {
       <div className="border-t border-sidebar-border px-4 py-3">
         <div className="flex items-center gap-2 text-[11px] text-sidebar-foreground/60">
           <Settings2 className="h-3.5 w-3.5" />
-          <span>v4.0 · URL Routing</span>
+          <span>v5.0 · Dynamic Products · {modules.length} active</span>
         </div>
       </div>
     </aside>

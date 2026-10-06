@@ -1,10 +1,12 @@
 "use client";
 
 import { useParams, notFound } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { getModule, getFeature } from "@/lib/route-config";
-import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
+import { api } from "@/lib/api-client";
+import { useAppStore, PRODUCT_THEME, themeFromColor } from "@/store/app-store";
 import { cn } from "@/lib/utils";
+import { Loader2 } from "lucide-react";
 
 import { ProductDataEntryView } from "@/components/views/product-data-entry-view";
 import { ProductMasterDataView } from "@/components/views/product-master-data-view";
@@ -26,20 +28,53 @@ export default function FeaturePage() {
   const moduleSlug = params.module;
   const featureSlug = params.feature;
 
-  const moduleConfig = getModule(moduleSlug);
   const feature = getFeature(featureSlug);
-
   const { currentProduct, setCurrentProduct } = useAppStore();
-  const theme = PRODUCT_THEME[currentProduct];
+  const [loading, setLoading] = useState(true);
+  const [validModule, setValidModule] = useState(false);
+  const [productColor, setProductColor] = useState<string | null>(null);
 
   useEffect(() => {
-    if (moduleConfig && currentProduct !== moduleConfig.productType) {
-      setCurrentProduct(moduleConfig.productType);
+    // First check in-memory MODULES
+    const cached = getModule(moduleSlug);
+    if (cached) {
+      if (currentProduct !== cached.productType) {
+        setCurrentProduct(cached.productType);
+      }
+      // Use setTimeout to avoid synchronous setState in effect
+      setTimeout(() => { setValidModule(true); setLoading(false); }, 0);
+      return;
     }
-  }, [moduleConfig, currentProduct, setCurrentProduct]);
 
-  if (!moduleConfig) notFound();
+    // Fetch from DB
+    api.listProducts().then((r) => {
+      if (r.ok) {
+        const found = r.products.find((p: any) => p.slug === moduleSlug);
+        if (found) {
+          if (currentProduct !== found.productType) {
+            setCurrentProduct(found.productType);
+          }
+          setProductColor(found.color);
+          setValidModule(true);
+        }
+      }
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [moduleSlug, currentProduct, setCurrentProduct]);
+
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!validModule) notFound();
   if (!feature) notFound();
+
+  // Get theme — use PRODUCT_THEME for built-in, or themeFromColor for dynamic
+  const theme = PRODUCT_THEME[currentProduct] || themeFromColor(productColor || "blue", currentProduct);
 
   const renderView = () => {
     switch (feature.view) {

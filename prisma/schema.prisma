@@ -500,3 +500,24 @@ model EntryAuditLog {
   @@index([action])
   @@index([createdAt])
 }
+
+/// Product — dynamic product registration (spec: add new products freely).
+/// Replaces hardcoded ProductType union. Each product has its own data isolation.
+model Product {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  productType String   @unique // "MAFATE", "ONYX", "MIZUNO", or any new product
+  label       String   // Display name e.g. "Mafate", "Onyx Pro"
+  slug        String   @unique // URL slug e.g. "mafate", "onyx-pro"
+  description String?
+  // Theme colors (auto-generated if not specified)
+  color       String   @default("emerald") // Tailwind color name: emerald, violet, rose, blue, amber, etc.
+  // Active flag (soft delete)
+  active      Boolean  @default(true)
+  // Sort order in sidebar
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([active])
+  @@index([sortOrder])
+}
