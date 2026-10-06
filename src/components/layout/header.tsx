@@ -11,7 +11,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
+import { useAppStore, PRODUCT_THEME, themeFromColor } from "@/store/app-store";
 import { getModules, FEATURES } from "@/lib/route-config";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -66,10 +66,11 @@ function getPageMeta(pathname: string): { title: string; subtitle: string; produ
 
 export function Header() {
   const { theme, setTheme } = useTheme();
-  const { currentProduct } = useAppStore();
+  const { currentProduct, themes } = useAppStore();
   const pathname = usePathname();
   const meta = getPageMeta(pathname);
-  const pTheme = PRODUCT_THEME[currentProduct];
+  // Use dynamic theme from store, fallback to PRODUCT_THEME, then to blue preset
+  const pTheme = themes[currentProduct] || PRODUCT_THEME[currentProduct] || themeFromColor("blue", currentProduct);
 
   // Get current moduleConfig.slug for product switcher links
   const parts = pathname.replace(/^\/dashboard\/?/, "").split("/").filter(Boolean);
@@ -122,14 +123,17 @@ export function Header() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {getModules().map((m) => (
-                <DropdownMenuItem key={m.slug} asChild>
-                  <Link href={`/dashboard/${m.slug}`}>
-                    <span className={cn("h-2 w-2 rounded-full mr-2", PRODUCT_THEME[m.productType].bg)} />
-                    {m.label}
-                  </Link>
-                </DropdownMenuItem>
-              ))}
+              {getModules().map((m) => {
+                const t = themes[m.productType] || PRODUCT_THEME[m.productType] || themeFromColor("blue", m.label);
+                return (
+                  <DropdownMenuItem key={m.slug} asChild>
+                    <Link href={`/dashboard/${m.slug}`}>
+                      <span className={cn("h-2 w-2 rounded-full mr-2", t.bg)} />
+                      {m.label}
+                    </Link>
+                  </DropdownMenuItem>
+                );
+              })}
             </DropdownMenuContent>
           </DropdownMenu>
         )}
