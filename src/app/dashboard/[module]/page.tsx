@@ -16,18 +16,14 @@ export default function ModulePage() {
   const [valid, setValid] = useState(false);
 
   useEffect(() => {
-    // First check in-memory MODULES (may have been populated by sidebar)
     const cached = getModule(moduleSlug);
     if (cached) {
       if (currentProduct !== cached.productType) {
         setCurrentProduct(cached.productType);
       }
-      // Use setTimeout to avoid synchronous setState in effect
       setTimeout(() => { setValid(true); setLoading(false); }, 0);
       return;
     }
-
-    // Not found in cache — fetch from DB to verify the slug exists
     api.listProducts().then((r) => {
       if (r.ok) {
         const found = r.products.find((p: any) => p.slug === moduleSlug);

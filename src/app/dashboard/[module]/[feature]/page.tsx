@@ -35,18 +35,14 @@ export default function FeaturePage() {
   const [productColor, setProductColor] = useState<string | null>(null);
 
   useEffect(() => {
-    // First check in-memory MODULES
     const cached = getModule(moduleSlug);
     if (cached) {
       if (currentProduct !== cached.productType) {
         setCurrentProduct(cached.productType);
       }
-      // Use setTimeout to avoid synchronous setState in effect
       setTimeout(() => { setValidModule(true); setLoading(false); }, 0);
       return;
     }
-
-    // Fetch from DB
     api.listProducts().then((r) => {
       if (r.ok) {
         const found = r.products.find((p: any) => p.slug === moduleSlug);
@@ -73,7 +69,6 @@ export default function FeaturePage() {
   if (!validModule) notFound();
   if (!feature) notFound();
 
-  // Get theme — use PRODUCT_THEME for built-in, or themeFromColor for dynamic
   const theme = PRODUCT_THEME[currentProduct] || themeFromColor(productColor || "blue", currentProduct);
 
   const renderView = () => {
