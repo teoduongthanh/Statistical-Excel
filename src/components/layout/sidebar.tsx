@@ -59,7 +59,7 @@ const FEATURE_LINKS = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { currentProduct, setProducts } = useAppStore();
+  const { currentProduct, setProducts, themes } = useAppStore();
   const [modules, setLocalModules] = React.useState(MODULES);
 
   // Load products from DB on mount (dynamic product registration).
@@ -208,7 +208,7 @@ export function Sidebar() {
                   ? `/dashboard/${activeModule.slug}`
                   : `/dashboard/${activeModule.slug}/${item.slug}`;
                 const active = pathname === href;
-                const theme = PRODUCT_THEME[activeModule.productType];
+                const theme = themes[activeModule.productType] || PRODUCT_THEME[activeModule.productType] || themeFromColor("blue", activeModule.label);
                 return (
                   <Link
                     key={item.slug}
