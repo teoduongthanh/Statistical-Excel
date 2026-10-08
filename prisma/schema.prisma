@@ -646,3 +646,108 @@ model ManualRelationship {
   @@index([profileId])
   @@index([sourceDataset, targetDataset])
 }
+
+// ── Reconciliation Tool models (spec F1–F9) ─────────────────────────────────
+// A standalone tool similar to Comparison Studio but with F3 size transform
+// rules, F4 comparison config, F5 status engine, F6 dashboard data, F8 multi-
+// sheet Excel export. Stored separately so that RECON_TOOL profiles/runs don't
+// pollute the comparison-studio history.
+
+/// Reconciliation Tool Profile — saved configuration (F2 + F3 + F4).
+model ReconToolProfile {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  name            String   @unique
+  description     String?
+  sourceDataset   String   // productType of source (e.g. "ONYX_FVO")
+  targetDataset   String   // productType of target (e.g. "ONYX")
+  // F2: column mappings JSON array of { sourceField, targetField, role }
+  //   role: PRIMARY_KEY | SECONDARY_KEY | ATTRIBUTE | QUANTITY | DATE | FILTER
+  fieldMappings   String   @default("[]")
+  // F4: match keys (subset of source fields used to build the composite key)
+  matchKeys       String   @default("[]")
+  // F4: status mapping source→target (JSON Record)
+  statusMapping   String   @default("{}")
+  // F4: tolerance config JSON: { type: "absolute"|"percentage", value: number }
+  tolerance       String   @default("{\"type\":\"absolute\",\"value\":0}")
+  // F4: mode "row_to_row" | "aggregate"
+  mode            String   @default("aggregate")
+  // F4: pre-filter JSON: { shippingStatus?, dateFrom?, dateTo? }
+  preFilter       String   @default("{}")
+  // F3: size transformation rules JSON array of SizeTransformRule
+  sizeTransformRules String @default("[]")
+  // F3: extra normalize flags JSON { trim, upper, removeWhitespace, commaToDot }
+  normalizeConfig String   @default("{}")
+  active          Boolean  @default(true)
+  createdBy       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([sourceDataset, targetDataset])
+  @@index([active])
+}
+
+/// Reconciliation Tool Run — each execution of a profile.
+model ReconToolRun {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  runId           String   @unique // e.g. "RT-20260101-001"
+  profileId       String
+  profileName     String
+  sourceDataset   String
+  targetDataset   String
+  // Snapshot of config used (JSON) — so changing the profile later doesn't
+  // invalidate past runs.
+  configSnapshot  String   @default("{}")
+  // Summary counts by status (F5 + F6 KPIs)
+  totalLines      Int      @default(0)
+  matchedOk       Int      @default(0)
+  partial         Int      @default(0)
+  over            Int      @default(0)
+  missingOut      Int      @default(0)
+  orphan          Int      @default(0)
+  dup             Int      @default(0)
+  attrMismatch    Int      @default(0)
+  fmtFixed        Int      @default(0)
+  suspectPo       Int      @default(0)
+  // Quantity totals
+  sourceTotalQty  Int      @default(0)
+  targetTotalQty  Int      @default(0)
+  totalDifference Int      @default(0)
+  matchPercentage Float    @default(0)
+  // F6: chart data JSON (donut, stacked bar, top shortage, heatmap, timeline)
+  chartData       String   @default("{}")
+  status          String   @default("running") // running | completed | failed
+  error           String?
+  duration        Int?
+  startedAt       DateTime @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([profileId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// Reconciliation Tool Result — one row per matched/unmatched key.
+model ReconToolResult {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  runId           String
+  // Business key (composite — F2/F4 matchKeys joined by "|")
+  key             String
+  // Source / target snapshot (JSON)
+  sourceData      String   @default("{}")
+  targetData      String   @default("{}")
+  // Quantities
+  sourceQty       Int      @default(0)
+  targetQty       Int      @default(0)
+  difference      Int      @default(0)
+  percentage      Float    @default(0)
+  // F5 status — one of the 9 canonical statuses
+  status          String   // MATCHED_OK | PARTIAL | OVER | MISSING_OUT | ORPHAN | DUP | ATTR_MISMATCH | FMT_FIXED | SUSPECT_PO
+  issues          String   @default("[]") // JSON array of issue strings
+  matchType       String?  // EXACT | NORMALIZED | TRANSFORMED | MANUAL
+  createdAt       DateTime @default(now())
+
+  @@index([runId])
+  @@index([runId, status])
+  @@index([runId, key])
+}

@@ -1622,6 +1622,77 @@ export const api = {
   // Build the export URL (browser opens it directly to download .xlsx)
   comparisonExportUrl: (runId: string) =>
     `/api/comparison-studio/${runId}/export`,
+
+  // ===== Reconciliation Tool (spec F1–F9) =====
+  // F1: scan columns of a dataset
+  reconToolScan: async (dataset: string) => {
+    const res = await fetch("/api/recon-tool/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dataset }),
+    });
+    return jsonOrThrow<{ ok: boolean; dataset: string; profiles: any[] }>(res);
+  },
+  // Profiles CRUD
+  listReconToolProfiles: async () => {
+    const res = await fetch("/api/recon-tool/profiles");
+    return jsonOrThrow<{ ok: boolean; profiles: any[] }>(res);
+  },
+  createReconToolProfile: async (body: any) => {
+    const res = await fetch("/api/recon-tool/profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; profile: any }>(res);
+  },
+  getReconToolProfile: async (id: string) => {
+    const res = await fetch(`/api/recon-tool/profiles/${id}`);
+    return jsonOrThrow<{ ok: boolean; profile: any }>(res);
+  },
+  updateReconToolProfile: async (id: string, body: any) => {
+    const res = await fetch(`/api/recon-tool/profiles/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; profile: any }>(res);
+  },
+  deleteReconToolProfile: async (id: string) => {
+    const res = await fetch(`/api/recon-tool/profiles/${id}`, { method: "DELETE" });
+    return jsonOrThrow<{ ok: boolean }>(res);
+  },
+  // Run reconciliation
+  runReconTool: async (body: { profileId?: string; config?: any; overrides?: any }) => {
+    const res = await fetch("/api/recon-tool/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; runId: string; summary: any }>(res);
+  },
+  // Get paginated results
+  getReconToolResults: async (runId: string, params?: {
+    status?: string; poNo?: string; factoryPO?: string; size?: string;
+    page?: number; pageSize?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set("status", params.status);
+    if (params?.poNo) q.set("poNo", params.poNo);
+    if (params?.factoryPO) q.set("factoryPO", params.factoryPO);
+    if (params?.size) q.set("size", params.size);
+    if (params?.page) q.set("page", String(params.page));
+    if (params?.pageSize) q.set("pageSize", String(params.pageSize));
+    const res = await fetch(`/api/recon-tool/${runId}/results?${q}`);
+    return jsonOrThrow<{ ok: boolean; rows: any[]; total: number; page: number; pageSize: number; totalPages: number; summary: any }>(res);
+  },
+  // Get summary + chart data
+  getReconToolSummary: async (runId: string) => {
+    const res = await fetch(`/api/recon-tool/${runId}/summary`);
+    return jsonOrThrow<{ ok: boolean; summary: any; run: any; chartData: any }>(res);
+  },
+  // Export URL
+  reconToolExportUrl: (runId: string) => `/api/recon-tool/${runId}/export`,
 };
 
 export type { CanonicalField };

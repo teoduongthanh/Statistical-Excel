@@ -22,7 +22,8 @@ let MODULES = getModules();
 // Global nav links (not product-scoped)
 const GLOBAL_LINKS = [
   { label: "Global Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { label: "Comparison Studio", href: "/comparison-studio", icon: GitCompare },
+  { label: "Reconciliation Tool", href: "/recon-tool", icon: GitCompare },
+  { label: "Comparison Studio", href: "/comparison-studio", icon: GitCompareArrows },
   { label: "Import History", href: "/import-history", icon: History },
   { label: "Order Notes", href: "/order-notes", icon: StickyNote },
 ];
