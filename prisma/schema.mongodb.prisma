@@ -1,0 +1,282 @@
+// Smart Excel Data Entry System — MongoDB Atlas schema
+//
+// This is a copy of prisma/schema.prisma adapted for MongoDB Atlas.
+// To switch from SQLite to MongoDB:
+//   1. Ensure IP 47.57.232.232 is whitelisted in MongoDB Atlas IP Access List
+//   2. Replace prisma/schema.prisma with this file's contents
+//   3. Update .env: DATABASE_URL="mongodb+srv://admintest:LorjOI1Pj3FnOtRD@cluster0.hsxnsi4.mongodb.net/smart-excel?authSource=admin&retryWrites=true&w=majority"
+//   4. Run: bunx prisma generate && bunx prisma db push
+//   5. Re-import data from Excel files (use Quick Bulk Upload in Import Excel view)
+//
+// Key differences from SQLite schema:
+//   - provider: "sqlite" → "mongodb"
+//   - id fields: @default(cuid()) → @default(auto()) @map("_id") @db.ObjectId
+//   - All other fields stay the same (MongoDB is flexible with types)
+//   - @@index and @@unique work the same (create MongoDB indexes)
+//   - String references (sourceMasterId, transactionGroupId, entityId) stay as String
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+/// One normalized row from an imported Excel sheet.
+model MasterData {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  date           String?
+  shippingStatus String?
+  model          String?
+  sku            String?
+  poNo           String?
+  factoryPO      String?
+  item           String?
+  season         String?
+  colorCode      String?
+  colorCode2     String?
+  painting       String?
+  printingColor  String?
+  size           String?
+  qty1           Int?
+  qty2           Int?
+  deadline       String?
+  productType    String?  // "MAFATE" | "ONYX" | "MIZUNO"
+  sourceFile     String?
+  sheetName      String?
+  rowIndex       Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([productType])
+  @@index([productType, factoryPO])
+  @@index([productType, poNo])
+  @@index([productType, model])
+  @@index([productType, sku])
+  @@index([productType, size])
+  @@index([productType, shippingStatus])
+  @@index([productType, deadline])
+  @@index([productType, poNo, factoryPO, size])
+  @@index([productType, season])
+  @@index([productType, colorCode])
+}
+
+/// Aggregated shared attributes per (productType + Factory PO).
+model MasterGroup {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  productType     String
+  factoryPO       String
+  date            String?
+  shippingStatus  String?
+  model           String?
+  sku             String?
+  poNo            String?
+  item            String?
+  season          String?
+  colorCode       String?
+  colorCode2      String?
+  painting        String?
+  printingColor   String?
+  deadline        String?
+  nearestDeadline String?
+  sizes           String
+  sharedFlags     String
+  rowCount        Int      @default(0)
+  sourceFile      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([productType, factoryPO])
+  @@index([productType])
+  @@index([productType, nearestDeadline])
+}
+
+model EntryData {
+  id                  String   @id @default(auto()) @map("_id") @db.ObjectId
+  productType         String
+  date                String?
+  shippingStatus      String?
+  model               String?
+  sku                 String?
+  poNo                String?
+  factoryPO           String
+  item                String?
+  season              String?
+  colorCode           String?
+  colorCode2          String?
+  painting            String?
+  printingColor       String?
+  size                String
+  qty1                Int
+  qty2                Int
+  deadline            String?
+  // Transaction grouping: an Output entry creates a paired Pending entry,
+  // both share the same transactionGroupId for atomic delete/audit.
+  transactionGroupId  String?
+  // Reference to the Master Data source (JSON: { factoryPO, poNo, size }).
+  // Lookup ≠ Insert: entries reference master data but never mutate it.
+  masterDataReference String?
+  note                String?
+  sourceMasterId      String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([productType])
+  @@index([productType, factoryPO])
+  @@index([productType, factoryPO, size])
+  @@index([productType, createdAt])
+  @@index([productType, poNo])
+  @@index([productType, shippingStatus])
+  @@index([transactionGroupId])
+}
+
+model OrderNote {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  productType String
+  factoryPO   String
+  size        String
+  poNo        String?
+  noteDate    String
+  content     String
+  author      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([productType, factoryPO, size])
+  @@index([productType, noteDate])
+}
+
+model ImportHistory {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  fileName     String
+  sheetName    String?
+  productType  String?
+  totalRows    Int      @default(0)
+  validRows    Int      @default(0)
+  invalidRows  Int      @default(0)
+  errors       String   @default("[]")
+  importedAt   DateTime @default(now())
+
+  @@index([productType])
+}
+
+model AuditLog {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  productType String?
+  user      String?
+  action    String  // "IMPORT" | "EDIT" | "DELETE" | "EXPORT" | "ENTRY_CREATE" | "ENTRY_EDIT" | "ENTRY_DELETE"
+  entityType String  // "MasterData" | "EntryData" | "Import"
+  entityId   String?
+  oldValue   String?
+  newValue   String?
+  detail     String?
+  createdAt DateTime @default(now())
+
+  @@index([productType])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model Setting {
+  id    String @id @default(auto()) @map("_id") @db.ObjectId
+  key   String @unique
+  value String
+}
+
+model LookupRule {
+  id            String  @id @default(auto()) @map("_id") @db.ObjectId
+  name          String  @unique
+  primaryKey    String
+  secondaryKey  String?
+  lookupFields  String
+  autoCalcQty2  Boolean @default(true)
+  active        Boolean @default(true)
+  createdAt     DateTime @default(now())
+}
+
+/// Sync Queue — records each data change event that requires synchronization.
+model SyncQueue {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  action        String
+  entity        String
+  entityId      String?
+  productType   String
+  poNo          String?
+  factoryPO     String?
+  size          String?
+  changedFields String?
+  status        String   @default("pending")
+  error         String?
+  processedAt   DateTime?
+  syncDurationMs Int?
+  triggeredBy   String?
+  createdAt     DateTime @default(now())
+
+  @@index([productType])
+  @@index([productType, status])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// Sync Run — a completed synchronization batch.
+model SyncRun {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  runNumber     String   @unique
+  productType   String?
+  eventsProcessed Int    @default(0)
+  productGroupsRecalculated Int @default(0)
+  errorsFound   Int      @default(0)
+  warningsFound Int      @default(0)
+  validationResults String?
+  triggeredBy   String?
+  startedAt     DateTime @default(now())
+  completedAt   DateTime?
+  durationMs    Int?
+  status        String   @default("running")
+
+  @@index([productType])
+  @@index([status])
+  @@index([startedAt])
+}
+
+/// Output Slip — a preparation document for shipping out work to a factory.
+/// Created from BULK OUTPUT SLIP GENERATOR. Status lifecycle:
+///   DRAFT → GENERATED → PRINTED → CONFIRMED_OUTPUT | CANCELLED
+/// IMPORTANT: Generating a slip does NOT add 2.Output entries to EntryData.
+/// Only when the user clicks "Confirm Actual Output" (status → CONFIRMED_OUTPUT)
+/// does the system create the real 2.Output (and 3.Pending if auto-calc) entries.
+model OutputSlip {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  slipNumber    String   @unique  // e.g. "OS-20260830-1234"
+  productType   String
+  poNo          String
+  // Slip mode: "combined" (one slip, many Factory POs) | "separate" (one slip per FPO)
+  slipMode      String   @default("combined")
+  // "draft" | "generated" | "printed" | "confirmed_output" | "cancelled"
+  status        String   @default("draft")
+  // JSON array of { factoryPO, model, sku, season, colorCode, colorCode2,
+  // painting, printingColor, size, qtyToOutput, orderQty, outputQty, deadline }
+  items         String   @default("[]")
+  // Summary totals (denormalized for quick list display)
+  totalOrder    Int      @default(0)
+  totalOutput   Int      @default(0)
+  totalRemaining Int     @default(0)
+  totalToOutput Int      @default(0)
+  factoryPOCount Int     @default(0)
+  sizeCount     Int      @default(0)
+  // Audit
+  createdBy     String?
+  confirmedBy   String?
+  confirmedAt   DateTime?
+  note          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([productType])
+  @@index([productType, poNo])
+  @@index([productType, status])
+  @@index([status])
+  @@index([createdAt])
+}
