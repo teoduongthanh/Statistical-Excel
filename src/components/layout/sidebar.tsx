@@ -7,7 +7,7 @@ import {
   Search, ShieldCheck, StickyNote, ChevronDown, Factory,
   PenLine, Database, GitCompareArrows, Activity, BarChart3,
   Truck, ClipboardCheck, Monitor, FileOutput, GitCompare,
-  ArrowLeftRight, Upload, Download, Package,
+  ArrowLeftRight, Upload, Download, Package, Layers,
 } from "lucide-react";
 import { useAppStore, PRODUCT_THEME, themeFromColor, type ProductType } from "@/store/app-store";
 import { getModules, setModules, FEATURES } from "@/lib/route-config";
@@ -22,6 +22,7 @@ let MODULES = getModules();
 // Global nav links (not product-scoped)
 const GLOBAL_LINKS = [
   { label: "Global Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { label: "Reconciliation V2", href: "/recon-v2", icon: Layers },
   { label: "Reconciliation Tool", href: "/recon-tool", icon: GitCompare },
   { label: "Comparison Studio", href: "/comparison-studio", icon: GitCompareArrows },
   { label: "Import History", href: "/import-history", icon: History },

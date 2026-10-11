@@ -122,6 +122,10 @@ export function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
   const crumbs: BreadcrumbItem[] = [{ label: "Dashboard", href: "/dashboard" }];
 
   // Top-level standalone routes (not under /dashboard).
+  if (pathname.startsWith("/recon-v2")) {
+    crumbs.push({ label: "Reconciliation V2", href: "/recon-v2" });
+    return crumbs;
+  }
   if (pathname.startsWith("/recon-tool")) {
     crumbs.push({ label: "Reconciliation Tool", href: "/recon-tool" });
     return crumbs;

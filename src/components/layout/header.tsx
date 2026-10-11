@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 function getPageMeta(pathname: string): { title: string; subtitle: string; productScoped: boolean } {
   // Global routes
   if (pathname === "/dashboard") return { title: "Global Dashboard", subtitle: "Compare MAFATE vs ONYX vs MIZUNO", productScoped: false };
+  if (pathname.startsWith("/recon-v2")) return { title: "Reconciliation V2", subtitle: "Project-based reconciliation (F10–F12)", productScoped: false };
   if (pathname === "/import-history") return { title: "Import History", subtitle: "Past imports & error reports", productScoped: false };
   if (pathname === "/order-notes") return { title: "Order Notes", subtitle: "Daily notes for orders", productScoped: false };
   if (pathname === "/settings/mapping") return { title: "Column Mapping", subtitle: "Map Excel headers to system fields", productScoped: false };

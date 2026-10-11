@@ -751,3 +751,207 @@ model ReconToolResult {
   @@index([runId, status])
   @@index([runId, key])
 }
+
+// ── Reconciliation V2: Project Management (spec F10-F12) ────────────────────
+
+/// Recon Project — a saved workspace with sources, mappings, rules, runs (F10).
+model ReconProject {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  name          String   @unique
+  description   String?
+  tags          String   @default("[]") // JSON array of tag strings
+  // Source datasets (JSON: { source: { dataset, productType }, target: { dataset, productType } })
+  sourceConfig  String   @default("{}")
+  targetConfig  String   @default("{}")
+  // Field mappings (JSON array: { sourceField, targetField, role, transformRule })
+  fieldMappings String   @default("[]")
+  // Match key fields (JSON array)
+  matchKeyFields String   @default("[]")
+  // Transformation rules (JSON array: { order, type, config, enabled })
+  rules         String   @default("[]")
+  // Comparison config (JSON: { tolerance, mode, preFilter, nullHandling })
+  comparisonConfig String @default("{}")
+  // Status mapping (JSON: source status → target status)
+  statusMapping String   @default("{}")
+  // Size transform tables (JSON: { men: {...}, women: {...} })
+  sizeTables    String   @default("{}")
+  // Project status
+  status        String   @default("active") // active | archived | template
+  template      Boolean  @default(false)
+  // Mini-KPI cache (updated after each run)
+  lastRunId     String?
+  lastRunAt     DateTime?
+  lastMatchPercent Float  @default(0)
+  lastTotalLines Int     @default(0)
+  lastMatched    Int      @default(0)
+  lastMismatch   Int      @default(0)
+  lastMissing    Int      @default(0)
+  lastOrphan     Int      @default(0)
+  // Sync status
+  lastSyncAt    DateTime?
+  syncStatus    String   @default("never") // never | ok | error | syncing
+  nextSyncAt    DateTime?
+  // Audit
+  createdBy     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status])
+  @@index([template])
+  @@index([createdAt])
+}
+
+/// DataSource — connection config for each data source (F12).
+model ReconDataSource {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  projectId     String
+  name          String   // "Source A (Onyx-FVO)" or "Source B (Onyx-Stech)"
+  dataset       String   // productType: "ONYX_FVO" or "ONYX"
+  type          String   @default("database") // database | api | file
+  // Connection config (JSON: { url, headers, schedule, etc. })
+  config        String   @default("{}")
+  // Sync schedule
+  syncSchedule  String   @default("manual") // manual | 15m | 1h | 1d
+  lastSyncedAt  DateTime?
+  lastSyncStatus String  @default("never") // never | ok | error | syncing
+  lastSyncError String?
+  syncHealth    String   @default("unknown") // unknown | healthy | degraded | offline
+  // Snapshot count
+  snapshotCount Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([dataset])
+}
+
+/// Snapshot — versioned data snapshot (F12).
+model ReconSnapshot {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  dataSourceId  String
+  projectId     String
+  fetchedAt     DateTime @default(now())
+  rowCount      Int      @default(0)
+  // Storage: for DB-type sources, we query live; for file/api, store hash reference
+  storageRef    String?  // file path or hash reference
+  contentHash   String?  // MD5/SHA of data content for change detection
+  // Change detection vs previous snapshot
+  changesAdded  Int      @default(0)
+  changesModified Int    @default(0)
+  changesDeleted Int     @default(0)
+  // Status
+  status        String   @default("completed") // fetching | completed | failed
+  error         String?
+
+  @@index([dataSourceId])
+  @@index([projectId])
+  @@index([fetchedAt])
+}
+
+/// Project Run — each reconciliation execution (F10/F12).
+model ProjectRun {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  runId         String   @unique // e.g., "PR-20261009-001"
+  projectId     String
+  // Snapshot IDs used for this run
+  sourceSnapshotId String?
+  targetSnapshotId String?
+  // Trigger info
+  trigger       String   @default("manual") // manual | auto | scheduled
+  triggeredBy   String?
+  // Summary stats
+  totalLines    Int      @default(0)
+  matchedOk     Int      @default(0)
+  partial       Int      @default(0)
+  over          Int      @default(0)
+  missingOut    Int      @default(0)
+  orphan        Int      @default(0)
+  dup           Int      @default(0)
+  attrMismatch  Int      @default(0)
+  fmtFixed      Int      @default(0)
+  suspectPo    Int      @default(0)
+  // Quantity totals
+  sourceTotalQty Int     @default(0)
+  targetTotalQty Int     @default(0)
+  totalDifference Int    @default(0)
+  matchPercent  Float    @default(0)
+  // Status
+  status        String   @default("running") // running | completed | failed
+  error         String?
+  duration       Int?    // milliseconds
+  startedAt     DateTime @default(now())
+  completedAt   DateTime?
+
+  @@index([projectId])
+  @@index([status])
+  @@index([startedAt])
+}
+
+/// Project Result Row — one comparison result line (F5/F11).
+model ProjectResultRow {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  runId         String
+  projectId     String
+  // Composite key
+  key           String
+  // Source data (JSON: full row from source A)
+  sourceData    String   @default("{}")
+  // Target data (JSON: full row from source B)
+  targetData    String   @default("{}")
+  // Quantities
+  sourceQty     Int      @default(0)
+  targetQty     Int      @default(0)
+  difference    Int      @default(0)
+  // Status code (F5)
+  statusCode    String   // MATCHED_OK | PARTIAL | OVER | MISSING_OUT | ORPHAN | DUP | ATTR_MISMATCH | FMT_FIXED | SUSPECT_PO
+  // Diagnostic info (F11: match trace, cause suggestions, similar cases)
+  diagnostic    String   @default("{}") // JSON
+  // Resolution
+  resolved      Boolean  @default(false)
+  resolvedBy    String?
+  resolvedAt    DateTime?
+  note          String?
+  assignedTo    String?
+  createdAt     DateTime @default(now())
+
+  @@index([runId])
+  @@index([runId, statusCode])
+  @@index([projectId])
+  @@index([projectId, resolved])
+}
+
+/// Project Audit Log — all actions (F10).
+model ProjectAuditLog {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  projectId     String
+  action        String   // CREATE | UPDATE | DELETE | RUN | SYNC | ARCHIVE | RESTORE | DUPLICATE | EXPORT | IMPORT
+  entityType    String   // project | mapping | rule | run | result | source | snapshot
+  entityId      String?
+  oldValue      String?
+  newValue      String?
+  user          String?
+  detail        String?
+  createdAt     DateTime @default(now())
+
+  @@index([projectId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+/// Project Notification — in-app + email/webhook (F12).
+model ProjectNotification {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  projectId     String
+  type          String   // sync_completed | sync_error | new_mismatch | deadline_approaching | run_completed
+  severity      String   @default("info") // info | warning | error | success
+  title         String
+  message       String
+  read          Boolean  @default(false)
+  // Action data (JSON)
+  actionData    String   @default("{}")
+  createdAt     DateTime @default(now())
+
+  @@index([projectId])
+  @@index([read])
+  @@index([createdAt])
+}

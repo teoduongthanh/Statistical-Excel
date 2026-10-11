@@ -1693,6 +1693,123 @@ export const api = {
   },
   // Export URL
   reconToolExportUrl: (runId: string) => `/api/recon-tool/${runId}/export`,
+
+  // ===== Reconciliation V2 (spec F10–F12) =====
+  reconV2ListProjects: async (status?: string) => {
+    const q = new URLSearchParams();
+    if (status) q.set("status", status);
+    const res = await fetch(`/api/recon-v2/projects?${q}`);
+    return jsonOrThrow<{ ok: boolean; projects: any[] }>(res);
+  },
+  reconV2GetProject: async (id: string) => {
+    const res = await fetch(`/api/recon-v2/projects/${id}`);
+    return jsonOrThrow<{ ok: boolean; project: any; sources: any[] }>(res);
+  },
+  reconV2CreateProject: async (body: any) => {
+    const res = await fetch("/api/recon-v2/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; project: any }>(res);
+  },
+  reconV2UpdateProject: async (id: string, body: any) => {
+    const res = await fetch(`/api/recon-v2/projects/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; project: any }>(res);
+  },
+  reconV2ArchiveProject: async (id: string) => {
+    const res = await fetch(`/api/recon-v2/projects/${id}?action=archive`, { method: "PUT" });
+    return jsonOrThrow<{ ok: boolean; project: any }>(res);
+  },
+  reconV2RestoreProject: async (id: string) => {
+    const res = await fetch(`/api/recon-v2/projects/${id}?action=restore`, { method: "PUT" });
+    return jsonOrThrow<{ ok: boolean; project: any }>(res);
+  },
+  reconV2DeleteProject: async (id: string) => {
+    const res = await fetch(`/api/recon-v2/projects/${id}`, { method: "DELETE" });
+    return jsonOrThrow<{ ok: boolean }>(res);
+  },
+  reconV2DuplicateProject: async (id: string, newName: string) => {
+    const res = await fetch(`/api/recon-v2/projects/${id}/duplicate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newName }),
+    });
+    return jsonOrThrow<{ ok: boolean; project: any }>(res);
+  },
+  reconV2ListSources: async (projectId: string) => {
+    const res = await fetch(`/api/recon-v2/projects/${projectId}/sources`);
+    return jsonOrThrow<{ ok: boolean; sources: any[] }>(res);
+  },
+  reconV2SyncSource: async (projectId: string, sourceId: string) => {
+    const res = await fetch(`/api/recon-v2/projects/${projectId}/sources/${sourceId}/sync`, { method: "POST" });
+    return jsonOrThrow<{ ok: boolean; snapshot: any }>(res);
+  },
+  reconV2ListSnapshots: async (projectId: string, sourceId?: string) => {
+    const q = new URLSearchParams();
+    if (sourceId) q.set("sourceId", sourceId);
+    const res = await fetch(`/api/recon-v2/projects/${projectId}/snapshots?${q}`);
+    return jsonOrThrow<{ ok: boolean; snapshots: any[]; sources: any[] }>(res);
+  },
+  reconV2Run: async (projectId: string, opts?: { trigger?: "manual" | "auto" | "scheduled"; user?: string }) => {
+    const res = await fetch(`/api/recon-v2/projects/${projectId}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(opts ?? {}),
+    });
+    return jsonOrThrow<{ ok: boolean; runId: string; summary: any }>(res);
+  },
+  reconV2ListRuns: async (projectId: string) => {
+    const res = await fetch(`/api/recon-v2/projects/${projectId}/runs`);
+    return jsonOrThrow<{ ok: boolean; runs: any[] }>(res);
+  },
+  reconV2GetResults: async (projectId: string, params?: { runId?: string; status?: string; page?: number; pageSize?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.runId) q.set("runId", params.runId);
+    if (params?.status) q.set("status", params.status);
+    if (params?.page) q.set("page", String(params.page));
+    if (params?.pageSize) q.set("pageSize", String(params.pageSize));
+    const res = await fetch(`/api/recon-v2/projects/${projectId}/results?${q}`);
+    return jsonOrThrow<{ ok: boolean; rows: any[]; total: number; summary: any; runId: string; page: number; pageSize: number; totalPages: number }>(res);
+  },
+  reconV2GetDiagnostic: async (projectId: string, resultId: string, runId?: string) => {
+    const q = new URLSearchParams();
+    if (runId) q.set("runId", runId);
+    const res = await fetch(`/api/recon-v2/projects/${projectId}/results/${resultId}/diagnostic?${q}`);
+    return jsonOrThrow<{ ok: boolean; diagnostic: any; runId: string; resultId: string }>(res);
+  },
+  reconV2ResolveRow: async (projectId: string, resultId: string, body: { resolved?: boolean; note?: string; assignedTo?: string; user?: string }, runId?: string) => {
+    const q = new URLSearchParams();
+    if (runId) q.set("runId", runId);
+    const res = await fetch(`/api/recon-v2/projects/${projectId}/results/${resultId}/resolve?${q}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow<{ ok: boolean; row: any }>(res);
+  },
+  reconV2ListNotifications: async (projectId: string, limit?: number) => {
+    const q = new URLSearchParams();
+    if (limit) q.set("limit", String(limit));
+    const res = await fetch(`/api/recon-v2/projects/${projectId}/notifications?${q}`);
+    return jsonOrThrow<{ ok: boolean; notifications: any[] }>(res);
+  },
+  reconV2ListAudit: async (projectId: string, limit?: number) => {
+    const q = new URLSearchParams();
+    if (limit) q.set("limit", String(limit));
+    const res = await fetch(`/api/recon-v2/projects/${projectId}/audit?${q}`);
+    return jsonOrThrow<{ ok: boolean; audit: any[] }>(res);
+  },
+  reconV2ExportUrl: (projectId: string, runId?: string, format?: "xlsx" | "json") => {
+    const q = new URLSearchParams();
+    if (runId) q.set("runId", runId);
+    if (format) q.set("format", format);
+    return `/api/recon-v2/projects/${projectId}/export?${q}`;
+  },
 };
 
 export type { CanonicalField };
