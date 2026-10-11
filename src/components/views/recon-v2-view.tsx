@@ -378,10 +378,10 @@ function SourcesTab({ projectId, sources, onChange }: { projectId: string; sourc
         <CardContent>
           <div className="flex items-center gap-2 mb-3">
             <Label className="text-xs">Filter by source:</Label>
-            <Select value={selectedSource} onValueChange={setSelectedSource}>
+            <Select value={selectedSource || "__all__"} onValueChange={(v: string) => setSelectedSource(v === "__all__" ? "" : v)}>
               <SelectTrigger className="h-8 w-64 text-xs"><SelectValue placeholder="All sources" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All sources</SelectItem>
+                <SelectItem value="__all__">All sources</SelectItem>
                 {sources.map((s) => (
                   <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                 ))}
@@ -579,10 +579,10 @@ function RulesTab({ projectId, project, onChange }: { projectId: string; project
                   </SelectContent>
                 </Select>
                 <Input className="h-8 text-xs" placeholder="condition (gender==M)" value={r.condition ?? ""} onChange={(e) => updateRule(i, "condition", e.target.value)} />
-                <Select value={r.tableId ?? ""} onValueChange={(v) => updateRule(i, "tableId", v || undefined)}>
+                <Select value={r.tableId ?? "__none__"} onValueChange={(v: string) => updateRule(i, "tableId", v === "__none__" ? undefined : v)}>
                   <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="table" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">—</SelectItem>
+                    <SelectItem value="__none__">—</SelectItem>
                     <SelectItem value="men">men</SelectItem>
                     <SelectItem value="women">women</SelectItem>
                   </SelectContent>
