@@ -144,16 +144,19 @@ export function ProductMasterDataView({ statusFilter }: { statusFilter?: string 
     setFilters({});
   }, [currentProduct]);
 
-  const params = {
+  const params: Record<string, string | number> = {
     page,
     pageSize,
     search: debouncedSearch,
     ...filters,
     productType: currentProduct,
-    shippingStatus: statusFilter || undefined,
     sort: sort.key,
     order: sort.order,
   };
+  // Only add shippingStatus if it has a real value (not undefined/empty)
+  if (statusFilter) {
+    params.shippingStatus = statusFilter;
+  }
 
   const q = useQuery({
     queryKey: ["product-master-data", currentProduct, params, refreshKey],
