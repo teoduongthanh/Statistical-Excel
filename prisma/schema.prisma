@@ -985,3 +985,76 @@ model EntryRecord {
   @@index([status])
   @@index([dedupHash])
 }
+
+// ── Chronology & Causality Validation (spec VAL1-VAL7) ──────────────────────
+
+/// Validation Rule — per-project chronology/causality rules (spec VAL4).
+model ValidationRule {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  projectId     String?
+  code          String   @unique // INPUT_BEFORE_SEND | OUTPUT_BEFORE_INPUT | RECEIVED_OVER_SENT | etc.
+  description   String?
+  enabled       Boolean  @default(true)
+  severity      String   @default("ERROR") // ERROR | WARNING | INFO
+  policy        String   @default("flag") // flag | exclude | warn_only
+  config        String   @default("{}") // JSON: { tolerance_days, stage_order, ... }
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([enabled])
+}
+
+/// Violation — detected chronology/causality violations (spec VAL5).
+model Violation {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  runId         String?  // ref to ProjectRun or standalone run
+  projectId     String?
+  productType   String
+  ruleCode      String   // INPUT_BEFORE_SEND | RECEIVED_OVER_SENT | etc.
+  severity      String   // ERROR | WARNING | INFO
+  key           String   // composite key: poNo|factoryPO|size
+  // Evidence (JSON: array of { stage, date, qty, rowId, sourceData })
+  evidence      String   @default("[]")
+  // Diagnostic (JSON: { timeline, explanation, cause_suggestions, similar_cases })
+  diagnostic    String   @default("{}")
+  resolved      Boolean  @default(false)
+  resolvedBy    String?
+  resolvedAt   DateTime?
+  note          String?
+  createdAt     DateTime @default(now())
+
+  @@index([runId])
+  @@index([projectId])
+  @@index([ruleCode])
+  @@index([severity])
+  @@index([resolved])
+  @@index([productType])
+}
+
+/// Validation Run — each validation execution (spec VAL7).
+model ValidationRun {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  runId         String   @unique // e.g., "VAL-20261015-001"
+  projectId     String?
+  productType   String
+  trigger       String   @default("manual") // manual | auto | sync
+  totalKeys     Int      @default(0)
+  totalViolations Int    @default(0)
+  errorCount    Int      @default(0)
+  warningCount  Int      @default(0)
+  infoCount     Int      @default(0)
+  // Per-rule breakdown (JSON: { ruleCode: count })
+  ruleBreakdown String   @default("{}")
+  status        String   @default("running") // running | completed | failed
+  error         String?
+  duration      Int?
+  startedAt     DateTime @default(now())
+  completedAt   DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([projectId])
+  @@index([productType])
+  @@index([status])
+  @@index([createdAt])
+}

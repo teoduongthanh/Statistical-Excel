@@ -1812,4 +1812,39 @@ export const api = {
   },
 };
 
-export type { CanonicalField };
+export type { CanonicalField } from "./fields";
+
+// ── Chronology & Causality Validation (spec VAL1-VAL7) ──────────────────────
+
+export const validationApi = {
+  runValidation: async (body: {
+    productType: string;
+    config?: { toleranceDays?: number; policy?: string };
+  }): Promise<{ ok: boolean; runId: string; summary: any; violations: any[] }> => {
+    const res = await fetch("/api/validation/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  listViolations: async (filters: {
+    productType?: string;
+    ruleCode?: string;
+    severity?: string;
+    resolved?: string;
+    page?: number;
+    pageSize?: number;
+  } = {}): Promise<{ ok: boolean; page: number; pageSize: number; total: number; totalPages: number; rows: any[] }> => {
+    const q = new URLSearchParams();
+    if (filters.productType) q.set("productType", filters.productType);
+    if (filters.ruleCode) q.set("ruleCode", filters.ruleCode);
+    if (filters.severity) q.set("severity", filters.severity);
+    if (filters.resolved) q.set("resolved", filters.resolved);
+    q.set("page", String(filters.page ?? 1));
+    q.set("pageSize", String(filters.pageSize ?? 50));
+    const res = await fetch(`/api/validation/violations?${q}`);
+    return jsonOrThrow(res);
+  },
+};
