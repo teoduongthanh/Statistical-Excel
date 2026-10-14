@@ -173,6 +173,8 @@ export function ProductDataEntryView() {
   const [factoryPO, setFactoryPO] = React.useState("");
   const [size, setSize] = React.useState("");
   const [qty, setQty] = React.useState("");
+  // Entry date — user can pick a custom date (defaults to today).
+  const [entryDate, setEntryDate] = React.useState(new Date().toISOString().slice(0, 10));
 
   // Auto-filled from Master Data (spec §6)
   const [autoFill, setAutoFill] = React.useState<any>(null);
@@ -279,6 +281,7 @@ export function ProductDataEntryView() {
     if (!keepFactoryPOFlag) setFactoryPO("");
     setSize("");
     setQty("");
+    // Keep the entry date (don't reset — user likely wants same date for batch)
     setAutoFill(null);
     // Clear the Smart Entry state so stale confidence / candidates don't leak.
     setLookupLevel(0);
@@ -439,6 +442,41 @@ export function ProductDataEntryView() {
     return [];
   }, [availableSizes, autoFill]);
 
+  // ── Gender detection from model name (spec: prioritize sizes by gender) ─
+  // When the model name contains " M" (Men) or " W" (Women), we know which
+  // gender the size list should be filtered for.
+  // E.g., model "Cloudswift Onyx M" → Men → sizes like "M07/W08T" should
+  // prioritize the M-prefixed sizes when user types "7".
+  // model "Cloudswift Onyx W" → Women → prioritize W-prefixed sizes.
+  const modelGender = React.useMemo<"M" | "W" | "">(() => {
+    if (!autoFill?.model) return "";
+    const m = String(autoFill.model).trim().toUpperCase();
+    // Check for trailing " M" or " W" (most common: "Cloudswift Onyx M")
+    if (/\bM\b\s*$/.test(m) || /\bMS\b\s*$/.test(m)) return "M";
+    if (/\bW\b\s*$/.test(m) || /\bWS\b\s*$/.test(m)) return "W";
+    // Also check for "MEN" or "WOMEN" keywords
+    if (/\bMEN\b/.test(m)) return "M";
+    if (/\bWOMEN\b/.test(m)) return "W";
+    return "";
+  }, [autoFill?.model]);
+
+  // Sorted size options: prioritize sizes matching the model's gender.
+  // E.g., if model is Men ("M"), sizes starting with "M" come first;
+  // if Women ("W"), sizes starting with "W" come first.
+  const sortedSizeOptions = React.useMemo<string[]>(() => {
+    if (!modelGender) return sizeOptions;
+    // Sort: gender-matching sizes first, then others
+    return [...sizeOptions].sort((a, b) => {
+      const aUpper = String(a).trim().toUpperCase();
+      const bUpper = String(b).trim().toUpperCase();
+      const aMatch = aUpper.startsWith(modelGender);
+      const bMatch = bUpper.startsWith(modelGender);
+      if (aMatch && !bMatch) return -1; // a first
+      if (!aMatch && bMatch) return 1;  // b first
+      return 0; // keep original order
+    });
+  }, [sizeOptions, modelGender]);
+
   const sizeIsValid = React.useMemo<boolean>(() => {
     if (!size) return false;
     if (sizeOptions.length === 0) return false;
@@ -485,6 +523,7 @@ export function ProductDataEntryView() {
         factoryPO,
         size,
         qty,
+        date: entryDate,
       });
       if (r.ok) {
         const createdCount = r.created?.length || 0;
@@ -1013,7 +1052,21 @@ export function ProductDataEntryView() {
                 )}
               </div>
 
-              {/* Step 2: PO NO# (autocomplete, spec §3) */}
+              {/* Step 2: Date — user can pick a custom entry date. */}
+              <div className="space-y-1.5">
+                <Label className="flex items-center justify-between text-xs">
+                  <span>Date</span>
+                  <span className="text-[10px] text-muted-foreground">Default: today</span>
+                </Label>
+                <Input
+                  type="date"
+                  value={entryDate}
+                  onChange={(e) => setEntryDate(e.target.value)}
+                  className="h-11"
+                />
+              </div>
+
+              {/* Step 3: PO NO# (autocomplete, spec §3) */}
               <div className="space-y-1.5">
                 <Label className="text-xs">PO NO# <span className="text-destructive">*</span></Label>
                 <div ref={poNoRef} onKeyDown={(e) => handleEnter(e, "poNo")}>
@@ -1080,31 +1133,40 @@ export function ProductDataEntryView() {
               {/* Step 4: Size (filtered by Factory PO, spec §13 of prev prompt).
                   Size source priority:
                     1. availableSizes (Level 1/2/3 — sizes filtered by poNo when present)
-                    2. autoFill?.sizes    (Level 3 fallback — all sizes for the Factory PO) */}
+                    2. autoFill?.sizes    (Level 3 fallback — all sizes for the Factory PO)
+                  Gender prioritization (spec: model "M" → Men sizes first, "W" → Women first):
+                    sortedSizeOptions puts gender-matching sizes at the top of the list. */}
               <div className="space-y-1.5">
                 <Label className="flex items-center justify-between text-xs">
                   <span>Size <span className="text-destructive">*</span></span>
-                  {sizeOptions.length > 0 && (
-                    <Badge variant="secondary" className="text-[10px]">
-                      {sizeOptions.length} available
-                      {availableSizes.length > 0 && poNo && (
-                        <span className="ml-1 opacity-70">· for {poNo}</span>
-                      )}
-                    </Badge>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {modelGender && (
+                      <Badge className={cn("text-[10px]", modelGender === "M" ? "bg-sky-100 text-sky-700" : "bg-pink-100 text-pink-700")}>
+                        {modelGender === "M" ? "Men priority" : "Women priority"}
+                      </Badge>
+                    )}
+                    {sizeOptions.length > 0 && (
+                      <Badge variant="secondary" className="text-[10px]">
+                        {sizeOptions.length} available
+                        {availableSizes.length > 0 && poNo && (
+                          <span className="ml-1 opacity-70">· for {poNo}</span>
+                        )}
+                      </Badge>
+                    )}
+                  </div>
                 </Label>
                 <SizeInput
                   ref={sizeRef}
                   value={size}
                   onChange={setSize}
-                  sizes={sizeOptions}
+                  sizes={sortedSizeOptions}
                   disabled={shippingDisabled || !factoryPO}
                   placeholder={shippingDisabled ? "Select Shipping Status first" : !factoryPO ? "Enter Factory PO first" : "Type 13, 08…"}
                   onEnter={() => qtyRef.current?.focus()}
                 />
-                {sizeOptions.length > 0 && (
+                {sortedSizeOptions.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-1">
-                    {sizeOptions.slice(0, 8).map((s: string) => (
+                    {sortedSizeOptions.slice(0, 8).map((s: string) => (
                       <button
                         key={s}
                         type="button"
@@ -1113,14 +1175,16 @@ export function ProductDataEntryView() {
                           "rounded-md border px-1.5 py-0.5 text-[10px] transition-colors hover:bg-accent",
                           normalizeSize(size) === normalizeSize(s)
                             ? "border-primary bg-primary/10 text-primary"
-                            : "text-muted-foreground"
+                            : modelGender && String(s).trim().toUpperCase().startsWith(modelGender)
+                              ? "border-sky-300 bg-sky-50 text-sky-700 dark:bg-sky-950/30 dark:text-sky-300"
+                              : "text-muted-foreground"
                         )}
                       >
                         {s}
                       </button>
                     ))}
-                    {sizeOptions.length > 8 && (
-                      <span className="text-[10px] text-muted-foreground self-center">+{sizeOptions.length - 8} more</span>
+                    {sortedSizeOptions.length > 8 && (
+                      <span className="text-[10px] text-muted-foreground self-center">+{sortedSizeOptions.length - 8} more</span>
                     )}
                   </div>
                 )}
