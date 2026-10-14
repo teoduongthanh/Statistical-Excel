@@ -955,3 +955,33 @@ model ProjectNotification {
   @@index([read])
   @@index([createdAt])
 }
+
+/// EntryRecord — manual data entry records (spec DE4-DE6).
+/// Each record stores manually entered data into Nguồn A or B,
+/// with business date (user-selected) + system timestamp (auto).
+model EntryRecord {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  projectId     String?  // optional: link to Reconciliation V2 project
+  productType   String   // "ONYX" | "ONYX_FVO" | "MAFATE" | etc.
+  targetSource  String   // "A" (source/order) | "B" (target/actual)
+  // Business data (JSON: { shippingStatus, poNo, factoryPO, model, art, size, qty, colorCode, ... })
+  data          String   @default("{}")
+  // Dates
+  businessDate  String   // yyyy-MM-dd — user-selected (can be backdated)
+  recordedAt    DateTime @default(now()) // system timestamp (auto, immutable)
+  // Metadata
+  source        String   @default("manual") // manual | import | sync
+  createdBy     String?
+  status        String   @default("active") // active | deleted
+  note          String?
+  // Duplicate detection hash
+  dedupHash     String?  // hash of poNo+size+businessDate+shippingStatus
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([productType, targetSource])
+  @@index([projectId])
+  @@index([businessDate])
+  @@index([status])
+  @@index([dedupHash])
+}

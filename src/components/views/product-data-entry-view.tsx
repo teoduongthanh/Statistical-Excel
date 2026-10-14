@@ -34,6 +34,7 @@ import { SmartAutocomplete } from "@/components/common/smart-autocomplete";
 import { api } from "@/lib/api-client";
 import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
 import { buildAutoMapping } from "@/lib/header-normalize";
+import { detectGenderWithCrossCheck, suggestSizes, type SizeSuggestion } from "@/lib/size-suggestion-service";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -442,38 +443,54 @@ export function ProductDataEntryView() {
     return [];
   }, [availableSizes, autoFill]);
 
-  // ── Gender detection from model name (spec: prioritize sizes by gender) ─
-  // When the model name contains " M" (Men) or " W" (Women), we know which
-  // gender the size list should be filtered for.
-  // E.g., model "Cloudswift Onyx M" → Men → sizes like "M07/W08T" should
-  // prioritize the M-prefixed sizes when user types "7".
-  // model "Cloudswift Onyx W" → Women → prioritize W-prefixed sizes.
-  const modelGender = React.useMemo<"M" | "W" | "">(() => {
-    if (!autoFill?.model) return "";
-    const m = String(autoFill.model).trim().toUpperCase();
-    // Check for trailing " M" or " W" (most common: "Cloudswift Onyx M")
-    if (/\bM\b\s*$/.test(m) || /\bMS\b\s*$/.test(m)) return "M";
-    if (/\bW\b\s*$/.test(m) || /\bWS\b\s*$/.test(m)) return "W";
-    // Also check for "MEN" or "WOMEN" keywords
-    if (/\bMEN\b/.test(m)) return "M";
-    if (/\bWOMEN\b/.test(m)) return "W";
-    return "";
-  }, [autoFill?.model]);
+  // ── Gender cross-check (spec DE2.1: detect from Model + ART, cross-check) ─
+  // Uses both signals: model suffix ("M"/"W") and ART prefix ("3MH"/"3WH").
+  // If they match → confident; if they differ → conflict warning.
+  const genderCheck = React.useMemo(() => {
+    const model = autoFill?.model || "";
+    const art = factoryPO || ""; // factoryPO = ART in FVO data
+    return detectGenderWithCrossCheck(model, art);
+  }, [autoFill?.model, factoryPO]);
+
+  // Use resolved gender from cross-check (falls back to model-only if no ART)
+  const modelGender = genderCheck.resolved || genderCheck.fromModel || "";
+
+  // ── Size suggestions (spec DE2.2: bidirectional, gender-prioritized) ─────
+  // When user types in the size field, show suggestions:
+  //   - Type number "7" → suggest codes "M07/W08T" (Men first if model is Men)
+  //   - Type code "M07" → suggest number "7"
+  const [sizeSuggestions, setSizeSuggestions] = React.useState<SizeSuggestion[]>([]);
+  const [showSizeSuggestions, setShowSizeSuggestions] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!size || size.length < 1) {
+      setSizeSuggestions([]);
+      setShowSizeSuggestions(false);
+      return;
+    }
+    // Only show suggestions when input is short (number or partial code)
+    // Don't override when user has selected a full size from the list
+    if (sizeOptions.includes(size)) {
+      setSizeSuggestions([]);
+      setShowSizeSuggestions(false);
+      return;
+    }
+    const suggestions = suggestSizes(size, genderCheck.resolved, sizeOptions);
+    setSizeSuggestions(suggestions);
+    setShowSizeSuggestions(suggestions.length > 0);
+  }, [size, genderCheck.resolved, sizeOptions]);
 
   // Sorted size options: prioritize sizes matching the model's gender.
-  // E.g., if model is Men ("M"), sizes starting with "M" come first;
-  // if Women ("W"), sizes starting with "W" come first.
   const sortedSizeOptions = React.useMemo<string[]>(() => {
     if (!modelGender) return sizeOptions;
-    // Sort: gender-matching sizes first, then others
     return [...sizeOptions].sort((a, b) => {
       const aUpper = String(a).trim().toUpperCase();
       const bUpper = String(b).trim().toUpperCase();
       const aMatch = aUpper.startsWith(modelGender);
       const bMatch = bUpper.startsWith(modelGender);
-      if (aMatch && !bMatch) return -1; // a first
-      if (!aMatch && bMatch) return 1;  // b first
-      return 0; // keep original order
+      if (aMatch && !bMatch) return -1;
+      if (!aMatch && bMatch) return 1;
+      return 0;
     });
   }, [sizeOptions, modelGender]);
 
@@ -1130,19 +1147,23 @@ export function ProductDataEntryView() {
                 )}
               </div>
 
-              {/* Step 4: Size (filtered by Factory PO, spec §13 of prev prompt).
-                  Size source priority:
-                    1. availableSizes (Level 1/2/3 — sizes filtered by poNo when present)
-                    2. autoFill?.sizes    (Level 3 fallback — all sizes for the Factory PO)
-                  Gender prioritization (spec: model "M" → Men sizes first, "W" → Women first):
-                    sortedSizeOptions puts gender-matching sizes at the top of the list. */}
+              {/* Step 4: Size (filtered by Factory PO, spec DE2).
+                  Gender cross-check (DE2.1): badge shows Men/Women with cross-check status.
+                  Bidirectional suggestions (DE2.2): type number → suggest codes, type code → suggest number.
+                  Gender-prioritized sorting: model "M" → M-prefixed sizes first. */}
               <div className="space-y-1.5">
                 <Label className="flex items-center justify-between text-xs">
                   <span>Size <span className="text-destructive">*</span></span>
                   <div className="flex items-center gap-2">
-                    {modelGender && (
+                    {/* Gender badge with cross-check status (spec DE2.1) */}
+                    {genderCheck.confident && (
                       <Badge className={cn("text-[10px]", modelGender === "M" ? "bg-sky-100 text-sky-700" : "bg-pink-100 text-pink-700")}>
-                        {modelGender === "M" ? "Men priority" : "Women priority"}
+                        {modelGender === "M" ? "👨 MEN" : "👩 WOMEN"}
+                      </Badge>
+                    )}
+                    {genderCheck.conflict && (
+                      <Badge className="text-[10px] bg-rose-100 text-rose-700 border-rose-300 animate-pulse">
+                        ⚠️ Gender conflict! Model≠ART
                       </Badge>
                     )}
                     {sizeOptions.length > 0 && (
@@ -1155,15 +1176,57 @@ export function ProductDataEntryView() {
                     )}
                   </div>
                 </Label>
+                {/* Gender conflict warning (spec DE2.1: must confirm before continuing) */}
+                {genderCheck.conflict && (
+                  <div className="rounded-md border border-rose-300 bg-rose-50 dark:bg-rose-950/20 p-2 text-[11px] text-rose-700 dark:text-rose-300">
+                    <AlertTriangle className="h-3 w-3 inline mr-1" />
+                    Model indicates <b>{genderCheck.fromModel === "M" ? "Men" : "Women"}</b> but ART indicates <b>{genderCheck.fromArt === "M" ? "Men" : "Women"}</b>.
+                    Please verify and select the correct gender for size suggestions.
+                  </div>
+                )}
                 <SizeInput
                   ref={sizeRef}
                   value={size}
                   onChange={setSize}
                   sizes={sortedSizeOptions}
                   disabled={shippingDisabled || !factoryPO}
-                  placeholder={shippingDisabled ? "Select Shipping Status first" : !factoryPO ? "Enter Factory PO first" : "Type 13, 08…"}
+                  placeholder={shippingDisabled ? "Select Shipping Status first" : !factoryPO ? "Enter Factory PO first" : "Type 7, M07, 8.5…"}
                   onEnter={() => qtyRef.current?.focus()}
                 />
+                {/* Bidirectional size suggestions (spec DE2.2) */}
+                {showSizeSuggestions && sizeSuggestions.length > 0 && (
+                  <div className="rounded-md border bg-popover shadow-md max-h-48 overflow-y-auto scroll-thin">
+                    {sizeSuggestions.slice(0, 8).map((sug, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => {
+                          setSize(sug.code);
+                          setShowSizeSuggestions(false);
+                          setTimeout(() => qtyRef.current?.focus(), 50);
+                        }}
+                        className={cn(
+                          "flex w-full items-center justify-between px-3 py-1.5 text-xs transition-colors hover:bg-accent",
+                          sug.priority === 0 && "bg-sky-50 dark:bg-sky-950/20"
+                        )}
+                      >
+                        <span className="font-mono font-medium">{sug.code}</span>
+                        <span className="text-muted-foreground">{sug.preview}</span>
+                        {sug.priority === 0 && (
+                          <Badge className="text-[8px] bg-sky-100 text-sky-700 ml-1">match</Badge>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {/* Confirmation chip (spec DE2.3: show selected size + conversion) */}
+                {size && sizeOptions.includes(size) && modelGender && (
+                  <div className="flex items-center gap-2 text-[11px] text-emerald-600">
+                    <CheckCircle2 className="h-3 w-3" />
+                    <span className="font-medium">{size}</span>
+                    <span className="text-muted-foreground">selected</span>
+                  </div>
+                )}
                 {sortedSizeOptions.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-1">
                     {sortedSizeOptions.slice(0, 8).map((s: string) => (
