@@ -1892,6 +1892,7 @@ export function ProductDataEntryView() {
           <div className="space-y-2">
             <div className="text-[10px] font-semibold uppercase text-muted-foreground">Entered</div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+              <PreviewField label="Date" value={entryDate} ok={!!entryDate} mono />
               <PreviewField label="Shipping Status" value={shippingStatus} ok={!!shippingStatus} />
               <PreviewField label="PO NO#" value={poNo} ok={!!poNo} mono />
               <PreviewField label="Factory PO" value={factoryPO} ok={lookupConfidence !== "NONE" && lookupConfidence !== "LOW"} mono />

@@ -63,6 +63,7 @@ export interface EntryInput {
   factoryPO: string;
   size: string;
   qty: string; // user-entered qty → mapped to qty1
+  date?: string; // user-selected business date (yyyy-MM-dd), overrides today
 }
 
 export interface EntryPreview {
@@ -170,8 +171,8 @@ export async function previewEntry(input: EntryInput): Promise<EntryPreview> {
     warnings.push(`Reference data not found for Factory PO "${input.factoryPO}". Fields will be left blank.`);
   }
 
-  // Date = today (at preview we show today, but final date is set at confirm).
-  const date = new Date().toISOString().slice(0, 10);
+  // Date = user-selected business date, or today if not provided.
+  const date = input.date || new Date().toISOString().slice(0, 10);
   const qty1 = qtyNum;
   const qty2 = computeQty2(input.shippingStatus, input.qty);
 
@@ -241,7 +242,7 @@ export async function confirmEntry(input: EntryInput, preview: EntryPreview): Pr
 
   // Re-lookup master data (don't trust stale preview, spec §39).
   const group = await lookupFactoryPO(input.factoryPO, input.productType);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = input.date || new Date().toISOString().slice(0, 10);
   const qty1 = qtyNum;
   const qty2 = computeQty2(input.shippingStatus, input.qty);
   const masterDataReference = group

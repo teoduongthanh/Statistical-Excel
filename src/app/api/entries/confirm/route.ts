@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
     factoryPO: body.factoryPO || "",
     size: body.size || "",
     qty: body.qty ?? body.qty1 ?? "",
+    date: body.date || undefined,
   };
 
   // Re-preview to get fresh data (spec §39: validate + lookup again).
