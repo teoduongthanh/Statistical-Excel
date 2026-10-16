@@ -115,11 +115,13 @@ export interface SizeSuggestion {
 // Given user input (could be a number like "7" or a code like "M07"),
 // return sorted size suggestions with gender prioritization.
 //
-// Parameters:
-//   input: what the user typed (e.g., "7", "7.5", "M07", "W09T")
-//   gender: resolved gender from model/ART cross-check ("M", "W", or "")
-//   availableSizes: sizes from Master Data for this Factory PO (optional filter)
-//   menTable/womenTable: lookup tables (from project config, defaults if not provided)
+// Key behavior (user requirements):
+//   1. NO DUPLICATES: if a combined size "M06T/W08" exists in Master Data,
+//      show it as ONE suggestion (the full combined code), not separate M06T + W08.
+//   2. FULL COMBINED CODE: when user types "8", show "M06T/W08" (the full code
+//      from Master Data), not just "W08". But for sizes outside the combined
+//      range (like M13 or W05), show the standalone code.
+//   3. Priority: gender-matching combined codes first.
 export function suggestSizes(
   input: string,
   gender: Gender,
@@ -132,122 +134,116 @@ export function suggestSizes(
 
   const allEntries = [...menTable, ...womenTable];
   const suggestions: SizeSuggestion[] = [];
+  const seenCodes = new Set<string>(); // dedup by final code
 
-  // Check if input is a NUMBER (e.g., "7", "7.5", "9T")
+  // Helper to add a suggestion without duplicates
+  function addSuggestion(code: string, genderMatch: boolean) {
+    if (seenCodes.has(code)) return;
+    seenCodes.add(code);
+    // Find the number from the lookup table
+    const parts = code.match(/[MW]\d{1,2}T?/g) || [];
+    let number = "";
+    let entryGender: "M" | "W" = "M";
+    for (const part of parts) {
+      const entry = allEntries.find((e) => e.code === part);
+      if (entry) {
+        // Use the gender-matching entry's number if available
+        if (!number || (gender && entry.gender === gender)) {
+          number = entry.number;
+          entryGender = entry.gender;
+        }
+      }
+    }
+    if (!number && parts.length > 0) {
+      // Fallback: try first part
+      const entry = allEntries.find((e) => e.code === parts[0]);
+      if (entry) { number = entry.number; entryGender = entry.gender; }
+    }
+    suggestions.push({
+      code,
+      number: number || trimmed,
+      gender: entryGender,
+      preview: `${code} → size ${number || "?"}`,
+      priority: genderMatch ? 0 : 1,
+    });
+  }
+
+  // Determine target number from input
+  let targetNumber = "";
   const isNumber = /^(\d+(\.\d+)?T?)$/.test(trimmed);
-
-  // Check if input is a CODE (e.g., "M07", "W09T", "M07/W08T")
-  const isCode = /^[MW]\d{1,2}T?/.test(trimmed);
-
   if (isNumber) {
-    // Number → find codes that map to this number
-    // Handle "9T" → "9.5" (T = +0.5)
-    let targetNumber = trimmed;
+    targetNumber = trimmed;
     if (trimmed.endsWith("T")) {
       const base = parseFloat(trimmed.replace("T", ""));
       if (!isNaN(base)) targetNumber = String(base + 0.5);
     }
-
-    for (const entry of allEntries) {
-      if (entry.number === targetNumber) {
-        const priority = gender === entry.gender ? 0 : 1;
-        suggestions.push({
-          code: entry.code,
-          number: entry.number,
-          gender: entry.gender,
-          preview: `${entry.code} → size ${entry.number}`,
-          priority,
-        });
-      }
-    }
-  } else if (isCode) {
-    // Code → find the number it maps to
-    for (const entry of allEntries) {
-      // Check if input matches this code, or is part of a combined code
-      if (entry.code === trimmed || entry.code.includes(trimmed)) {
-        const priority = gender === entry.gender ? 0 : 1;
-        suggestions.push({
-          code: entry.code,
-          number: entry.number,
-          gender: entry.gender,
-          preview: `${entry.code} → size ${entry.number}`,
-          priority,
-        });
-      }
-    }
-  } else {
-    // Fuzzy: try to match partial codes
-    for (const entry of allEntries) {
-      if (entry.code.includes(trimmed) || trimmed.includes(entry.code)) {
-        const priority = gender === entry.gender ? 0 : 1;
-        suggestions.push({
-          code: entry.code,
-          number: entry.number,
-          gender: entry.gender,
-          preview: `${entry.code} → size ${entry.number}`,
-          priority,
-        });
-      }
-    }
   }
 
-  // Also check available sizes from Master Data (combined codes like "M07/W08T")
+  // ── PRIORITY 1: Match against availableSizes from Master Data ──────────
+  // These are the ACTUAL combined codes like "M06T/W08", "M07/W08T", etc.
+  // We show the FULL combined code, not individual parts.
   if (availableSizes && availableSizes.length > 0) {
     for (const rawSize of availableSizes) {
       const upperSize = rawSize.trim().toUpperCase();
-      // Extract all code parts from combined size (e.g., "M07/W08T" → ["M07", "W08T"])
       const parts = upperSize.match(/[MW]\d{1,2}T?/g) || [];
-      for (const part of parts) {
-        // Check if this part matches our input
-        if (isNumber) {
-          // Find the number for this part
+
+      if (isNumber) {
+        // User typed a number → check if ANY part of this combined code matches
+        for (const part of parts) {
           const entry = allEntries.find((e) => e.code === part);
-          if (entry && entry.number === (trimmed.endsWith("T") ? String(parseFloat(trimmed.replace("T", "")) + 0.5) : trimmed)) {
-            // Check if not already added
-            if (!suggestions.find((s) => s.code === upperSize)) {
-              const priority = gender === entry.gender ? 0 : 1;
-              suggestions.push({
-                code: upperSize,
-                number: entry.number,
-                gender: entry.gender,
-                preview: `${upperSize} → size ${entry.number}`,
-                priority,
-              });
-            }
+          if (entry && entry.number === targetNumber) {
+            // This combined code contains the user's number
+            // Priority: gender-matching entry in the combined code
+            const genderMatch = gender === entry.gender;
+            addSuggestion(upperSize, genderMatch);
+            break; // Only add this combined code once
           }
-        } else if (part.includes(trimmed) || upperSize.includes(trimmed)) {
-          if (!suggestions.find((s) => s.code === upperSize)) {
+        }
+      } else {
+        // User typed a code or partial → check if input matches any part
+        let matched = false;
+        for (const part of parts) {
+          if (part.includes(trimmed) || trimmed.includes(part) || upperSize.includes(trimmed)) {
             const entry = allEntries.find((e) => e.code === part);
-            if (entry) {
-              const priority = gender === entry.gender ? 0 : 1;
-              suggestions.push({
-                code: upperSize,
-                number: entry.number,
-                gender: entry.gender,
-                preview: `${upperSize} → size ${entry.number}`,
-                priority,
-              });
-            }
+            const genderMatch = entry ? gender === entry.gender : false;
+            addSuggestion(upperSize, genderMatch);
+            matched = true;
+            break;
           }
         }
       }
     }
   }
 
-  // Sort by priority (gender-matching first), then by gender (M before W as tiebreaker)
+  // ── PRIORITY 2: Standalone codes from lookup tables (for sizes like M13, W05) ─
+  // These are sizes that may NOT appear in combined codes (edge of range).
+  for (const entry of allEntries) {
+    if (isNumber) {
+      if (entry.number === targetNumber) {
+        // Only add as standalone if NOT already covered by a combined code
+        const alreadyCovered = suggestions.some((s) => s.code.includes(entry.code));
+        if (!alreadyCovered) {
+          addSuggestion(entry.code, gender === entry.gender);
+        }
+      }
+    } else {
+      if (entry.code === trimmed || entry.code.includes(trimmed) || trimmed.includes(entry.code)) {
+        const alreadyCovered = suggestions.some((s) => s.code.includes(entry.code));
+        if (!alreadyCovered) {
+          addSuggestion(entry.code, gender === entry.gender);
+        }
+      }
+    }
+  }
+
+  // Sort by priority (gender-matching first), then by gender (M before W)
   suggestions.sort((a, b) => {
     if (a.priority !== b.priority) return a.priority - b.priority;
     if (a.gender !== b.gender) return a.gender === "M" ? -1 : 1;
     return 0;
   });
 
-  // Deduplicate by code
-  const seen = new Set<string>();
-  return suggestions.filter((s) => {
-    if (seen.has(s.code)) return false;
-    seen.add(s.code);
-    return true;
-  });
+  return suggestions;
 }
 
 // Reverse lookup: given a size code, return the canonical number.
