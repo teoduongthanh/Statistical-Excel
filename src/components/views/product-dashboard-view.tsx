@@ -59,7 +59,7 @@ import {
 import * as XLSX from "xlsx";
 import { api } from "@/lib/api-client";
 import { cn, formatDateDisplay } from "@/lib/utils";
-import { useAppStore, PRODUCT_THEME, type ProductType } from "@/store/app-store";
+import { useAppStore, PRODUCT_THEME, themeFromColor, type ProductType } from "@/store/app-store";
 
 import {
   Card,
@@ -670,8 +670,8 @@ function MiniStat({ label, value, icon: Icon, iconClass, loading, valueTone, sub
 // ----------------------------------------------------------------------------
 
 export function ProductDashboardView() {
-  const { currentProduct, refreshKey, bumpRefresh, setView } = useAppStore();
-  const theme = PRODUCT_THEME[currentProduct];
+  const { currentProduct, refreshKey, bumpRefresh, setView, themes } = useAppStore();
+  const theme = themes[currentProduct] || PRODUCT_THEME[currentProduct] || themeFromColor("blue", currentProduct);
 
   // ---- Filter state (local form, committed on Apply) ----
   const [form, setForm] = React.useState<FilterFormState>({
