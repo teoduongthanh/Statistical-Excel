@@ -330,10 +330,10 @@ export function ProductImportView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {parseResult.headers.map((h) => {
+                  {parseResult.headers.map((h, idx) => {
                     const sample = parseResult.preview[0]?.[h] ?? "";
                     return (
-                      <tr key={h} className="border-t">
+                      <tr key={`${h}-${idx}`} className="border-t">
                         <td className="px-3 py-1.5 font-medium">{h}</td>
                         <td className="px-3 py-1.5 text-muted-foreground max-w-[280px] truncate" title={sample}>
                           {sample}
@@ -408,9 +408,9 @@ export function ProductImportView() {
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-muted/80 backdrop-blur">
                   <tr>
-                    {parseResult.headers.map((h) => (
+                    {parseResult.headers.map((h, idx) => (
                       <th
-                        key={h}
+                        key={`${h}-${idx}`}
                         className="whitespace-nowrap px-2 py-1.5 text-left text-[10px] font-semibold uppercase text-muted-foreground"
                       >
                         {h}
@@ -421,8 +421,8 @@ export function ProductImportView() {
                 <tbody>
                   {parseResult.preview.map((r, i) => (
                     <tr key={i} className="border-t hover:bg-muted/30">
-                      {parseResult.headers.map((h) => (
-                        <td key={h} className="whitespace-nowrap px-2 py-1 max-w-[200px] truncate" title={r[h]}>
+                      {parseResult.headers.map((h, idx) => (
+                        <td key={`${h}-${idx}`} className="whitespace-nowrap px-2 py-1 max-w-[200px] truncate" title={r[h]}>
                           {r[h] || <span className="text-muted-foreground/40">—</span>}
                         </td>
                       ))}
