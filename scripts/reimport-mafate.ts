@@ -14,8 +14,9 @@ import { applyMapping } from "../src/lib/excel";
 import { buildAutoMapping } from "../src/lib/header-normalize";
 import { rebuildMasterGroups } from "../src/lib/master-service";
 
-const FILE = "/home/z/my-project/upload/Data-mafate.xlsx";
+const FILE = "/home/z/my-project/upload/FMT shipped out S-TECH mafate -2026 10.30.xlsx";
 const PRODUCT_TYPE = "MAFATE";
+const SOURCE_FILE_NAME = "FMT shipped out S-TECH mafate -2026 10.30.xlsx";
 
 function rowSignature(m: Record<string, string>): string {
   return [
@@ -44,11 +45,13 @@ async function main() {
   const t0 = Date.now();
   console.log(`[reimport-mafate] Reading ${FILE}`);
   const buf = fs.readFileSync(FILE);
-  const wb = XLSX.read(buf, { type: "buffer", cellDates: false, dense: true, sheetStubs: false });
-  console.log(`[reimport-mafate] Sheets: ${wb.SheetNames.join(", ")}`);
+  // sheetStubs:true so all sheets are visible (some files hide DATA when stubs disabled).
+  const wb = XLSX.read(buf, { type: "buffer", cellDates: false, dense: true, sheetStubs: true });
+  console.log(`[reimport-mafate] Sheets (${wb.SheetNames.length}): ${wb.SheetNames.join(", ")}`);
 
-  // Use the first sheet (file has "Sheet1", not "DATA").
-  const sheetName = wb.SheetNames[0];
+  // Prefer a sheet named "DATA" (case-insensitive); fall back to the first sheet.
+  const sheetName = wb.SheetNames.find((n) => n.trim().toUpperCase() === "DATA") || wb.SheetNames[0];
+  console.log(`[reimport-mafate] Using sheet: "${sheetName}"`);
   const ws = wb.Sheets[sheetName];
   if (!ws) throw new Error(`Sheet ${sheetName} not readable`);
 
@@ -95,7 +98,7 @@ async function main() {
     if (seen.has(sig)) { duplicates++; continue; }
     seen.add(sig);
     m.shippingStatus = normalizeStatus(m.shippingStatus || null) || m.shippingStatus;
-    uniqueRows.push({ m, sourceFile: "Data-mafate.xlsx", productType: PRODUCT_TYPE });
+    uniqueRows.push({ m, sourceFile: SOURCE_FILE_NAME, productType: PRODUCT_TYPE });
   }
 
   console.log(`[reimport-mafate] Pending skipped: ${pending}`);
@@ -163,7 +166,7 @@ async function main() {
   // Step: ImportHistory log.
   await db.importHistory.create({
     data: {
-      fileName: "Data-mafate.xlsx",
+      fileName: SOURCE_FILE_NAME,
       sheetName,
       productType: PRODUCT_TYPE,
       totalRows: mappedRows.length,
