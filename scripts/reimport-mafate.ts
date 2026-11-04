@@ -14,9 +14,9 @@ import { applyMapping } from "../src/lib/excel";
 import { buildAutoMapping } from "../src/lib/header-normalize";
 import { rebuildMasterGroups } from "../src/lib/master-service";
 
-const FILE = "/home/z/my-project/upload/FMT shipped out S-TECH mafate -2026 10.30.xlsx";
+const FILE = "/home/z/my-project/upload/FMT shipped out S-TECH mafate -2026 04.11.xlsx";
 const PRODUCT_TYPE = "MAFATE";
-const SOURCE_FILE_NAME = "FMT shipped out S-TECH mafate -2026 10.30.xlsx";
+const SOURCE_FILE_NAME = "FMT shipped out S-TECH mafate -2026 04.11.xlsx";
 
 function rowSignature(m: Record<string, string>): string {
   return [
@@ -45,15 +45,24 @@ async function main() {
   const t0 = Date.now();
   console.log(`[reimport-mafate] Reading ${FILE}`);
   const buf = fs.readFileSync(FILE);
-  // sheetStubs:true so all sheets are visible (some files hide DATA when stubs disabled).
-  const wb = XLSX.read(buf, { type: "buffer", cellDates: false, dense: true, sheetStubs: true });
+  // sheetStubs:false (default) + only parse DATA sheet via sheetStubs:false to save memory.
+  // For files with many sheets (22+), loading all stubs blows up memory (OOM kills Bun).
+  const wb = XLSX.read(buf, { type: "buffer", cellDates: false, dense: true, sheetStubs: false });
   console.log(`[reimport-mafate] Sheets (${wb.SheetNames.length}): ${wb.SheetNames.join(", ")}`);
 
   // Prefer a sheet named "DATA" (case-insensitive); fall back to the first sheet.
   const sheetName = wb.SheetNames.find((n) => n.trim().toUpperCase() === "DATA") || wb.SheetNames[0];
   console.log(`[reimport-mafate] Using sheet: "${sheetName}"`);
+
+  // Free memory: delete all sheets except the one we're using.
+  for (const name of wb.SheetNames) {
+    if (name !== sheetName) delete wb.Sheets[name];
+  }
+  wb.SheetNames = wb.SheetNames.filter((n) => n === sheetName);
+
   const ws = wb.Sheets[sheetName];
   if (!ws) throw new Error(`Sheet ${sheetName} not readable`);
+
 
   const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "", blankrows: false }) as unknown[][];
   if (raw.length === 0) throw new Error("Sheet is empty");
