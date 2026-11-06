@@ -79,6 +79,7 @@ const EXPORT_COLUMNS: CanonicalField[] = [
   "qty1",
   "qty2",
   "deadline",
+  "batchNumber",
 ];
 
 // Columns shown in the row-preview table (subset for readability).
@@ -93,6 +94,7 @@ const PREVIEW_COLUMNS: CanonicalField[] = [
   "season",
   "colorCode",
   "deadline",
+  "batchNumber",
 ];
 
 const FILTER_FIELDS: CanonicalField[] = [

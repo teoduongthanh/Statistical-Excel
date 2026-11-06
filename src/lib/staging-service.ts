@@ -701,6 +701,12 @@ export async function confirmImport(
   });
 
   let imported = 0;
+  // Assign a single "Lần nhập" for the whole staging batch import so all rows
+  // from this paste session group together as one entry batch.
+  const today = new Date().toISOString().slice(0, 10);
+  const { assignBatchNumber } = await import("./entry-service");
+  const batchNumber = await assignBatchNumber(batch.productType, today);
+
   for (const r of rows) {
     const canImport =
       r.validationStatus === "VALID" ||
@@ -712,7 +718,7 @@ export async function confirmImport(
     const entry = await db.entryData.create({
       data: {
         productType: batch.productType,
-        date: r.date || new Date().toISOString().slice(0, 10),
+        date: r.date || today,
         shippingStatus: r.shippingStatus || "",
         model: r.model || "",
         sku: r.sku || "",
@@ -728,6 +734,7 @@ export async function confirmImport(
         qty1: r.qty,
         qty2: r.qty, // simple mirror; entry-service would compute sign
         deadline: r.deadline || null,
+        batchNumber,
         note: `Imported from batch ${batch.batchId} row ${r.rowNumber}`,
       },
     });

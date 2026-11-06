@@ -21,6 +21,7 @@ interface UpdateBody {
   painting?: string;
   printingColor?: string;
   deadline?: string;
+  batchNumber?: number | null; // "Lần nhập" — editable
 }
 
 // PUT /api/entries/[id] — update an entry.
@@ -53,6 +54,10 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   // Apply direct field overrides (manual edits, never touch Master Data).
   for (const f of ["model", "sku", "poNo", "season", "colorCode", "colorCode2", "painting", "printingColor", "deadline"] as const) {
     if (body[f] !== undefined) updateData[f] = body[f];
+  }
+  // "Lần nhập" — allow editing the batch number.
+  if (body.batchNumber !== undefined) {
+    updateData.batchNumber = body.batchNumber === null ? null : Number(body.batchNumber) || null;
   }
 
   const updated = await db.entryData.update({ where: { id }, data: updateData });

@@ -96,6 +96,10 @@ model EntryData {
   qty1                Int
   qty2                Int
   deadline            String?
+  // "Lần nhập" — sequence number within a day for the same productType.
+  // E.g. on 03-11-2026: lần 1 (morning batch), lần 2 (afternoon batch).
+  // Auto-assigned on create = max(batchNumber)+1 for (productType, date).
+  batchNumber         Int?
   // Transaction grouping: an Output entry creates a paired Pending entry,
   // both share the same transactionGroupId for atomic delete/audit.
   transactionGroupId  String?
@@ -114,6 +118,7 @@ model EntryData {
   @@index([productType, poNo])
   @@index([productType, shippingStatus])
   @@index([transactionGroupId])
+  @@index([productType, date, batchNumber])
 }
 
 model OrderNote {
@@ -431,6 +436,8 @@ model EntryStagingRow {
   size                String?
   qty                 Int       @default(0)
   deadline            String?
+  // "Lần nhập" carried through from staging → EntryData on confirm.
+  batchNumber         Int?
   // Auto-filled from matching Order (spec §34: show source)
   model               String?
   sku                 String?

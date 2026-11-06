@@ -102,6 +102,11 @@ export async function bulkImportEntries(input: BulkImportInput): Promise<BulkImp
 
       // Step 3: Insert each row.
       const today = new Date().toISOString().slice(0, 10);
+      // Assign a single "Lần nhập" for the whole bulk import batch (all rows
+      // share the same batchNumber so they group as one input session).
+      const { assignBatchNumber } = await import("./entry-service");
+      const batchNumber = await assignBatchNumber(productType, today, tx);
+
       for (const row of validRows) {
         const g = masterByFpo.get(row.factoryPO.trim());
         const qty2 = computeQty2(row.shippingStatus, row.qty1);
@@ -130,6 +135,7 @@ export async function bulkImportEntries(input: BulkImportInput): Promise<BulkImp
             qty2,
             masterDataReference,
             note: row.note || row.confirmReason || null,
+            batchNumber,
           },
         });
         imported++;

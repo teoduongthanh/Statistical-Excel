@@ -158,6 +158,10 @@ export async function POST(req: NextRequest) {
 
     const result = await db.$transaction(async (tx) => {
       const created: any[] = [];
+      // Assign a single "Lần nhập" for this whole batch-generate call.
+      const { assignBatchNumber } = await import("@/lib/entry-service");
+      const batchNumber = await assignBatchNumber(productType, today, tx);
+
       for (const e of validEntries) {
         const group = groupMap.get(e.factoryPO)!;
         const masterDataReference = JSON.stringify({
@@ -185,6 +189,7 @@ export async function POST(req: NextRequest) {
             qty1: e.qty,
             qty2: computeQty2(body.shippingStatus, e.qty),
             masterDataReference,
+            batchNumber,
           },
         });
         created.push(entry);

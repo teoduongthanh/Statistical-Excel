@@ -17,7 +17,8 @@ export type CanonicalField =
   | "qty1"
   | "qty2"
   | "deadline"
-  | "productType";
+  | "productType"
+  | "batchNumber";
 
 export interface FieldDef {
   key: CanonicalField;
@@ -71,6 +72,7 @@ export const FIELDS: FieldDef[] = [
   { key: "qty2", label: "Q'ty 2", aliases: ["qty2", "quantity2", "q2"], group: "variable", searchable: false },
   { key: "deadline", label: "Dead Line", aliases: ["deadline", "dl", "duedate", "etd", "dead line", "deadlineetd"], group: "variable", searchable: true },
   { key: "productType", label: "Product Type", aliases: ["producttype", "company"], group: "meta", searchable: true },
+  { key: "batchNumber", label: "Lần nhập", aliases: ["batchnumber", "batch", "lanhap", "lannhap", "lannhap"], group: "meta", searchable: true },
 ];
 
 export const FIELD_MAP: Record<CanonicalField, FieldDef> = FIELDS.reduce(
@@ -123,6 +125,7 @@ export const ALL_FIELDS: CanonicalField[] = [
   "qty2",
   "deadline",
   "productType",
+  "batchNumber",
 ];
 
 // Product types supported by the system.

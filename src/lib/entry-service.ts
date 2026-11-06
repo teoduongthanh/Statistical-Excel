@@ -64,6 +64,7 @@ export interface EntryInput {
   size: string;
   qty: string; // user-entered qty → mapped to qty1
   date?: string; // user-selected business date (yyyy-MM-dd), overrides today
+  batchNumber?: number | null; // "Lần nhập" — optional; auto-assigned if omitted
 }
 
 export interface EntryPreview {
@@ -74,6 +75,7 @@ export interface EntryPreview {
   date: string;
   qty1: number;
   qty2: number;
+  batchNumber: number | null; // "Lần nhập" assigned to this entry
   // Auto-filled from Master Data (empty if not found)
   model: string;
   sku: string;
@@ -126,6 +128,7 @@ export async function previewEntry(input: EntryInput): Promise<EntryPreview> {
       date: "",
       qty1: 0,
       qty2: 0,
+      batchNumber: null,
       model: "",
       sku: "",
       item: "",
@@ -176,6 +179,12 @@ export async function previewEntry(input: EntryInput): Promise<EntryPreview> {
   const qty1 = qtyNum;
   const qty2 = computeQty2(input.shippingStatus, input.qty);
 
+  // "Lần nhập" — if caller provided one, use it; otherwise compute the next
+  // sequence number for this productType + date (max(existing)+1).
+  const batchNumber = input.batchNumber != null && input.batchNumber > 0
+    ? input.batchNumber
+    : await assignBatchNumber(input.productType, date);
+
   const preview: EntryPreview = {
     ok: true,
     errors,
@@ -183,6 +192,7 @@ export async function previewEntry(input: EntryInput): Promise<EntryPreview> {
     date,
     qty1,
     qty2,
+    batchNumber,
     model,
     sku,
     item,
@@ -220,6 +230,27 @@ function makeTransactionGroupId(factoryPO: string): string {
   const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
   const seq = String(Math.floor(Math.random() * 9000) + 1000);
   return `OUT-${factoryPO}-${ymd}-${seq}`;
+}
+
+// Assign a "Lần nhập" (batch number) for a given productType + date.
+// Returns max(existing batchNumber) + 1, or 1 if none exist yet.
+// This lets users enter multiple batches per day: 03-11-2026 lần 1, lần 2, lần 3…
+export async function assignBatchNumber(
+  productType: string,
+  date: string,
+  tx?: any
+): Promise<number> {
+  const client = tx || db;
+  // Find the max batchNumber for this productType + date.
+  const rows = await client.entryData.findMany({
+    where: { productType, date },
+    select: { batchNumber: true },
+  });
+  let max = 0;
+  for (const r of rows) {
+    if (typeof r.batchNumber === "number" && r.batchNumber > max) max = r.batchNumber;
+  }
+  return max + 1;
 }
 
 // CONFIRM: atomic database transaction (spec §39, §40).
@@ -278,6 +309,13 @@ export async function confirmEntry(input: EntryInput, preview: EntryPreview): Pr
     const result = await db.$transaction(async (tx) => {
       const created: any[] = [];
 
+      // Assign "Lần nhập" inside the transaction (so concurrent inserts get
+      // distinct batch numbers). Use the preview's value if already computed,
+      // otherwise compute fresh inside the tx.
+      const bn = preview.batchNumber != null && preview.batchNumber > 0
+        ? preview.batchNumber
+        : await assignBatchNumber(input.productType, today, tx);
+
       // Main record (user's chosen status) — always CREATE, never merge.
       const mainRec = await tx.entryData.create({
         data: {
@@ -285,6 +323,7 @@ export async function confirmEntry(input: EntryInput, preview: EntryPreview): Pr
           shippingStatus: input.shippingStatus,
           qty1,
           qty2,
+          batchNumber: bn,
         },
       });
       created.push(mainRec);

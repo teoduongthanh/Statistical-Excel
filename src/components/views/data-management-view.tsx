@@ -47,6 +47,7 @@ const COLUMNS: CanonicalField[] = [
   "poNo",
   "shippingStatus",
   "deadline",
+  "batchNumber",
 ];
 
 export function DataManagementView() {
@@ -260,6 +261,7 @@ export function DataManagementView() {
                   <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Season</th>
                   <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Color</th>
                   <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">PO NO#</th>
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Lần nhập</th>
                   <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Actions</th>
                 </tr>
               </thead>
@@ -267,12 +269,12 @@ export function DataManagementView() {
                 {q.isLoading ? (
                   Array.from({ length: 8 }).map((_, i) => (
                     <tr key={i} className="border-t">
-                      <td colSpan={11} className="px-3 py-3"><div className="h-3 w-full animate-pulse rounded bg-muted" /></td>
+                      <td colSpan={12} className="px-3 py-3"><div className="h-3 w-full animate-pulse rounded bg-muted" /></td>
                     </tr>
                   ))
                 ) : rows.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="px-3 py-10 text-center text-muted-foreground">
+                    <td colSpan={12} className="px-3 py-10 text-center text-muted-foreground">
                       No entries yet. Use Data Entry to create one.
                     </td>
                   </tr>
@@ -291,6 +293,7 @@ export function DataManagementView() {
                       <td className="px-3 py-1.5"><Badge variant="secondary" className="text-[10px]">{r.season}</Badge></td>
                       <td className="px-3 py-1.5 max-w-[180px] truncate text-muted-foreground" title={r.colorCode ?? ""}>{r.colorCode}</td>
                       <td className="px-3 py-1.5 whitespace-nowrap text-muted-foreground">{r.poNo}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap text-muted-foreground tabular-nums">{r.batchNumber ?? "—"}</td>
                       <td className="px-3 py-1.5">
                         <div className="flex justify-end gap-0.5">
                           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>

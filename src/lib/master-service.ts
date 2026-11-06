@@ -421,14 +421,20 @@ export async function createEntry(
   const qty1Num = Number(input.qty1);
   const qty2 = opts.autoCalcQty2 ? -Math.abs(qty1Num) : qty1Num;
 
+  const productType = opts.productType || g.productType || "MAFATE";
+  const entryDate = g.date || new Date().toISOString().slice(0, 10);
+  // Assign "Lần nhập" — next sequence for this productType + date.
+  const { assignBatchNumber } = await import("./entry-service");
+  const batchNumber = await assignBatchNumber(productType, entryDate);
+
   const created = await db.entryData.create({
     data: {
-      productType: opts.productType || g.productType || "MAFATE",
+      productType,
       factoryPO: input.factoryPO.trim(),
       size: input.size.trim(),
       qty1: qty1Num,
       qty2,
-      date: g.date,
+      date: entryDate,
       shippingStatus: g.shippingStatus,
       model: g.model,
       sku: g.sku,
@@ -440,6 +446,7 @@ export async function createEntry(
       painting: g.painting,
       printingColor: g.printingColor,
       deadline: g.deadline,
+      batchNumber,
     },
   });
   return { ok: true as const, entry: created };

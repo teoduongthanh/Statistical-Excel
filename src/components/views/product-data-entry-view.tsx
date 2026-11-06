@@ -695,6 +695,7 @@ export function ProductDataEntryView() {
       colorCode: row.colorCode || "",
       colorCode2: row.colorCode2 || "",
       deadline: row.deadline || "",
+      batchNumber: row.batchNumber != null ? String(row.batchNumber) : "",
       note: row.note || "",
     });
   }
@@ -1616,6 +1617,7 @@ export function ProductDataEntryView() {
                     <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Qty2</th>
                     <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Season</th>
                     <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Deadline</th>
+                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Lần nhập</th>
                     <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Actions</th>
                   </tr>
                 </thead>
@@ -1644,6 +1646,7 @@ export function ProductDataEntryView() {
                         <td className={cn("px-2 py-1.5 text-right tabular-nums", Number(r.qty2) < 0 && "text-rose-600")}>{r.qty2}</td>
                         <td className="px-2 py-1.5"><Badge variant="secondary" className="text-[9px]">{r.season}</Badge></td>
                         <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground">{r.deadline || "—"}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground tabular-nums">{r.batchNumber ?? "—"}</td>
                         <td className="px-2 py-1.5">
                           <div className="flex justify-end gap-0.5">
                             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEditEntry(r)}>
@@ -1727,10 +1730,16 @@ export function ProductDataEntryView() {
                   { f: "colorCode", l: "Color Code" },
                   { f: "colorCode2", l: "COLOR CODE" },
                   { f: "deadline", l: "Dead Line" },
+                  { f: "batchNumber", l: "Lần nhập" },
                 ].map(({ f, l }) => (
                   <div key={f} className="space-y-1">
                     <label className="text-[10px] font-semibold uppercase text-muted-foreground">{l}</label>
-                    <Input value={editData[f] ?? ""} onChange={(e) => setEditData((d) => ({ ...d, [f]: e.target.value }))} className="h-8 text-xs" />
+                    <Input
+                      type={f === "batchNumber" ? "number" : "text"}
+                      value={editData[f] ?? ""}
+                      onChange={(e) => setEditData((d) => ({ ...d, [f]: e.target.value }))}
+                      className="h-8 text-xs"
+                    />
                   </div>
                 ))}
               </div>

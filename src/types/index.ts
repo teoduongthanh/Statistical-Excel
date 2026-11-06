@@ -83,6 +83,8 @@ export interface EntryData {
   printingColor?: string | null;
   deadline?: string | null;
   productType?: string | null;
+  // "Lần nhập" — sequence within a day (1, 2, 3...). Auto-assigned on create.
+  batchNumber?: number | null;
   note?: string | null;
   sourceMasterId?: string | null;
   createdAt: string;
