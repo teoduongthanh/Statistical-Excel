@@ -16,6 +16,7 @@ interface BulkBody {
   items: BulkItem[];
   autoCalcQty2?: boolean;
   productType?: string;
+  entryBatchId?: string | null;
 }
 
 // POST /api/entries/bulk — create many entries, returning per-item results + error report.
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest) {
     const it = body.items[i];
     const productType = it.productType || globalProductType;
     const r = await createEntry(
-      { factoryPO: it.factoryPO, size: it.size, qty1: it.qty1 },
+      { factoryPO: it.factoryPO, size: it.size, qty1: it.qty1, entryBatchId: body.entryBatchId ?? null },
       { autoCalcQty2, productType }
     );
     if (r.ok) {

@@ -88,6 +88,18 @@ const SHIPPING_OPTIONS = [
   { value: "4.Input", label: "4.Input", color: "bg-emerald-100 text-emerald-700" },
 ];
 
+// Map shippingStatus → batchCode prefix. Mirrors the server-side statusPrefix()
+// in entry-batch-service.ts so the create-batch dialog can preview the upcoming
+// batch code format. Falls back to "EB" (Entry Batch) for unknown statuses.
+function shippingStatusPrefix(shippingStatus: string): string {
+  const s = (shippingStatus || "").trim();
+  if (/^1/i.test(s)) return "ORD";
+  if (/^2/i.test(s)) return "OUT";
+  if (/^3/i.test(s)) return "PND";
+  if (/^4/i.test(s)) return "IN";
+  return "EB";
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // SMART ENTRY DATA SYSTEM — helpers
 // ────────────────────────────────────────────────────────────────────────────
@@ -177,6 +189,24 @@ export function ProductDataEntryView() {
   // Entry date — user can pick a custom date (defaults to today).
   const [entryDate, setEntryDate] = React.useState(new Date().toISOString().slice(0, 10));
 
+  // ===== Entry Input Batch (đợt nhập) state =====
+  // The currently active input batch — newly created entries are linked to it
+  // via entryBatchId. When null, the user must create a batch first (single-entry
+  // flow blocks with a toast; bulk-import flow passes null and is allowed).
+  const [activeBatch, setActiveBatch] = React.useState<any | null>(null);
+  const [batchDialogOpen, setBatchDialogOpen] = React.useState(false);
+  const [batchCreating, setBatchCreating] = React.useState(false);
+  const [batchClosing, setBatchClosing] = React.useState(false);
+  // Map of entryBatchId → batch summary (batchCode, batchName, ...) for the
+  // entries table. Refreshed after every entries query refetch + on bumpRefresh.
+  const [batchMap, setBatchMap] = React.useState<Record<string, any>>({});
+  const [batchForm, setBatchForm] = React.useState({
+    shippingStatus: "",
+    entryDate: new Date().toISOString().slice(0, 10),
+    entryTime: new Date().toTimeString().slice(0, 5),
+    note: "",
+  });
+
   // Auto-filled from Master Data (spec §6)
   const [autoFill, setAutoFill] = React.useState<any>(null);
   const [lookupLoading, setLookupLoading] = React.useState(false);
@@ -252,6 +282,136 @@ export function ProductDataEntryView() {
   React.useEffect(() => {
     setEntryPage(1);
   }, [currentProduct]);
+
+  // ── Entry Input Batch (đợt nhập) ──────────────────────────────────────
+  // Fetch the recent batches for this product so the entries table can map
+  // entryBatchId → batchCode. Re-fetches whenever the entries query refetches
+  // (so newly created batches show up after the user creates one). Best-effort:
+  // silent on failure (the entries table just shows "—" for unknown batches).
+  React.useEffect(() => {
+    if (!currentProduct) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.listEntryBatches({
+          productType: currentProduct,
+          pageSize: 200,
+        });
+        if (cancelled) return;
+        const map: Record<string, any> = {};
+        for (const b of res.rows ?? []) {
+          map[b.id] = b;
+        }
+        setBatchMap(map);
+        // If the active batch is in the map, refresh its totals from the map
+        // (avoids an extra round-trip in the common case).
+        setActiveBatch((prev) => {
+          if (!prev) return prev;
+          const fresh = map[prev.id];
+          return fresh ?? prev;
+        });
+      } catch {
+        // Silent — batch map is best-effort.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProduct, refreshKey]);
+
+  // Refresh the active batch's totals from the server. Called after each
+  // entry creation so the panel shows accurate totalRecords / totalQuantity.
+  async function refreshActiveBatch() {
+    if (!activeBatch) return;
+    try {
+      const fresh = await api.getEntryBatch(activeBatch.id);
+      if (fresh && fresh.id) {
+        setActiveBatch(fresh);
+        // Also update the map so the entries table reflects any changes.
+        setBatchMap((prev) => ({ ...prev, [fresh.id]: fresh }));
+      }
+    } catch {
+      // Silent — best effort.
+    }
+  }
+
+  // Open the create-batch dialog. Pre-fills shippingStatus from the form if set.
+  function openBatchDialog() {
+    setBatchForm((f) => ({
+      ...f,
+      shippingStatus: shippingStatus || f.shippingStatus || "",
+      entryDate: new Date().toISOString().slice(0, 10),
+      entryTime: new Date().toTimeString().slice(0, 5),
+    }));
+    setBatchDialogOpen(true);
+  }
+
+  // Create a new entry batch from the dialog form.
+  async function handleCreateBatch() {
+    if (!batchForm.shippingStatus) {
+      toast.error("Please select a Shipping Status", {
+        description: "Shipping Status is required to create an entry batch.",
+      });
+      return;
+    }
+    setBatchCreating(true);
+    try {
+      const res = await api.createEntryBatch({
+        productType: currentProduct,
+        shippingStatus: batchForm.shippingStatus,
+        entryDate: batchForm.entryDate,
+        entryTime: batchForm.entryTime,
+        note: batchForm.note || undefined,
+        createdBy: "data-entry-view",
+      });
+      if (res.ok && res.batch) {
+        setActiveBatch(res.batch);
+        setBatchMap((prev) => ({ ...prev, [res.batch.id]: res.batch }));
+        toast.success("Entry batch created", {
+          description: `${res.batch.batchCode} — ${res.batch.batchName}`,
+        });
+        setBatchDialogOpen(false);
+      } else {
+        toast.error("Failed to create entry batch");
+      }
+    } catch (e) {
+      toast.error("Failed to create entry batch", {
+        description: e instanceof Error ? e.message : "",
+      });
+    } finally {
+      setBatchCreating(false);
+    }
+  }
+
+  // Close the active batch (sets isClosed=true on the server, updates local state).
+  async function handleCloseBatch() {
+    if (!activeBatch) return;
+    setBatchClosing(true);
+    try {
+      const res = await api.updateEntryBatch(activeBatch.id, { isClosed: true });
+      if (res.ok && res.batch) {
+        setActiveBatch(res.batch);
+        setBatchMap((prev) => ({ ...prev, [res.batch.id]: res.batch }));
+        toast.success("Đợt nhập đã đóng", {
+          description: `${res.batch.batchCode} — adding more data will require confirmation.`,
+        });
+      } else {
+        toast.error("Failed to close batch");
+      }
+    } catch (e) {
+      toast.error("Failed to close batch", {
+        description: e instanceof Error ? e.message : "",
+      });
+    } finally {
+      setBatchClosing(false);
+    }
+  }
+
+  // Switch to a different batch: clear the active one and reopen the dialog.
+  function handleSwitchBatch() {
+    setActiveBatch(null);
+    openBatchDialog();
+  }
 
   // Keep context checkboxes (spec §48 — extended to PO NO# + Factory PO)
   const [keepStatus, setKeepStatus] = React.useState(true);
@@ -530,6 +690,15 @@ export function ProductDataEntryView() {
       toast.error("Please fix validation errors", { description: validationErrors[0] });
       return;
     }
+    // Block entry creation if no active entry batch is selected. The batch
+    // groups entries by business "đợt nhập" so they can be reported/reverted
+    // together. The user must create one first.
+    if (!activeBatch) {
+      toast.warning("Vui lòng tạo đợt nhập trước khi thêm dữ liệu", {
+        description: "Click \"Tạo đợt nhập mới\" in the Entry Batch panel above.",
+      });
+      return;
+    }
     setPreviewOpen(false);
     setSaving(true);
     try {
@@ -541,6 +710,7 @@ export function ProductDataEntryView() {
         size,
         qty,
         date: entryDate,
+        entryBatchId: activeBatch?.id ?? null,
       });
       if (r.ok) {
         const createdCount = r.created?.length || 0;
@@ -556,6 +726,8 @@ export function ProductDataEntryView() {
           setRecent((prev) => [...r.created!, ...prev].slice(0, 10));
         }
         bumpRefresh();
+        // Refresh the active batch totals so the panel shows updated counts.
+        refreshActiveBatch();
         // Reset form: keep selected context fields per checkboxes.
         resetForm();
       } else {
@@ -877,12 +1049,17 @@ export function ProductDataEntryView() {
         toast.error("No importable rows", { description: "Need at least one valid or warning row." });
         return;
       }
-      const res = await api.bulkImportEntries({
+      // Thread entryBatchId through to the bulk-import endpoint so all rows in
+      // this import link to the active batch. Cast as any because the api-client
+      // signature hasn't been widened yet (the backend already accepts it).
+      const body: any = {
         productType: currentProduct,
         rows: importableRows,
         mode: "all_valid",
         importedBy: "bulk-entry",
-      });
+        entryBatchId: activeBatch?.id ?? null,
+      };
+      const res = await api.bulkImportEntries(body);
       if (res.ok) {
         toast.success(`Imported ${res.imported} entries`, {
           description: res.skipped > 0 ? `${res.skipped} skipped` : "All rows written to DB.",
@@ -896,6 +1073,8 @@ export function ProductDataEntryView() {
         setEntryMode("single");
         bumpRefresh();
         qc.invalidateQueries({ queryKey: ["data-entry-entries"] });
+        // Refresh the active batch totals so the panel reflects the new rows.
+        refreshActiveBatch();
       } else {
         toast.error("Import failed", { description: res.errors?.join(", ") });
       }
@@ -995,6 +1174,139 @@ export function ProductDataEntryView() {
           </span>
         </div>
       ) : null}
+
+      {/* ── ENTRY INPUT BATCH (đợt nhập) panel ──────────────────────────────
+          Groups entries created in one business input session. When no batch
+          is active, the user must create one before adding data (the single-
+          entry confirm flow blocks with a toast). When a batch is active, its
+          totals (records / quantity) are shown and refreshed after every
+          entry creation. Visually distinct (border-primary) so users notice. */}
+      <Card className={cn(
+        "border-2",
+        activeBatch
+          ? "border-primary/40 bg-primary/5"
+          : "border-dashed border-primary/30 bg-primary/5"
+      )}>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Database className="h-4 w-4 text-primary" /> Entry Batch (Đợt nhập)
+            {activeBatch ? (
+              <Badge variant="outline" className="ml-auto text-[10px] border-primary/40 text-primary">
+                Active
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="ml-auto text-[10px] border-amber-400/50 text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20">
+                No active batch
+              </Badge>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!activeBatch ? (
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 justify-between">
+              <div className="text-xs text-muted-foreground">
+                No active entry batch. Create one before adding data — entries
+                will be grouped by business "đợt nhập" for reporting and audit.
+              </div>
+              <Button onClick={openBatchDialog} className={cn("shrink-0", theme.bg, "hover:opacity-90")}>
+                <Plus className="h-4 w-4 mr-1.5" /> Tạo đợt nhập mới
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {/* Batch header row: code + name + status badge */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-base font-bold font-mono text-primary">
+                  {activeBatch.batchCode ?? "—"}
+                </span>
+                <Badge variant="secondary" className="text-[10px]">
+                  {activeBatch.batchName ?? "—"}
+                </Badge>
+                {activeBatch.shippingStatus && (
+                  <Badge variant="outline" className={cn("text-[9px]", shippingBadgeClass(activeBatch.shippingStatus))}>
+                    {activeBatch.shippingStatus}
+                  </Badge>
+                )}
+                {activeBatch.isClosed ? (
+                  <Badge variant="outline" className="text-[9px] border-amber-400/60 text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20">
+                    <AlertTriangle className="h-3 w-3 mr-1" /> Đợt nhập đã đóng — thêm dữ liệu sẽ cần xác nhận
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="text-[9px] border-emerald-400/60 text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/20">
+                    <CheckCircle2 className="h-3 w-3 mr-1" /> Open
+                  </Badge>
+                )}
+              </div>
+
+              {/* Batch detail row: date, time, totals */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div className="rounded-md border bg-background/60 p-2">
+                  <div className="text-[9px] font-semibold uppercase text-muted-foreground">Entry Date</div>
+                  <div className="mt-0.5 font-medium tabular-nums">{activeBatch.entryDate ?? "—"}</div>
+                </div>
+                <div className="rounded-md border bg-background/60 p-2">
+                  <div className="text-[9px] font-semibold uppercase text-muted-foreground">Entry Time</div>
+                  <div className="mt-0.5 font-medium tabular-nums">{activeBatch.entryTime ?? "—"}</div>
+                </div>
+                <div className="rounded-md border bg-background/60 p-2">
+                  <div className="text-[9px] font-semibold uppercase text-muted-foreground">Total Records</div>
+                  <div className="mt-0.5 font-bold tabular-nums text-primary text-sm">
+                    {activeBatch.totalRecords ?? 0}
+                  </div>
+                </div>
+                <div className="rounded-md border bg-background/60 p-2">
+                  <div className="text-[9px] font-semibold uppercase text-muted-foreground">Total Quantity</div>
+                  <div className="mt-0.5 font-bold tabular-nums text-primary text-sm">
+                    {activeBatch.totalQuantity ?? 0}
+                  </div>
+                </div>
+              </div>
+
+              {/* Optional note */}
+              {activeBatch.note && (
+                <div className="text-[11px] text-muted-foreground italic border-l-2 border-primary/30 pl-2">
+                  {activeBatch.note}
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSwitchBatch}
+                  className="h-8 text-xs"
+                >
+                  <RotateCcw className="h-3.5 w-3.5 mr-1.5" /> Đổi đợt nhập
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCloseBatch}
+                  disabled={batchClosing || activeBatch.isClosed}
+                  className="h-8 text-xs"
+                >
+                  {batchClosing ? (
+                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="h-3.5 w-3.5 mr-1.5" />
+                  )}
+                  Đóng đợt nhập
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => refreshActiveBatch()}
+                  className="h-8 text-xs ml-auto"
+                  title="Refresh totals from server"
+                >
+                  <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Refresh
+                </Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Entry mode toggle: Single vs Bulk */}
       <div className="flex items-center justify-center">
@@ -1618,6 +1930,7 @@ export function ProductDataEntryView() {
                     <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Season</th>
                     <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Deadline</th>
                     <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Lần nhập</th>
+                    <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Entry Batch</th>
                     <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Actions</th>
                   </tr>
                 </thead>
@@ -1647,6 +1960,15 @@ export function ProductDataEntryView() {
                         <td className="px-2 py-1.5"><Badge variant="secondary" className="text-[9px]">{r.season}</Badge></td>
                         <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground">{r.deadline || "—"}</td>
                         <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground tabular-nums">{r.batchNumber ?? "—"}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">
+                          {r.entryBatchId && batchMap[r.entryBatchId] ? (
+                            <Badge variant="outline" className="text-[9px] font-mono" title={batchMap[r.entryBatchId]?.batchName}>
+                              {batchMap[r.entryBatchId]?.batchCode}
+                            </Badge>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </td>
                         <td className="px-2 py-1.5">
                           <div className="flex justify-end gap-0.5">
                             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEditEntry(r)}>
@@ -1665,13 +1987,13 @@ export function ProductDataEntryView() {
                 {selectedEntryIds.size > 0 && (
                   <tfoot className="bg-primary/5 border-t-2 border-primary/20">
                     <tr>
-                      <td colSpan={7} className="px-2 py-2 text-right text-[11px] font-semibold uppercase text-muted-foreground">
+                      <td colSpan={8} className="px-2 py-2 text-right text-[11px] font-semibold uppercase text-muted-foreground">
                         <Calculator className="h-3 w-3 inline mr-1" />
                         Total ({totals.count} selected):
                       </td>
                       <td className="px-2 py-2 text-right tabular-nums font-bold text-primary text-sm">{totals.qty1Sum}</td>
                       <td className={cn("px-2 py-2 text-right tabular-nums font-bold text-sm", totals.qty2Sum < 0 && "text-rose-600")}>{totals.qty2Sum}</td>
-                      <td colSpan={4}></td>
+                      <td colSpan={5}></td>
                     </tr>
                   </tfoot>
                 )}
@@ -2024,6 +2346,122 @@ export function ProductDataEntryView() {
             >
               {saving ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Save className="h-4 w-4 mr-1.5" />}
               Confirm Entry
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── CREATE ENTRY BATCH DIALOG ──────────────────────────────────────
+          Opens when the user clicks "Tạo đợt nhập mới" in the Entry Batch
+          panel. Collects shippingStatus + entryDate + entryTime + note, then
+          calls api.createEntryBatch. On success, stores the new batch as
+          activeBatch and closes the dialog. */}
+      <Dialog open={batchDialogOpen} onOpenChange={(o) => { if (!batchCreating) setBatchDialogOpen(o); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Database className="h-4 w-4 text-primary" /> Tạo đợt nhập mới
+            </DialogTitle>
+            <DialogDescription>
+              Create a new entry batch. New entries will be linked to this
+              batch so they can be reported / reverted together.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            {/* Shipping Status (required) — pre-filled from the form if set */}
+            <div className="space-y-1.5">
+              <Label className="flex items-center justify-between text-xs">
+                <span>Shipping Status <span className="text-destructive">*</span></span>
+                <span className="text-[10px] text-muted-foreground">Required</span>
+              </Label>
+              <Select
+                value={batchForm.shippingStatus}
+                onValueChange={(v) => setBatchForm((f) => ({ ...f, shippingStatus: v }))}
+              >
+                <SelectTrigger className="h-10">
+                  <SelectValue placeholder="Select Shipping Status…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SHIPPING_OPTIONS.map((s) => (
+                    <SelectItem key={s.value} value={s.value}>
+                      <span className="flex items-center gap-2">
+                        <span className={cn("h-2 w-2 rounded-full", s.color.split(" ")[0])} />
+                        {s.label}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Entry Date + Entry Time side-by-side */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Entry Date</Label>
+                <Input
+                  type="date"
+                  value={batchForm.entryDate}
+                  onChange={(e) => setBatchForm((f) => ({ ...f, entryDate: e.target.value }))}
+                  className="h-10"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Entry Time</Label>
+                <Input
+                  type="time"
+                  value={batchForm.entryTime}
+                  onChange={(e) => setBatchForm((f) => ({ ...f, entryTime: e.target.value }))}
+                  className="h-10"
+                />
+              </div>
+            </div>
+
+            {/* Note (optional) */}
+            <div className="space-y-1.5">
+              <Label className="text-xs">
+                Note <span className="text-muted-foreground">(optional)</span>
+              </Label>
+              <Textarea
+                value={batchForm.note}
+                onChange={(e) => setBatchForm((f) => ({ ...f, note: e.target.value }))}
+                placeholder="e.g. Morning batch — 1000 đôi từ MH271001"
+                className="min-h-[70px] text-sm"
+              />
+            </div>
+
+            {/* Preview of what the batchCode will look like */}
+            <div className="rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground flex items-center gap-1.5">
+              <Info className="h-3 w-3 shrink-0" />
+              <span>
+                Batch code format:{" "}
+                <code className="rounded bg-muted px-1 font-mono">
+                  {shippingStatusPrefix(batchForm.shippingStatus)}-YYYYMMDD-NNN
+                </code>
+                {" "}— sequence auto-assigned per (date, shippingStatus).
+              </span>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setBatchDialogOpen(false)}
+              disabled={batchCreating}
+            >
+              <X className="h-4 w-4 mr-1.5" /> Cancel
+            </Button>
+            <Button
+              onClick={handleCreateBatch}
+              disabled={batchCreating || !batchForm.shippingStatus}
+              className={cn(theme.bg, "hover:opacity-90")}
+            >
+              {batchCreating ? (
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              ) : (
+                <Plus className="h-4 w-4 mr-1.5" />
+              )}
+              Create
             </Button>
           </DialogFooter>
         </DialogContent>

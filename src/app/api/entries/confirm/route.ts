@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
     size: body.size || "",
     qty: body.qty ?? body.qty1 ?? "",
     date: body.date || undefined,
+    entryBatchId: body.entryBatchId,
   };
 
   // Re-preview to get fresh data (spec §39: validate + lookup again).

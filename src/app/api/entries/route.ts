@@ -12,6 +12,7 @@ interface CreateBody {
   qty1: string;
   autoCalcQty2?: boolean;
   note?: string;
+  entryBatchId?: string | null;
 }
 
 // GET /api/entries?productType=MAFATE&page=&pageSize=&search=&...
@@ -76,7 +77,7 @@ export async function POST(req: NextRequest) {
   }
 
   const created = await createEntry(
-    { factoryPO: body.factoryPO, size: body.size, qty1: body.qty1 },
+    { factoryPO: body.factoryPO, size: body.size, qty1: body.qty1, entryBatchId: body.entryBatchId ?? null },
     { autoCalcQty2, productType: body.productType }
   );
   if (!created.ok) {

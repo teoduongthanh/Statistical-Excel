@@ -165,6 +165,7 @@ export function ProductReviewView() {
                   <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Qty1</th>
                   <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Qty2</th>
                   <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Lần nhập</th>
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Entry Batch</th>
                   <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">Master Ref</th>
                   <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase text-muted-foreground">Action</th>
                 </tr>
@@ -173,12 +174,12 @@ export function ProductReviewView() {
                 {entriesQ.isLoading ? (
                   Array.from({ length: 8 }).map((_, i) => (
                     <tr key={i} className="border-t">
-                      <td colSpan={11} className="px-3 py-3"><div className="h-3 w-full animate-pulse rounded bg-muted" /></td>
+                      <td colSpan={12} className="px-3 py-3"><div className="h-3 w-full animate-pulse rounded bg-muted" /></td>
                     </tr>
                   ))
                 ) : rows.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="px-3 py-10 text-center text-muted-foreground">
+                    <td colSpan={12} className="px-3 py-10 text-center text-muted-foreground">
                       No entries found for {currentProduct}.
                     </td>
                   </tr>
@@ -200,6 +201,9 @@ export function ProductReviewView() {
                         <td className="px-3 py-1.5 text-right tabular-nums">{r.qty1}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums">{r.qty2}</td>
                         <td className="px-3 py-1.5 whitespace-nowrap text-muted-foreground tabular-nums">{r.batchNumber ?? "—"}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap font-mono text-[10px] text-muted-foreground" title={r.entryBatchId ?? ""}>
+                          {r.entryBatchId ? r.entryBatchId.slice(-8) : "—"}
+                        </td>
                         <td className="px-3 py-1.5">
                           {hasRef ? (
                             <Badge variant="outline" className="text-[9px] bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300">

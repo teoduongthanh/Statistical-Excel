@@ -61,8 +61,22 @@ import { useAppStore, PRODUCT_THEME } from "@/store/app-store";
 type Source = "entries" | "master";
 type Mode = "all" | "filtered" | "selected";
 
+// `entryBatchId` is NOT a CanonicalField (it's not part of the Excel header schema),
+// but we surface it in the preview/export column picker as a short reference (last 8 chars).
+// It's filtered out before being sent to the backend export API.
+type PreviewColumn = CanonicalField | "entryBatchId";
+
+// Human-readable labels for non-CanonicalField columns shown in the picker/preview.
+const EXTRA_LABELS: Record<string, string> = {
+  entryBatchId: "Entry Batch",
+};
+function columnLabel(c: PreviewColumn): string {
+  if (c === "entryBatchId") return EXTRA_LABELS.entryBatchId;
+  return FIELD_LABELS[c];
+}
+
 // Fixed export column order per spec §24.
-const EXPORT_COLUMNS: CanonicalField[] = [
+const EXPORT_COLUMNS: PreviewColumn[] = [
   "date",
   "shippingStatus",
   "model",
@@ -80,10 +94,11 @@ const EXPORT_COLUMNS: CanonicalField[] = [
   "qty2",
   "deadline",
   "batchNumber",
+  "entryBatchId",
 ];
 
 // Columns shown in the row-preview table (subset for readability).
-const PREVIEW_COLUMNS: CanonicalField[] = [
+const PREVIEW_COLUMNS: PreviewColumn[] = [
   "shippingStatus",
   "poNo",
   "factoryPO",
@@ -95,6 +110,7 @@ const PREVIEW_COLUMNS: CanonicalField[] = [
   "colorCode",
   "deadline",
   "batchNumber",
+  "entryBatchId",
 ];
 
 const FILTER_FIELDS: CanonicalField[] = [
@@ -132,7 +148,7 @@ export function ProductExportView() {
 
   const [source, setSource] = React.useState<Source>("entries");
   const [mode, setMode] = React.useState<Mode>("all");
-  const [columns, setColumns] = React.useState<Set<CanonicalField>>(new Set(EXPORT_COLUMNS));
+  const [columns, setColumns] = React.useState<Set<PreviewColumn>>(new Set(EXPORT_COLUMNS));
   const [filters, setFilters] = React.useState<Record<string, string>>({});
   const [search, setSearch] = React.useState("");
   const [debouncedSearch, setDebouncedSearch] = React.useState("");
@@ -183,7 +199,7 @@ export function ProductExportView() {
   const rows = entriesQ.data?.rows ?? [];
   const total = entriesQ.data?.total ?? 0;
 
-  function toggleColumn(c: CanonicalField) {
+  function toggleColumn(c: PreviewColumn) {
     setColumns((s) => {
       const n = new Set(s);
       if (n.has(c)) n.delete(c);
@@ -237,7 +253,9 @@ export function ProductExportView() {
       }
       const body: Parameters<typeof api.exportExcel>[0] = {
         source,
-        columns: [...columns],
+        // `entryBatchId` is a UI-only column (not a real CanonicalField for the
+        // Excel export schema). Filter it out before sending to the backend.
+        columns: [...columns].filter((c): c is CanonicalField => c !== "entryBatchId"),
         mode,
         filters: exportFilters,
         sortOrder: "asc",
@@ -524,7 +542,7 @@ export function ProductExportView() {
                     )}
                   >
                     <Checkbox checked={columns.has(f)} onCheckedChange={() => toggleColumn(f)} />
-                    <span className="truncate">{FIELD_LABELS[f]}</span>
+                    <span className="truncate">{columnLabel(f)}</span>
                   </label>
                 ))}
               </div>
@@ -614,7 +632,7 @@ export function ProductExportView() {
                       <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground">#</th>
                       {PREVIEW_COLUMNS.map((c) => (
                         <th key={c} className="px-2 py-2 text-left text-[10px] font-semibold uppercase text-muted-foreground whitespace-nowrap">
-                          {FIELD_LABELS[c]}
+                          {columnLabel(c)}
                         </th>
                       ))}
                       {source === "entries" && (
@@ -660,7 +678,11 @@ export function ProductExportView() {
                             <td className="px-2 py-1.5 text-muted-foreground tabular-nums">{(page - 1) * pageSize + i + 1}</td>
                             {PREVIEW_COLUMNS.map((c) => (
                               <td key={c} className="px-2 py-1.5 whitespace-nowrap max-w-[180px] truncate" title={r[c] ?? ""}>
-                                {c === "shippingStatus" ? (
+                                {c === "entryBatchId" ? (
+                                  <span className="font-mono text-[10px] text-muted-foreground">
+                                    {r.entryBatchId ? r.entryBatchId.slice(-8) : "—"}
+                                  </span>
+                                ) : c === "shippingStatus" ? (
                                   <Badge
                                     variant="outline"
                                     className={cn("text-[9px]", shippingBadgeClass(r[c]))}

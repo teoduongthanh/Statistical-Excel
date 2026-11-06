@@ -447,8 +447,16 @@ export async function createEntry(
       printingColor: g.printingColor,
       deadline: g.deadline,
       batchNumber,
+      entryBatchId: input.entryBatchId ?? null,
     },
   });
+
+  // Recompute the linked batch's denormalized totals (totalQuantity, totalRecords).
+  if (input.entryBatchId) {
+    const { recomputeBatchTotals } = await import("./entry-batch-service");
+    await recomputeBatchTotals(input.entryBatchId);
+  }
+
   return { ok: true as const, entry: created };
 }
 

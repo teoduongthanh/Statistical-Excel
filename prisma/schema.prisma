@@ -100,6 +100,10 @@ model EntryData {
   // E.g. on 03-11-2026: lần 1 (morning batch), lần 2 (afternoon batch).
   // Auto-assigned on create = max(batchNumber)+1 for (productType, date).
   batchNumber         Int?
+  // Foreign key to EntryInputBatch — groups multiple EntryData rows entered
+  // in one business input session (e.g. "03/11/2026 - Lần 1, 10:00 AM, 1000 đôi").
+  // Null for legacy entries created before the batch feature (backward compatible).
+  entryBatchId        String?
   // Transaction grouping: an Output entry creates a paired Pending entry,
   // both share the same transactionGroupId for atomic delete/audit.
   transactionGroupId  String?
@@ -119,6 +123,62 @@ model EntryData {
   @@index([productType, shippingStatus])
   @@index([transactionGroupId])
   @@index([productType, date, batchNumber])
+  @@index([entryBatchId])
+  @@index([productType, entryBatchId])
+}
+
+/// EntryInputBatch — a business "đợt nhập" (input session) that groups multiple
+/// EntryData rows entered together in one sitting.
+///
+/// Distinct from the staging-pathway `EntryBatch` model (which tracks
+/// paste-and-validate staging sessions). This model tracks the business
+/// concept: "on 03/11/2026 at 10:00 AM, user entered 1000 đôi as Lần 1".
+///
+/// batchCode format: <PREFIX>-<YYYYMMDD>-<NNN>
+///   PREFIX derived from shippingStatus: ORD (Order), OUT (Output),
+///   IN (Input), PND (Pending). Example: IN-20261103-001.
+///
+/// Sequence is per (productType, entryDate, shippingStatus) by default.
+/// All EntryData rows created during one session share the same entryBatchId.
+model EntryInputBatch {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  // Human-readable code, e.g. "IN-20261103-001". Unique globally.
+  batchCode      String   @unique
+  // Business date of the input session (YYYY-MM-DD). Distinct from createdAt
+  // (system timestamp). This is the date the input physically happened.
+  entryDate      String
+  // Business time of the input session (HH:mm, 24h). E.g. "10:00", "14:00".
+  entryTime      String?
+  // Sequence within (productType, entryDate, shippingStatus). 1, 2, 3...
+  // Does NOT reset when a batch is deleted (gaps are allowed).
+  entrySequence  Int
+  // Shipping status this batch belongs to: "1.Order" | "2.Output" | "3.Pending" | "4.Input".
+  shippingStatus String
+  // Product type: "MAFATE" | "ONYX" | "MIZUNO" | "ONYX_FVO".
+  productType    String
+  // Display name, e.g. "03/11/2026 - Lần 1".
+  batchName      String
+  // Total quantity across all rows in this batch (denormalized for fast list view).
+  totalQuantity  Int      @default(0)
+  // Total number of EntryData rows in this batch (denormalized).
+  totalRecords   Int      @default(0)
+  // Soft-delete flag. Deleted batches are kept for audit history.
+  isDeleted      Boolean  @default(false)
+  // Whether the batch is "closed" (confirmed) — further additions should warn.
+  isClosed       Boolean  @default(false)
+  // Free-form note for the batch.
+  note           String?
+  // Who created the batch.
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([productType, entryDate])
+  @@index([productType, entryDate, shippingStatus])
+  @@index([productType, entryDate, entrySequence])
+  @@index([shippingStatus])
+  @@index([entryDate])
+  @@index([isDeleted])
 }
 
 model OrderNote {

@@ -691,7 +691,7 @@ export async function validateBatch(
 
 export async function confirmImport(
   batchDbId: string,
-  options: { mode: "valid_only" | "valid_and_accepted"; user?: string }
+  options: { mode: "valid_only" | "valid_and_accepted"; user?: string; entryBatchId?: string }
 ): Promise<{ imported: number; remaining: number }> {
   const batch = await db.entryBatch.findUnique({ where: { id: batchDbId } });
   if (!batch) throw new Error("Batch not found");
@@ -735,6 +735,7 @@ export async function confirmImport(
         qty2: r.qty, // simple mirror; entry-service would compute sign
         deadline: r.deadline || null,
         batchNumber,
+        entryBatchId: options.entryBatchId ?? null,
         note: `Imported from batch ${batch.batchId} row ${r.rowNumber}`,
       },
     });
@@ -765,6 +766,12 @@ export async function confirmImport(
       importedAt: remaining === 0 ? new Date() : null,
     },
   });
+
+  // Recompute the linked EntryInputBatch's denormalized totals (totalQuantity, totalRecords).
+  if (options.entryBatchId) {
+    const { recomputeBatchTotals } = await import("./entry-batch-service");
+    await recomputeBatchTotals(options.entryBatchId);
+  }
 
   return { imported, remaining };
 }

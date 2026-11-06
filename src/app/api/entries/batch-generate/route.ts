@@ -18,6 +18,7 @@ interface BatchGenerateBody {
   shippingStatus: string;
   poNo?: string;      // optional PO NO# override (else from master)
   items: BatchGenerateItem[];
+  entryBatchId?: string | null;
 }
 
 interface GeneratedEntry {
@@ -190,6 +191,7 @@ export async function POST(req: NextRequest) {
             qty2: computeQty2(body.shippingStatus, e.qty),
             masterDataReference,
             batchNumber,
+            entryBatchId: body.entryBatchId ?? null,
           },
         });
         created.push(entry);
@@ -216,6 +218,12 @@ export async function POST(req: NextRequest) {
           }),
         },
       });
+
+      // Recompute the linked batch's denormalized totals (totalQuantity, totalRecords).
+      if (body.entryBatchId) {
+        const { recomputeBatchTotals } = await import("@/lib/entry-batch-service");
+        await recomputeBatchTotals(body.entryBatchId, tx);
+      }
 
       return { created };
     });

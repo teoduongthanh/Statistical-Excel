@@ -635,6 +635,7 @@ export const api = {
     qty1: string;
     autoCalcQty2?: boolean;
     note?: string;
+    entryBatchId?: string | null;
   }) => {
     const res = await fetch("/api/entries", {
       method: "POST",
@@ -669,6 +670,8 @@ export const api = {
     factoryPO: string;
     size: string;
     qty: string;
+    date?: string;
+    entryBatchId?: string | null;
   }) => {
     const res = await fetch("/api/entries/confirm", {
       method: "POST",
@@ -680,12 +683,13 @@ export const api = {
 
   bulkEntries: async (
     items: { factoryPO: string; size: string; qty1: string; productType?: string }[],
-    autoCalcQty2 = true
+    autoCalcQty2 = true,
+    entryBatchId?: string | null
   ) => {
     const res = await fetch("/api/entries/bulk", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, autoCalcQty2 }),
+      body: JSON.stringify({ items, autoCalcQty2, entryBatchId }),
     });
     return jsonOrThrow(res);
   },
@@ -1809,6 +1813,89 @@ export const api = {
     if (runId) q.set("runId", runId);
     if (format) q.set("format", format);
     return `/api/recon-v2/projects/${projectId}/export?${q}`;
+  },
+
+  // ===== Entry Input Batches (đợt nhập) =====
+  // Create a new business input batch. Returns batch with batchCode, entrySequence.
+  createEntryBatch: async (body: {
+    productType: string;
+    shippingStatus: string;
+    entryDate?: string;
+    entryTime?: string;
+    note?: string;
+    createdBy?: string;
+  }): Promise<{ ok: boolean; batch: any }> => {
+    const res = await fetch("/api/entry-batches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return jsonOrThrow(res);
+  },
+
+  // List batches with filters.
+  listEntryBatches: async (filters: {
+    productType?: string;
+    entryDateFrom?: string;
+    entryDateTo?: string;
+    shippingStatus?: string;
+    entrySequence?: number;
+    batchCode?: string;
+    includeDeleted?: boolean;
+    page?: number;
+    pageSize?: number;
+  } = {}): Promise<{ rows: any[]; total: number; page: number; pageSize: number }> => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(filters)) {
+      if (v !== undefined && v !== null && v !== "") q.set(k, String(v));
+    }
+    const res = await fetch(`/api/entry-batches?${q}`);
+    return jsonOrThrow(res);
+  },
+
+  // Get a single batch (optionally with its rows).
+  getEntryBatch: async (id: string, includeRows = false): Promise<any> => {
+    const res = await fetch(`/api/entry-batches/${id}?includeRows=${includeRows}`);
+    return jsonOrThrow(res);
+  },
+
+  // Update a batch (note / isClosed) or recompute totals.
+  updateEntryBatch: async (id: string, patch: { note?: string | null; isClosed?: boolean; recompute?: boolean }): Promise<{ ok: boolean; batch: any }> => {
+    const res = await fetch(`/api/entry-batches/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    return jsonOrThrow(res);
+  },
+
+  // Soft-delete a batch.
+  deleteEntryBatch: async (id: string): Promise<{ ok: boolean }> => {
+    const res = await fetch(`/api/entry-batches/${id}`, { method: "DELETE" });
+    return jsonOrThrow(res);
+  },
+
+  // Get batch stats (breakdown by model/PO/factoryPO/color/size).
+  getEntryBatchStats: async (id: string): Promise<any> => {
+    const res = await fetch(`/api/entry-batches/${id}/stats`);
+    return jsonOrThrow(res);
+  },
+
+  // Compare two batches by a dimension, OR get time-period stats.
+  compareEntryBatches: async (params: {
+    batchId1?: string;
+    batchId2?: string;
+    dimension?: "poNo" | "factoryPO" | "colorCode" | "size";
+    productType?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  }): Promise<any> => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v) q.set(k, String(v));
+    }
+    const res = await fetch(`/api/entry-batches/compare?${q}`);
+    return jsonOrThrow(res);
   },
 };
 

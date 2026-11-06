@@ -11,7 +11,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard, PenLine, Database, GitCompareArrows, Activity,
   BarChart3, Truck, ShieldCheck, ClipboardCheck, Monitor, FileOutput,
-  GitCompare, ArrowLeftRight, Upload, Download,
+  GitCompare, ArrowLeftRight, Upload, Download, Layers,
 } from "lucide-react";
 
 // ── Module configuration ─────────────────────────────────────────────────────
@@ -78,7 +78,8 @@ export type ViewComponent =
   | "fvo-stech"
   | "import"
   | "export"
-  | "review";
+  | "review"
+  | "batch-history";
 
 // All features available per module.
 // The spec asks for: order, output, input, pending, data-entry.
@@ -105,6 +106,7 @@ export const FEATURES: FeatureConfig[] = [
   { slug: "import", label: "Import Excel", icon: Upload, view: "import", productScoped: true },
   { slug: "export", label: "Export Excel", icon: Download, view: "export", productScoped: true },
   { slug: "review", label: "Review & Merge", icon: GitCompareArrows, view: "review", productScoped: true },
+  { slug: "batch-history", label: "Entry Batches", icon: Layers, view: "batch-history", productScoped: true },
 ];
 
 export function getFeature(slug: string): FeatureConfig | undefined {

@@ -27,6 +27,7 @@ export async function POST(
     const body = (await req.json().catch(() => ({}))) as {
       mode?: "valid_only" | "valid_and_accepted";
       user?: string;
+      entryBatchId?: string;
     };
 
     if (body.mode !== "valid_only" && body.mode !== "valid_and_accepted") {
@@ -42,6 +43,7 @@ export async function POST(
     const result = await confirmImport(id, {
       mode: body.mode,
       user: body.user,
+      entryBatchId: body.entryBatchId,
     });
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {

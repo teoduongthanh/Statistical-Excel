@@ -39,6 +39,7 @@ export interface BulkImportInput {
   mode: "all_valid" | "selected" | "fix_first";
   selectedRowNumbers?: number[]; // 1-based Excel row numbers (only for "selected" mode)
   importedBy?: string;
+  entryBatchId?: string | null;
 }
 
 export interface BulkImportResult {
@@ -136,9 +137,16 @@ export async function bulkImportEntries(input: BulkImportInput): Promise<BulkImp
             masterDataReference,
             note: row.note || row.confirmReason || null,
             batchNumber,
+            entryBatchId: input.entryBatchId ?? null,
           },
         });
         imported++;
+      }
+
+      // Recompute the linked batch's denormalized totals (totalQuantity, totalRecords).
+      if (input.entryBatchId) {
+        const { recomputeBatchTotals } = await import("./entry-batch-service");
+        await recomputeBatchTotals(input.entryBatchId, tx);
       }
 
       // Step 4: Create AuditLog.

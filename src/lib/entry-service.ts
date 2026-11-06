@@ -65,6 +65,9 @@ export interface EntryInput {
   qty: string; // user-entered qty → mapped to qty1
   date?: string; // user-selected business date (yyyy-MM-dd), overrides today
   batchNumber?: number | null; // "Lần nhập" — optional; auto-assigned if omitted
+  // FK to EntryInputBatch — when set, the created EntryData row is linked to
+  // this business batch so all rows from one input session group together.
+  entryBatchId?: string | null;
 }
 
 export interface EntryPreview {
@@ -324,9 +327,16 @@ export async function confirmEntry(input: EntryInput, preview: EntryPreview): Pr
           qty1,
           qty2,
           batchNumber: bn,
+          entryBatchId: input.entryBatchId ?? null,
         },
       });
       created.push(mainRec);
+
+      // Recompute the linked batch's denormalized totals (totalQuantity, totalRecords).
+      if (input.entryBatchId) {
+        const { recomputeBatchTotals } = await import("./entry-batch-service");
+        await recomputeBatchTotals(input.entryBatchId, tx);
+      }
 
       return { created, merged: [] as { id: string; newQty: number }[] };
     });

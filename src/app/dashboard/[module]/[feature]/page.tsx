@@ -22,6 +22,7 @@ import { FvoStechTrackingView } from "@/components/views/fvo-stech-tracking-view
 import { ProductImportView } from "@/components/views/product-import-view";
 import { ProductExportView } from "@/components/views/product-export-view";
 import { ProductReviewView } from "@/components/views/product-review-view";
+import { EntryBatchHistoryView } from "@/components/views/entry-batch-history-view";
 
 export default function FeaturePage() {
   const params = useParams<{ module: string; feature: string }>();
@@ -98,6 +99,7 @@ export default function FeaturePage() {
       case "import": return <ProductImportView />;
       case "export": return <ProductExportView />;
       case "review": return <ProductReviewView />;
+      case "batch-history": return <EntryBatchHistoryView />;
       default: return <div>Unknown view: {feature.view}</div>;
     }
   };
