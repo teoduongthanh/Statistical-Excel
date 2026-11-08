@@ -42,7 +42,6 @@ yarn-error.log*
 next-env.d.ts
 local-*
 .claude
-.z-ai-config
 *.log
 dev.log
 dev.out.log
@@ -66,9 +65,6 @@ server.log
 worklog.md
 *.worklog.md
 
-# Z scripts runtime
-.zscripts/dev.pid
-.zscripts/*.pid
 
 # Misc local artifacts
 --timeout

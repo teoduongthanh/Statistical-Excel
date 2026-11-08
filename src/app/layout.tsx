@@ -20,7 +20,7 @@ export const metadata: Metadata = {
   title: "Smart Excel Data Entry System",
   description:
     "Import Excel, smart search, autocomplete, and auto-fill related fields from Master Data.",
-  icons: { icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg" },
+  icons: { icon: "/logo.svg" },
 };
 
 export default function RootLayout({
